@@ -1,0 +1,36 @@
+[
+    {
+        "name": "healthcheck",
+        "path": "/Users/mwagstaff/dev/healthcheck",
+        "start_command": "npm start",
+        "metrics_port": 4000
+    },
+    {
+        "name": "boris-bikes-api",
+        "aliases": [
+            "my-boris-bikes",
+            "my-boris-bikes-api"
+        ],
+        "path": "/Users/mwagstaff/dev/my-boris-bikes/my-boris-bikes-api",
+        "start_command": "npm start",
+        "metrics_port": 3010
+    },
+    {
+        "name": "top-scores",
+        "path": "/Users/mwagstaff/dev/top-scores/api",
+        "start_command": "npm start",
+        "metrics_port": 3011
+    },
+    {
+        "name": "train-track-api",
+        "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
+        "start_command": "npm start",
+        "metrics_port": 3010
+    },
+    {
+        "name": "bromley-bins",
+        "path": "/home/mwagstaff/dev/server-tooling/bromley-bins",
+        "start_command": "npm start",
+        "metrics_port": 3010
+    }
+]
