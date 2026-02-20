@@ -1,0 +1,3 @@
+epoch,iso_utc,http_code,latency_ms,success,curl_exit,error
+1771615313,2026-02-20T19:21:53Z,200,25.673,1,0,
+1771615343,2026-02-20T19:22:23Z,200,71.023,1,0,

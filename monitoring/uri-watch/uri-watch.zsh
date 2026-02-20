@@ -254,6 +254,13 @@ print_dashboard() {
 }
 
 parse_args() {
+  if (( $# == 0 )); then
+    usage
+    echo
+    echo "Error: --uri is required."
+    exit 1
+  fi
+
   while (( $# > 0 )); do
     case "$1" in
       --uri)
