@@ -186,6 +186,107 @@ END {
 }' "$LOG_FILE"
 }
 
+compute_hour_chart() {
+  local now_epoch="$1"
+  awk -F, \
+    -v now="$now_epoch" \
+    -v slo_ms="$LATENCY_SLO_MS" '
+BEGIN {
+  start=now-3600
+  for (i=0; i<60; i++) {
+    total[i]=0
+    fail[i]=0
+    lat_count[i]=0
+    lat_sum[i]=0
+  }
+}
+NR > 1 {
+  ts=$1 + 0
+  if (ts < start || ts > now) {
+    next
+  }
+
+  idx=int((ts - start) / 60)
+  if (idx < 0) {
+    next
+  }
+  if (idx > 59) {
+    idx=59
+  }
+
+  total[idx]++
+  ok=$5 + 0
+  if (!ok) {
+    fail[idx]++
+  }
+
+  lat=$4 + 0
+  if (ok && lat >= 0) {
+    lat_count[idx]++
+    lat_sum[idx] += lat
+  }
+}
+END {
+  outcome=""
+  latency=""
+
+  for (i=0; i<60; i++) {
+    if (total[i] == 0) {
+      outcome = outcome "."
+    } else if (fail[i] == 0) {
+      outcome = outcome "S"
+    } else if (fail[i] == total[i]) {
+      outcome = outcome "F"
+    } else {
+      outcome = outcome "M"
+    }
+
+    if (lat_count[i] == 0) {
+      latency = latency "."
+    } else {
+      avg=lat_sum[i]/lat_count[i]
+      ratio=avg/slo_ms
+      if (ratio < 0.20) {
+        c="_"
+      } else if (ratio < 0.40) {
+        c=":"
+      } else if (ratio < 0.60) {
+        c="-"
+      } else if (ratio < 0.80) {
+        c="="
+      } else if (ratio < 1.00) {
+        c="+"
+      } else if (ratio < 1.20) {
+        c="*"
+      } else if (ratio < 1.50) {
+        c="#"
+      } else if (ratio < 2.00) {
+        c="%"
+      } else {
+        c="@"
+      }
+      latency = latency c
+    }
+  }
+
+  print outcome
+  print latency
+}' "$LOG_FILE"
+}
+
+hour_markers() {
+  local markers=""
+  local i
+  for (( i=0; i<60; i++ )); do
+    if (( i % 15 == 0 )); then
+      markers+="|"
+    else
+      markers+="-"
+    fi
+  done
+  echo "$markers"
+}
+
 print_dashboard() {
   local now_epoch="$1"
   local now_iso="$2"
@@ -193,6 +294,7 @@ print_dashboard() {
   local total_checks="$4"
   local total_failures="$5"
   local stats_output="$6"
+  local chart_output="$7"
 
   if (( CLEAR_SCREEN )); then
     print -n -- $'\033[2J\033[H'
@@ -249,6 +351,18 @@ print_dashboard() {
       "$(bar_for_percent "$availability")" "$(bar_for_percent "$latency_pct")"
   done <<< "$stats_output"
 
+  echo
+  local outcome_chart latency_chart
+  outcome_chart="$(printf '%s\n' "$chart_output" | sed -n '1p')"
+  latency_chart="$(printf '%s\n' "$chart_output" | sed -n '2p')"
+
+  echo "Past 1h Timeline (1 char = 1 minute, oldest -> newest)"
+  echo "Markers : $(hour_markers)"
+  echo "Outcome : ${outcome_chart:-............................................................}"
+  echo "Latency : ${latency_chart:-............................................................}"
+  echo "Scale   : -60m           -45m           -30m           -15m            now"
+  echo "Legend  : Outcome S=success-only, M=mixed, F=failure-only, .=no checks"
+  echo "          Latency .=no successes, _<20%SLO, :<40%, -<60%, =<80%, +<100%, *<120%, #<150%, %<200%, @>=200%"
   echo
   echo "Ctrl+C to stop."
 }
@@ -363,16 +477,17 @@ run_probe_loop() {
     escaped_error="$(echo "$error_message" | sed 's/,/;/g')"
     echo "${started_epoch},${started_iso},${http_code},${latency_ms},${success},${curl_exit},${escaped_error}" >> "$LOG_FILE"
 
-    local now_epoch now_iso total_checks total_failures stats_output last_line
+    local now_epoch now_iso total_checks total_failures stats_output chart_output last_line
     now_epoch="$(date -u +%s)"
     now_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
     total_checks="$(awk -F, 'NR > 1 { c++ } END { print c + 0 }' "$LOG_FILE")"
     total_failures="$(awk -F, 'NR > 1 { f += ($5 == 1 ? 0 : 1) } END { print f + 0 }' "$LOG_FILE")"
     stats_output="$(compute_stats "$now_epoch")"
+    chart_output="$(compute_hour_chart "$now_epoch")"
     last_line="$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)"
 
-    print_dashboard "$now_epoch" "$now_iso" "$last_line" "$total_checks" "$total_failures" "$stats_output"
+    print_dashboard "$now_epoch" "$now_iso" "$last_line" "$total_checks" "$total_failures" "$stats_output" "$chart_output"
 
     iteration=$((iteration + 1))
     if (( iteration % PRUNE_EVERY == 0 )); then

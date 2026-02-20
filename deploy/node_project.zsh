@@ -453,68 +453,93 @@ else
 fi
 
 # Check for and run Grafana dashboard import script if it exists
-DASHBOARD_SCRIPT="$LOCAL_DIR/observability/grafana/import-dashboards.sh"
-if [[ -f "$DASHBOARD_SCRIPT" ]]; then
-  echo "==> Running Grafana dashboard import script..."
-  REMOTE_HOME="$(ssh "$HOST" "printf %s \"\$HOME\"")"
+PROJECT_DASHBOARD_DIR="${GRAFANA_DASHBOARD_DIR:-$LOCAL_DIR/observability/grafana/dashboards}"
+LOCAL_DASHBOARD_SCRIPT="$LOCAL_DIR/observability/grafana/import-dashboards.sh"
+CENTRAL_DASHBOARD_SCRIPT="$SCRIPT_DIR/../monitoring/import-dashboards.sh"
+DASHBOARD_SCRIPT=""
 
-  # Prefer the actual mounted Prometheus config file path from the running container.
-  AUTO_PROM_CONFIG_FILE="$(
-    ssh "$HOST" "sudo docker inspect prometheus --format '{{range .Mounts}}{{if eq .Destination \"/etc/prometheus/prometheus.yml\"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true"
-  )"
-  if [[ -z "$AUTO_PROM_CONFIG_FILE" ]]; then
-    AUTO_PROM_CONFIG_FILE="${REMOTE_HOME}/monitoring/prometheus.yml"
+if [[ -n "${GRAFANA_IMPORT_SCRIPT:-}" ]]; then
+  if [[ ! -f "$GRAFANA_IMPORT_SCRIPT" ]]; then
+    echo "Error: GRAFANA_IMPORT_SCRIPT not found: $GRAFANA_IMPORT_SCRIPT" >&2
+    exit 1
   fi
+  DASHBOARD_SCRIPT="$GRAFANA_IMPORT_SCRIPT"
+elif [[ -f "$LOCAL_DASHBOARD_SCRIPT" ]]; then
+  DASHBOARD_SCRIPT="$LOCAL_DASHBOARD_SCRIPT"
+elif [[ -f "$CENTRAL_DASHBOARD_SCRIPT" ]]; then
+  DASHBOARD_SCRIPT="$CENTRAL_DASHBOARD_SCRIPT"
+fi
 
-  # Prefer host primary IPv4 for scraping host services from containers.
-  AUTO_PROM_HOST_IP="$(
-    ssh "$HOST" "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if (\$i==\"src\") {print \$(i+1); exit}}' || true"
-  )"
-  if [[ -z "$AUTO_PROM_HOST_IP" ]]; then
-    AUTO_PROM_HOST_IP="$(
-      ssh "$HOST" "hostname -I 2>/dev/null | awk '{print \$1}' || true"
-    )"
-  fi
-
-  # Also detect Docker gateway as a fallback.
-  AUTO_PROM_GW="$(
-    ssh "$HOST" "sudo docker inspect prometheus --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
-  )"
-
-  if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
-    AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_HOST_IP}:${METRICS_PORT}"
-  elif [[ -n "$AUTO_PROM_GW" ]]; then
-    AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_GW}:${METRICS_PORT}"
+if [[ -n "$DASHBOARD_SCRIPT" ]]; then
+  if [[ ! -d "$PROJECT_DASHBOARD_DIR" ]]; then
+    echo "==> Grafana dashboard directory not found (${PROJECT_DASHBOARD_DIR}), skipping..."
   else
-    AUTO_PROM_SCRAPE_TARGET="host.docker.internal:${METRICS_PORT}"
-  fi
+    echo "==> Running Grafana dashboard import script..."
+    echo "   Import script: ${DASHBOARD_SCRIPT}"
+    echo "   Dashboard dir: ${PROJECT_DASHBOARD_DIR}"
+    REMOTE_HOME="$(ssh "$HOST" "printf %s \"\$HOME\"")"
 
-  echo "   Prometheus config: ${AUTO_PROM_CONFIG_FILE}"
-  echo "   Host IP candidate: ${AUTO_PROM_HOST_IP:-<none>}"
-  echo "   Docker GW fallback: ${AUTO_PROM_GW:-<none>}"
-  echo "   Prometheus scrape target: ${AUTO_PROM_SCRAPE_TARGET}"
-
-  AUTO_PROM_SCRAPE_PORT="${AUTO_PROM_SCRAPE_TARGET##*:}"
-  AUTO_PROM_NET_NAME="$(
-    ssh "$HOST" "sudo docker inspect prometheus --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
-  )"
-  AUTO_PROM_SUBNET=""
-  if [[ -n "$AUTO_PROM_NET_NAME" ]]; then
-    AUTO_PROM_SUBNET="$(
-      ssh "$HOST" "sudo docker network inspect \"$AUTO_PROM_NET_NAME\" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true"
+    # Prefer the actual mounted Prometheus config file path from the running container.
+    AUTO_PROM_CONFIG_FILE="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range .Mounts}}{{if eq .Destination \"/etc/prometheus/prometheus.yml\"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true"
     )"
-  fi
-  if [[ -n "$AUTO_PROM_SUBNET" ]]; then
-    echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
-    ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
-  fi
+    if [[ -z "$AUTO_PROM_CONFIG_FILE" ]]; then
+      AUTO_PROM_CONFIG_FILE="${REMOTE_HOME}/monitoring/prometheus.yml"
+    fi
 
-  DEPLOY_HOST="$HOST" \
-  PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
-  PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
-    "$DASHBOARD_SCRIPT"
+    # Prefer host primary IPv4 for scraping host services from containers.
+    AUTO_PROM_HOST_IP="$(
+      ssh "$HOST" "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if (\$i==\"src\") {print \$(i+1); exit}}' || true"
+    )"
+    if [[ -z "$AUTO_PROM_HOST_IP" ]]; then
+      AUTO_PROM_HOST_IP="$(
+        ssh "$HOST" "hostname -I 2>/dev/null | awk '{print \$1}' || true"
+      )"
+    fi
+
+    # Also detect Docker gateway as a fallback.
+    AUTO_PROM_GW="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
+    )"
+
+    if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
+      AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_HOST_IP}:${METRICS_PORT}"
+    elif [[ -n "$AUTO_PROM_GW" ]]; then
+      AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_GW}:${METRICS_PORT}"
+    else
+      AUTO_PROM_SCRAPE_TARGET="host.docker.internal:${METRICS_PORT}"
+    fi
+
+    echo "   Prometheus config: ${AUTO_PROM_CONFIG_FILE}"
+    echo "   Host IP candidate: ${AUTO_PROM_HOST_IP:-<none>}"
+    echo "   Docker GW fallback: ${AUTO_PROM_GW:-<none>}"
+    echo "   Prometheus scrape target: ${AUTO_PROM_SCRAPE_TARGET}"
+
+    AUTO_PROM_SCRAPE_PORT="${AUTO_PROM_SCRAPE_TARGET##*:}"
+    AUTO_PROM_NET_NAME="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
+    )"
+    AUTO_PROM_SUBNET=""
+    if [[ -n "$AUTO_PROM_NET_NAME" ]]; then
+      AUTO_PROM_SUBNET="$(
+        ssh "$HOST" "sudo docker network inspect \"$AUTO_PROM_NET_NAME\" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true"
+      )"
+    fi
+    if [[ -n "$AUTO_PROM_SUBNET" ]]; then
+      echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
+      ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
+    fi
+
+    DEPLOY_HOST="$HOST" \
+    PROJECT_NAME="$PROJECT_NAME" \
+    METRICS_PORT="$METRICS_PORT" \
+    DASHBOARD_DIR="$PROJECT_DASHBOARD_DIR" \
+    PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
+    PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
+      "$DASHBOARD_SCRIPT"
+  fi
 else
-  echo "==> No Grafana dashboard import script found, skipping..."
+  echo "==> No Grafana dashboard import script found (checked ${LOCAL_DASHBOARD_SCRIPT} and ${CENTRAL_DASHBOARD_SCRIPT}), skipping..."
 fi
 
 echo "✅ Deploy complete."

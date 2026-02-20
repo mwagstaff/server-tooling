@@ -7,6 +7,11 @@ Continuously `curl` a target URI, log each check, and show rolling availability 
 - `1h`
 - `24h`
 
+It also includes a live 1-hour timeline (1 character per minute) showing:
+
+- outcome buckets (`S` success-only, `F` failure-only, `M` mixed, `.` no checks)
+- latency buckets (`.` no successes, `_ : - = + * # % @` from fast to slow vs latency SLO)
+
 ## Script
 
 `/Users/mwagstaff/dev/server-tooling/monitoring/uri-watch/uri-watch.zsh`
