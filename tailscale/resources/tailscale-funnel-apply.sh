@@ -5,7 +5,7 @@ set -euo pipefail
 TS="$(command -v tailscale || true)"
 if [[ -z "$TS" ]]; then
   # common locations on macOS and Linux
-  for candidate in /usr/local/bin/tailscale /usr/bin/tailscale /snap/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+  for candidate in /usr/local/bin/tailscale /opt/homebrew/bin/tailscale /usr/bin/tailscale /snap/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale /Applications/Tailscale.app/Contents/MacOS/tailscale; do
     if [[ -x "$candidate" ]]; then
       TS="$candidate"
       break

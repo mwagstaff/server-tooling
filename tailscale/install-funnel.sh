@@ -168,7 +168,34 @@ fi
 EOF
 
 log "Verification"
-ssh "${SSH_OPTS[@]}" "$HOST" bash <<'EOF'
+ssh "${SSH_OPTS[@]}" "$HOST" bash -s -- "${LABEL}" <<'EOF'
+set -e
+
+LABEL="${1:-com.mike.tailscale-funnel-apply}"
+
+resolve_tailscale_cli() {
+	if command -v tailscale >/dev/null 2>&1; then
+		command -v tailscale
+		return 0
+	fi
+
+	for candidate in \
+		/usr/local/bin/tailscale \
+		/opt/homebrew/bin/tailscale \
+		/usr/bin/tailscale \
+		/snap/bin/tailscale \
+		/Applications/Tailscale.app/Contents/MacOS/Tailscale \
+		/Applications/Tailscale.app/Contents/MacOS/tailscale
+	do
+		if [[ -x "$candidate" ]]; then
+			echo "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
 OSNAME=$(uname -s || true)
 if [[ "$OSNAME" == "Darwin" ]]; then
 	launchctl list | grep tailscale-funnel || true
@@ -178,7 +205,11 @@ else
 		systemctl --user status "${LABEL}.service" >/dev/null 2>&1 || sudo systemctl status "${LABEL}.service" >/dev/null 2>&1 || true
 	fi
 fi
-tailscale funnel status || true
+if TS_BIN="$(resolve_tailscale_cli)"; then
+	"$TS_BIN" funnel status || true
+else
+	echo "tailscale CLI not found on remote host. Install Tailscale and ensure the CLI is available." >&2
+fi
 EOF
 
 log "Done."
