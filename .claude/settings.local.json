@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(ssh ocl \"sudo docker inspect grafana --format ''{{range .NetworkSettings.Networks}}{{.NetworkSettings.IPAddress}} {{end}}'' 2>/dev/null && sudo docker inspect prometheus --format ''{{range .NetworkSettings.Networks}}{{.NetworkSettings.IPAddress}} {{end}}'' 2>/dev/null\")",
+      "Bash(ssh ocl \"curl -s http://localhost:9090/api/v1/targets | jq ''.data.activeTargets[] | select\\(.labels.job==\"\"healthcheck\"\"\\)''\")",
+      "Bash(ssh:*)",
+      "Bash(/Users/mwagstaff/dev/server-tooling/monitoring/check-prometheus-targets.sh)",
+      "Bash(/Users/mwagstaff/dev/server-tooling/monitoring/check-prometheus-targets.sh ocl)",
+      "Bash(./deploy/node_project.zsh:*)",
+      "Bash(DEPLOY_HOST=ocl PROM_CONFIG_HOST=ocl /Users/mwagstaff/dev/healthcheck/observability/grafana/import-dashboards.sh:*)",
+      "Bash(/Users/mwagstaff/dev/server-tooling/monitoring/install-node-exporter.zsh ocl)",
+      "Bash(DEPLOY_HOST=ocl ./observability/grafana/import-dashboards.sh:*)"
+    ]
+  }
+}

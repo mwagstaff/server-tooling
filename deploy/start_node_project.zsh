@@ -77,24 +77,63 @@ if ! project_exists "$PROJECT_NAME"; then
   exit 1
 fi
 
-SERVICE_UNIT="com.${PROJECT_NAME}.api.service"
+SERVICE_LABEL="com.${PROJECT_NAME}.api"
+SERVICE_UNIT="${SERVICE_LABEL}.service"
 
 echo "==> Starting project: $PROJECT_NAME"
 echo "    Remote host: $HOST"
+echo "    Service label: $SERVICE_LABEL"
 echo "    Service unit: $SERVICE_UNIT"
 echo ""
 
-ssh "$HOST" "
-set -euo pipefail
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo 'Error: systemctl is not available on this host.' >&2
+ssh -o ConnectTimeout=10 "$HOST" "
+set -eu
+
+if command -v launchctl >/dev/null 2>&1; then
+  UID_NUM=\"\$(id -u)\"
+  DOMAIN=''
+  if launchctl print \"gui/\$UID_NUM\" >/dev/null 2>&1; then
+    DOMAIN=\"gui/\$UID_NUM\"
+  elif launchctl print \"user/\$UID_NUM\" >/dev/null 2>&1; then
+    DOMAIN=\"user/\$UID_NUM\"
+  else
+    echo 'Error: Could not find a usable launchd domain for this user.' >&2
+    exit 1
+  fi
+
+  PLIST=\"\$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist\"
+
+  if [[ ! -f \"\$PLIST\" ]]; then
+    echo \"Error: launchd plist not found: \$PLIST\" >&2
+    exit 1
+  fi
+
+  echo \"Detected launchd (macOS). Using domain: \$DOMAIN\"
+
+  # Clear out any previous load in either common user domain before starting.
+  launchctl bootout \"gui/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
+  launchctl bootout \"user/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
+
+  launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"
+  launchctl enable \"\$DOMAIN/$SERVICE_LABEL\" || true
+  launchctl kickstart -k \"\$DOMAIN/$SERVICE_LABEL\"
+
+  if launchctl print \"\$DOMAIN/$SERVICE_LABEL\" >/dev/null 2>&1; then
+    echo 'Final state: loaded'
+  else
+    echo 'Error: Service is not loaded after start.' >&2
+    exit 1
+  fi
+elif command -v systemctl >/dev/null 2>&1; then
+  echo 'Detected systemd (Linux).'
+  systemctl --user daemon-reload
+  systemctl --user enable --now '$SERVICE_UNIT'
+  systemctl --user status '$SERVICE_UNIT' --no-pager || true
+else
+  echo 'Error: Neither launchctl nor systemctl is available on this host.' >&2
   exit 1
 fi
-
-systemctl --user daemon-reload
-systemctl --user enable --now '$SERVICE_UNIT'
-systemctl --user status '$SERVICE_UNIT' --no-pager || true
 "
 
 echo ""
-echo "✅ Started and enabled $SERVICE_UNIT on $HOST"
+echo "✅ Started and enabled $SERVICE_LABEL on $HOST"
