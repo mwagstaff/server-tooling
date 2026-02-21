@@ -15,6 +15,8 @@ BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
 BW_APPS_FIELD_NAME="${BW_APPS_FIELD_NAME:-Apps}"
 BW_REMOTE_ENV_FILE_NAME="${BW_REMOTE_ENV_FILE_NAME:-.bw-secrets.env.sh}"
 BW_ENV_SYNC="${BW_ENV_SYNC:-1}"
+BW_SESSION_CACHE_ENABLED="${BW_SESSION_CACHE_ENABLED:-1}"
+BW_SESSION_CACHE_FILE="${BW_SESSION_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-session}"
 
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -70,6 +72,44 @@ have_valid_bw_session() {
   bw list items --folderid "$BW_FOLDER_ID" --session "$BW_SESSION" >/dev/null 2>&1
 }
 
+cache_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
+  [[ -n "${BW_SESSION:-}" ]] || return 0
+  local cache_dir
+  cache_dir="${BW_SESSION_CACHE_FILE:h}"
+  mkdir -p "$cache_dir"
+  umask 077
+  printf '%s\n' "$BW_SESSION" > "$BW_SESSION_CACHE_FILE"
+  chmod 600 "$BW_SESSION_CACHE_FILE"
+}
+
+clear_cached_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
+  [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 0
+  rm -f "$BW_SESSION_CACHE_FILE"
+}
+
+load_cached_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 1
+  [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 1
+
+  local cached_session
+  cached_session="$(<"$BW_SESSION_CACHE_FILE")"
+  [[ -n "$cached_session" ]] || return 1
+
+  BW_SESSION="$cached_session"
+  export BW_SESSION
+
+  if have_valid_bw_session; then
+    echo "==> Using cached Bitwarden session from ${BW_SESSION_CACHE_FILE}"
+    return 0
+  fi
+
+  echo "==> Cached Bitwarden session is invalid; unlocking again..."
+  clear_cached_bw_session
+  return 1
+}
+
 ensure_bw_session() {
   if ! command -v bw >/dev/null 2>&1; then
     echo "Error: Bitwarden CLI 'bw' is required but was not found in PATH" >&2
@@ -78,6 +118,10 @@ ensure_bw_session() {
 
   if have_valid_bw_session; then
     echo "==> Using existing Bitwarden session"
+    return
+  fi
+
+  if load_cached_bw_session; then
     return
   fi
 
@@ -94,6 +138,8 @@ ensure_bw_session() {
     echo "Error: Could not establish a valid Bitwarden session" >&2
     exit 1
   fi
+
+  cache_bw_session
 }
 
 # Interactive mode - no parameters provided
