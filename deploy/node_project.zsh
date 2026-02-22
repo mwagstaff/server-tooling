@@ -71,6 +71,16 @@ sanitize_env_var_name() {
   echo "$sanitized_name"
 }
 
+sanitize_grafana_slug() {
+  local raw_name="$1"
+  local slug
+  slug="$(echo "$raw_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  if [[ -z "$slug" ]]; then
+    slug="project"
+  fi
+  echo "$slug"
+}
+
 have_valid_bw_session() {
   [[ -n "${BW_SESSION:-}" ]] || return 1
   bw list items --folderid "$BW_FOLDER_ID" --session "$BW_SESSION" >/dev/null 2>&1
@@ -421,12 +431,19 @@ EOF_START_WRAPPER
     chmod 700 \"\$START_WRAPPER\"
 
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
-      DOMAIN=\"gui/\$(id -u)\"
-      if ! launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" >/dev/null 2>&1; then
+      UID_NUM=\"\$(id -u)\"
+      DOMAIN=''
+      if launchctl print \"gui/\$UID_NUM/${SERVICE_LABEL}\" >/dev/null 2>&1; then
+        DOMAIN=\"gui/\$UID_NUM\"
+      elif launchctl print \"user/\$UID_NUM/${SERVICE_LABEL}\" >/dev/null 2>&1; then
+        DOMAIN=\"user/\$UID_NUM\"
+      else
         echo \"Error: launchd service not found: ${SERVICE_LABEL}\" >&2
+        echo \"Checked domains: gui/\$UID_NUM and user/\$UID_NUM\" >&2
         echo \"Run a full deploy first to create/update service configuration.\" >&2
         exit 1
       fi
+      echo \"Using launchd domain: \$DOMAIN\"
       launchctl kickstart -k \"\$DOMAIN/${SERVICE_LABEL}\"
       sleep 1
       if ! launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" | grep -q 'state = running'; then
@@ -494,7 +511,21 @@ EOF_START_WRAPPER
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       echo \"==> Using launchd (macOS)\"
       PLIST=\"\$HOME/Library/LaunchAgents/${SERVICE_LABEL}.plist\"
-      DOMAIN=\"gui/\$(id -u)\"
+      UID_NUM=\"\$(id -u)\"
+      DOMAIN=''
+      HAVE_GUI_DOMAIN=0
+      HAVE_USER_DOMAIN=0
+      if launchctl print \"gui/\$UID_NUM\" >/dev/null 2>&1; then
+        HAVE_GUI_DOMAIN=1
+      fi
+      if launchctl print \"user/\$UID_NUM\" >/dev/null 2>&1; then
+        HAVE_USER_DOMAIN=1
+      fi
+      if [[ \"\$HAVE_GUI_DOMAIN\" -eq 0 && \"\$HAVE_USER_DOMAIN\" -eq 0 ]]; then
+        echo \"Error: Could not find a usable launchd domain for this user.\" >&2
+        exit 1
+      fi
+      echo \"Detected launchd domains: gui/\$UID_NUM=\$HAVE_GUI_DOMAIN user/\$UID_NUM=\$HAVE_USER_DOMAIN\"
 
       # Create LaunchAgent directory if it doesn't exist
       mkdir -p \"\$HOME/Library/LaunchAgents\"
@@ -506,9 +537,10 @@ EOF_START_WRAPPER
 <plist version=\"1.0\">
 <dict>
   <key>Label</key>
-  <string>${SERVICE_LABEL}</string>
+  <string>SERVICE_LABEL_PLACEHOLDER</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/bash</string>
     <string>START_WRAPPER_PLACEHOLDER</string>
   </array>
   <key>WorkingDirectory</key>
@@ -518,9 +550,9 @@ EOF_START_WRAPPER
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>REMOTE_DIR_PLACEHOLDER/${PROJECT_NAME}.log</string>
+  <string>REMOTE_DIR_PLACEHOLDER/PROJECT_NAME_PLACEHOLDER.log</string>
   <key>StandardErrorPath</key>
-  <string>REMOTE_DIR_PLACEHOLDER/${PROJECT_NAME}.error.log</string>
+  <string>REMOTE_DIR_PLACEHOLDER/PROJECT_NAME_PLACEHOLDER.error.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -533,12 +565,52 @@ EOF_PLIST
       # Replace placeholders
       sed -i '' \"s|REMOTE_DIR_PLACEHOLDER|\$REMOTE_DIR_EXPANDED|g\" \"\$PLIST\"
       sed -i '' \"s|START_WRAPPER_PLACEHOLDER|\$START_WRAPPER|g\" \"\$PLIST\"
+      sed -i '' \"s|SERVICE_LABEL_PLACEHOLDER|${SERVICE_LABEL}|g\" \"\$PLIST\"
+      sed -i '' \"s|PROJECT_NAME_PLACEHOLDER|${PROJECT_NAME}|g\" \"\$PLIST\"
+      if command -v plutil >/dev/null 2>&1; then
+        if ! plutil -lint \"\$PLIST\" >/dev/null 2>&1; then
+          echo \"Error: launchd plist is invalid: \$PLIST\" >&2
+          plutil -lint \"\$PLIST\" >&2 || true
+          exit 1
+        fi
+      fi
 
       # Restart service
-      launchctl bootout \"\$DOMAIN/$SERVICE_LABEL\" 2>/dev/null || true
-      launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"
-      launchctl enable \"\$DOMAIN/$SERVICE_LABEL\" || true
-      launchctl kickstart -k \"\$DOMAIN/$SERVICE_LABEL\"
+      launchctl bootout \"gui/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
+      launchctl bootout \"user/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
+      BOOTSTRAP_OK=0
+      for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
+        if ! launchctl print \"\$TRY_DOMAIN\" >/dev/null 2>&1; then
+          continue
+        fi
+        echo \"Attempting launchd bootstrap in domain: \$TRY_DOMAIN\"
+        set +e
+        BOOTSTRAP_OUTPUT=\"\$(launchctl bootstrap \"\$TRY_DOMAIN\" \"\$PLIST\" 2>&1)\"
+        BOOTSTRAP_STATUS=\$?
+        set -e
+        if [[ \"\$BOOTSTRAP_STATUS\" -ne 0 ]]; then
+          echo \"Bootstrap failed in \$TRY_DOMAIN: \$BOOTSTRAP_OUTPUT\" >&2
+          launchctl bootout \"\$TRY_DOMAIN/$SERVICE_LABEL\" 2>/dev/null || true
+          continue
+        fi
+        launchctl enable \"\$TRY_DOMAIN/$SERVICE_LABEL\" || true
+        launchctl kickstart -k \"\$TRY_DOMAIN/$SERVICE_LABEL\"
+        if launchctl print \"\$TRY_DOMAIN/$SERVICE_LABEL\" >/dev/null 2>&1; then
+          DOMAIN=\"\$TRY_DOMAIN\"
+          BOOTSTRAP_OK=1
+          break
+        fi
+      done
+      if [[ \"\$BOOTSTRAP_OK\" -ne 1 ]]; then
+        echo \"Error: launchd service did not load: ${SERVICE_LABEL}\" >&2
+        echo \"Plist: \$PLIST\" >&2
+        ls -l \"\$PLIST\" >&2 || true
+        if command -v plutil >/dev/null 2>&1; then
+          plutil -p \"\$PLIST\" >&2 || true
+        fi
+        exit 1
+      fi
+      echo \"Service loaded in launchd domain: \$DOMAIN\"
       echo 'Service restarted via launchd'
 
     elif command -v systemctl >/dev/null 2>&1; then
@@ -645,9 +717,20 @@ else
     if [[ ! -d "$PROJECT_DASHBOARD_DIR" ]]; then
       echo "==> Grafana dashboard directory not found (${PROJECT_DASHBOARD_DIR}), skipping..."
     else
+      GRAFANA_PROJECT_NAME="${GRAFANA_PROJECT_NAME:-$PROJECT_NAME}"
+      GRAFANA_PROJECT_SLUG="${GRAFANA_PROJECT_SLUG:-$(sanitize_grafana_slug "$GRAFANA_PROJECT_NAME")}"
+      GRAFANA_FOLDER_TITLE="${GRAFANA_FOLDER_TITLE:-$GRAFANA_PROJECT_NAME}"
+      GRAFANA_FOLDER_UID="${GRAFANA_FOLDER_UID:-${GRAFANA_PROJECT_SLUG}-dashboards}"
+      GRAFANA_PROM_DS_NAME="${GRAFANA_PROM_DS_NAME:-${GRAFANA_PROJECT_SLUG}-prometheus}"
+      GRAFANA_PROM_DS_UID="${GRAFANA_PROM_DS_UID:-${GRAFANA_PROJECT_SLUG}-prometheus}"
+      GRAFANA_PROM_SCRAPE_JOB_NAME="${GRAFANA_PROM_SCRAPE_JOB_NAME:-$GRAFANA_PROJECT_SLUG}"
+
       echo "==> Running Grafana dashboard import script..."
       echo "   Import script: ${DASHBOARD_SCRIPT}"
       echo "   Dashboard dir: ${PROJECT_DASHBOARD_DIR}"
+      echo "   Grafana project: ${GRAFANA_PROJECT_NAME}"
+      echo "   Grafana folder: ${GRAFANA_FOLDER_TITLE} (uid=${GRAFANA_FOLDER_UID})"
+      echo "   Grafana datasource: ${GRAFANA_PROM_DS_NAME} (uid=${GRAFANA_PROM_DS_UID})"
       REMOTE_HOME="$(ssh "$HOST" "printf %s \"\$HOME\"")"
 
       # Prefer the actual mounted Prometheus config file path from the running container.
@@ -702,7 +785,13 @@ else
       fi
 
       DEPLOY_HOST="$HOST" \
-      PROJECT_NAME="$PROJECT_NAME" \
+      PROJECT_NAME="$GRAFANA_PROJECT_NAME" \
+      PROJECT_SLUG="$GRAFANA_PROJECT_SLUG" \
+      FOLDER_TITLE="$GRAFANA_FOLDER_TITLE" \
+      FOLDER_UID="$GRAFANA_FOLDER_UID" \
+      PROM_DS_NAME="$GRAFANA_PROM_DS_NAME" \
+      PROM_DS_UID="$GRAFANA_PROM_DS_UID" \
+      PROM_SCRAPE_JOB_NAME="$GRAFANA_PROM_SCRAPE_JOB_NAME" \
       METRICS_PORT="$METRICS_PORT" \
       DASHBOARD_DIR="$PROJECT_DASHBOARD_DIR" \
       PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
