@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="${0:a:h}"
 SCRIPT_NAME="${0:t}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
+PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 TAIL_LINES="${TAIL_LINES:-100}"
 ERRORS_ONLY=0
 
@@ -11,6 +12,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Error: Config file not found: $CONFIG_FILE" >&2
   exit 1
 fi
+
+if [[ ! -f "$PROJECT_MATCHER_LIB" ]]; then
+  echo "Error: Project matcher library not found: $PROJECT_MATCHER_LIB" >&2
+  exit 1
+fi
+source "$PROJECT_MATCHER_LIB"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq is required but not found in PATH" >&2
@@ -26,13 +33,6 @@ usage() {
 list_projects() {
   echo "Available projects:"
   jq -r '.[].name' "$CONFIG_FILE" | nl -w2 -s'. '
-}
-
-resolve_project_name() {
-  local input_name="$1"
-  jq -r --arg name "$input_name" '
-    ([.[] | select(.name == $name or ((.aliases // []) | index($name) != null)) | .name][0]) // $name
-  ' "$CONFIG_FILE"
 }
 
 project_exists() {
@@ -107,7 +107,9 @@ else
   exit 1
 fi
 
-PROJECT_NAME="$(resolve_project_name "$PROJECT_NAME")"
+if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
+  exit 1
+fi
 
 if ! project_exists "$PROJECT_NAME"; then
   echo "Error: Project '$PROJECT_NAME' not found in config file: $CONFIG_FILE" >&2

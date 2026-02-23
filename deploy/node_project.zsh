@@ -12,6 +12,7 @@ set -euo pipefail
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
+PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
 BW_APPS_FIELD_NAME="${BW_APPS_FIELD_NAME:-Apps}"
 BW_REMOTE_ENV_FILE_NAME="${BW_REMOTE_ENV_FILE_NAME:-.bw-secrets.env.sh}"
@@ -27,6 +28,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Error: Config file not found: $CONFIG_FILE" >&2
   exit 1
 fi
+
+if [[ ! -f "$PROJECT_MATCHER_LIB" ]]; then
+  echo "Error: Project matcher library not found: $PROJECT_MATCHER_LIB" >&2
+  exit 1
+fi
+source "$PROJECT_MATCHER_LIB"
 
 # Function to list available projects
 list_projects() {
@@ -50,14 +57,6 @@ get_project_metrics_port() {
 get_project_startup_port() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .startup_port // .metrics_port // 3010' "$CONFIG_FILE"
-}
-
-# Resolve aliases from config and fall back to original name when no alias exists
-resolve_project_name() {
-  local input_name="$1"
-  jq -r --arg name "$input_name" '
-    ([.[] | select(.name == $name or ((.aliases // []) | index($name) != null)) | .name][0]) // $name
-  ' "$CONFIG_FILE"
 }
 
 sanitize_env_var_name() {
@@ -225,7 +224,9 @@ else
   exit 1
 fi
 
-PROJECT_NAME="$(resolve_project_name "$PROJECT_NAME")"
+if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
+  exit 1
+fi
 
 # Get project configuration from config file
 LOCAL_DIR=$(get_project_path "$PROJECT_NAME")
