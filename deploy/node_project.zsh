@@ -11,6 +11,7 @@ set -euo pipefail
 
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
+SCRIPT_PATH="${0:a}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
 PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
@@ -100,6 +101,58 @@ clear_cached_bw_session() {
   [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
   [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 0
   rm -f "$BW_SESSION_CACHE_FILE"
+}
+
+tail_with_redeploy_controls() {
+  local tail_script="$1"
+  shift
+  local -a tail_args=("$@")
+
+  local -a redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
+  if [[ "$QUICK_MODE" == "1" ]]; then
+    redeploy_cmd+=("--quick")
+  fi
+  redeploy_cmd+=("--tail")
+  if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
+    redeploy_cmd+=("--errors-only")
+  fi
+
+  echo "==> Starting log tail..."
+  echo "    Controls: r = redeploy, q = quit tail"
+  echo ""
+
+  zsh "$tail_script" "${tail_args[@]}" < /dev/null &
+  local tail_pid=$!
+  local key=""
+
+  while kill -0 "$tail_pid" 2>/dev/null; do
+    if read -r -k 1 -s -t 0.2 key; then
+      case "$key" in
+        r|R)
+          echo ""
+          echo "==> Redeploy requested. Restarting deployment..."
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          exec "${redeploy_cmd[@]}"
+          ;;
+        q|Q)
+          echo ""
+          echo "==> Stopping log tail."
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          return 0
+          ;;
+      esac
+    fi
+  done
+
+  if wait "$tail_pid"; then
+    return 0
+  else
+    local tail_status="$?"
+    echo "Error: log tail exited with status ${tail_status}" >&2
+    return "$tail_status"
+  fi
 }
 
 load_cached_bw_session() {
@@ -813,10 +866,9 @@ if [[ "$TAIL_MODE" == "1" ]]; then
     exit 1
   fi
 
-  echo "==> Starting log tail..."
   TAIL_ARGS=("$PROJECT_NAME" "$HOST")
   if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
     TAIL_ARGS+=("--errors-only")
   fi
-  zsh "$TAIL_SCRIPT" "${TAIL_ARGS[@]}"
+  tail_with_redeploy_controls "$TAIL_SCRIPT" "${TAIL_ARGS[@]}"
 fi
