@@ -107,18 +107,22 @@ tail_with_redeploy_controls() {
   local tail_script="$1"
   shift
   local -a tail_args=("$@")
+  local -a tail_flags=("--tail")
+  if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
+    tail_flags+=("--errors-only")
+  fi
 
   local -a redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
   if [[ "$QUICK_MODE" == "1" ]]; then
     redeploy_cmd+=("--quick")
   fi
-  redeploy_cmd+=("--tail")
-  if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
-    redeploy_cmd+=("--errors-only")
-  fi
+  redeploy_cmd+=("${tail_flags[@]}")
+
+  local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
+  full_redeploy_cmd+=("${tail_flags[@]}")
 
   echo "==> Starting log tail..."
-  echo "    Controls: r = redeploy, q = quit tail"
+  echo "    Controls: r = redeploy (same mode), f = full redeploy, q = quit tail"
   echo ""
 
   zsh "$tail_script" "${tail_args[@]}" < /dev/null &
@@ -134,6 +138,13 @@ tail_with_redeploy_controls() {
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
           exec "${redeploy_cmd[@]}"
+          ;;
+        f|F)
+          echo ""
+          echo "==> Full redeploy requested. Restarting deployment..."
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          exec "${full_redeploy_cmd[@]}"
           ;;
         q|Q)
           echo ""
