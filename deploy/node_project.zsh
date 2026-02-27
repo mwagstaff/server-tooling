@@ -120,9 +120,11 @@ tail_with_redeploy_controls() {
 
   local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
   full_redeploy_cmd+=("${tail_flags[@]}")
+  local -a quick_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST" "--quick")
+  quick_redeploy_cmd+=("${tail_flags[@]}")
 
   echo "==> Starting log tail..."
-  echo "    Controls: r = redeploy (same mode), f = full redeploy, q = quit tail"
+  echo "    Controls: r = redeploy (same mode), f = full redeploy, q = quick redeploy"
   echo ""
 
   zsh "$tail_script" "${tail_args[@]}" < /dev/null &
@@ -148,10 +150,10 @@ tail_with_redeploy_controls() {
           ;;
         q|Q)
           echo ""
-          echo "==> Stopping log tail."
+          echo "==> Quick redeploy requested. Restarting deployment..."
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
-          return 0
+          exec "${quick_redeploy_cmd[@]}"
           ;;
       esac
     fi
