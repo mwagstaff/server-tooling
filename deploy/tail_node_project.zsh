@@ -129,7 +129,7 @@ echo "    Stdout log: $REMOTE_STDOUT_LOG"
 echo "    Stderr log: $REMOTE_STDERR_LOG"
 echo "    Lines: $TAIL_LINES"
 echo "    Mode: $([[ "$ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
-echo "    Controls: r = redeploy (same mode), f = full redeploy, q = quick redeploy, Ctrl+C = stop."
+echo "    Controls: r = quick redeploy, f = full redeploy, Ctrl+C = stop."
 echo ""
 
 ssh -o ConnectTimeout=10 "$HOST" "

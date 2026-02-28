@@ -113,18 +113,14 @@ tail_with_redeploy_controls() {
   fi
 
   local -a redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
-  if [[ "$QUICK_MODE" == "1" ]]; then
-    redeploy_cmd+=("--quick")
-  fi
+  redeploy_cmd+=("--quick")
   redeploy_cmd+=("${tail_flags[@]}")
 
   local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
   full_redeploy_cmd+=("${tail_flags[@]}")
-  local -a quick_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST" "--quick")
-  quick_redeploy_cmd+=("${tail_flags[@]}")
 
   echo "==> Starting log tail..."
-  echo "    Controls: r = redeploy (same mode), f = full redeploy, q = quick redeploy"
+  echo "    Controls: r = quick redeploy, f = full redeploy"
   echo ""
 
   zsh "$tail_script" "${tail_args[@]}" < /dev/null &
@@ -136,7 +132,7 @@ tail_with_redeploy_controls() {
       case "$key" in
         r|R)
           echo ""
-          echo "==> Redeploy requested. Restarting deployment..."
+          echo "==> Quick redeploy requested. Restarting deployment..."
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
           exec "${redeploy_cmd[@]}"
@@ -147,13 +143,6 @@ tail_with_redeploy_controls() {
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
           exec "${full_redeploy_cmd[@]}"
-          ;;
-        q|Q)
-          echo ""
-          echo "==> Quick redeploy requested. Restarting deployment..."
-          kill "$tail_pid" 2>/dev/null || true
-          wait "$tail_pid" 2>/dev/null || true
-          exec "${quick_redeploy_cmd[@]}"
           ;;
       esac
     fi
