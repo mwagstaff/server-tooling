@@ -25,7 +25,8 @@
         "name": "train-track-api",
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
         "start_command": "npm start",
-        "metrics_port": 3010
+        "startup_port": 3012,
+        "metrics_port": 3012
     },
     {
         "name": "bromley-bins",
