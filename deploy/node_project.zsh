@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Deploy script for Node.js projects
-# - Auto-detects entry file (prefers server.js, falls back to index.js)
+# - Auto-detects entry file (server.js/server.mjs, falls back to index.js/index.mjs)
 # - Syncs files to remote server via rsync
 # - Installs dependencies on server
 # - Creates/updates launchd service for automatic startup
@@ -36,6 +36,11 @@ if [[ ! -f "$PROJECT_MATCHER_LIB" ]]; then
 fi
 source "$PROJECT_MATCHER_LIB"
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Error: jq is required but not found in PATH" >&2
+  exit 1
+fi
+
 # Function to list available projects
 list_projects() {
   echo "Available projects:"
@@ -58,6 +63,26 @@ get_project_metrics_port() {
 get_project_startup_port() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .startup_port // .metrics_port // 3010' "$CONFIG_FILE"
+}
+
+get_project_build_command() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
+}
+
+get_project_service_label() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
+}
+
+get_project_service_description() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_description // empty' "$CONFIG_FILE"
+}
+
+get_project_legacy_service_labels() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | (.legacy_service_labels // [])[]' "$CONFIG_FILE"
 }
 
 sanitize_env_var_name() {
@@ -267,9 +292,16 @@ elif [[ $# -eq 2 ]]; then
   # Manual mode - project name and host provided
   PROJECT_NAME="$1"
   HOST="$2"
+elif [[ $# -ge 2 ]]; then
+  # Manual mode with multi-token fuzzy project query. The final positional
+  # argument is the host; all earlier positional arguments are part of the query.
+  PROJECT_NAME="${(j: :)argv[1,$(( $# - 1 ))]}"
+  HOST="${argv[$#]}"
 else
-  echo "Usage: $0 [PROJECT_NAME HOST] [--quick|-q|quick] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
+  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
+  echo "  When using fuzzy matching, the final positional argument is treated as the host." >&2
+  echo "  Example: $0 top web ocl --quick" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
   echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
@@ -287,6 +319,22 @@ fi
 LOCAL_DIR=$(get_project_path "$PROJECT_NAME")
 METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
+BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
+SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
+SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
+LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
+
+if [[ -z "$SERVICE_LABEL" ]]; then
+  SERVICE_LABEL="com.${PROJECT_NAME}.api"
+fi
+
+if [[ -z "$SERVICE_DESCRIPTION" ]]; then
+  SERVICE_DESCRIPTION="${PROJECT_NAME} API Service"
+fi
+
+LEGACY_SERVICE_LABELS=("${(@)LEGACY_SERVICE_LABELS:#}")
+LEGACY_SERVICE_LABELS=("${(@)LEGACY_SERVICE_LABELS:#$SERVICE_LABEL}")
+typeset -U LEGACY_SERVICE_LABELS
 
 if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "Error: Project '$PROJECT_NAME' not found in config file" >&2
@@ -296,7 +344,11 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - name: canonical deploy name (used by this script and remote dir/service label)" >&2
   echo "  - aliases: optional array of alternate names that map to this project" >&2
   echo "  - path: absolute local path to the project directory" >&2
-  echo "  - start_command: startup command (for documentation; script auto-detects server.js/index.js)" >&2
+  echo "  - start_command: startup command (for documentation; script auto-detects server.js/server.mjs/index.js/index.mjs)" >&2
+  echo "  - build_command: optional build command to run on the remote host before restart" >&2
+  echo "  - service_label: optional service identifier for launchd/systemd" >&2
+  echo "  - service_description: optional service description for launchd/systemd" >&2
+  echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
   echo "  - startup_port: app HTTP port used for post-deploy /healthcheck (optional; defaults to metrics_port)" >&2
   echo "  - metrics_port: app metrics port for observability integration" >&2
   echo "" >&2
@@ -308,14 +360,18 @@ fi
 LOCAL_DIR="${LOCAL_DIR/#\~/$HOME}"
 
 REMOTE_DIR="~/dev/${PROJECT_NAME}"
-
-# Generate service label based on project name
-SERVICE_LABEL="com.${PROJECT_NAME}.api"
+LEGACY_SERVICE_LABELS_SSH="${(j: :)${(q)LEGACY_SERVICE_LABELS}}"
 
 echo "==> Deploying project: $PROJECT_NAME"
 echo "    Local path: $LOCAL_DIR"
 echo "    Remote host: $HOST"
 echo "    Remote path: $REMOTE_DIR"
+echo "    Service label: $SERVICE_LABEL"
+echo "    Service description: $SERVICE_DESCRIPTION"
+if [[ ${#LEGACY_SERVICE_LABELS[@]} -gt 0 ]]; then
+  echo "    Legacy service labels to remove:"
+  printf '      - %s\n' "${LEGACY_SERVICE_LABELS[@]}"
+fi
 echo "    Deploy mode: $([[ "$QUICK_MODE" == "1" ]] && echo "quick" || echo "full")"
 echo "    Tail logs after deploy: $([[ "$TAIL_MODE" == "1" ]] && echo "yes" || echo "no")"
 if [[ "$TAIL_MODE" == "1" ]]; then
@@ -369,13 +425,35 @@ if [[ "$QUICK_MODE" == "1" ]]; then
   echo "==> Quick mode enabled; skipping dependency install."
 else
   echo "==> Installing deps on server..."
-  ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
-    cd $REMOTE_DIR && \
-    if [[ -f package-lock.json ]]; then
-      npm ci --omit=dev
-    else
-      npm install --omit=dev
-    fi"
+  if [[ -n "$BUILD_COMMAND" ]]; then
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      if [[ -f package-lock.json ]]; then
+        npm ci
+      else
+        npm install
+      fi"
+  else
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      if [[ -f package-lock.json ]]; then
+        npm ci --omit=dev
+      else
+        npm install --omit=dev
+      fi"
+  fi
+
+  if [[ -n "$BUILD_COMMAND" ]]; then
+    echo "==> Running build command on server..."
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      $BUILD_COMMAND"
+
+    echo "==> Pruning dev dependencies on server..."
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      npm prune --omit=dev"
+  fi
 fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
@@ -462,13 +540,19 @@ if [[ "$QUICK_MODE" == "1" ]]; then
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     START_WRAPPER=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env.sh\"
+    LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
 
     if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
       ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.js\"
+    elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
+      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.mjs\"
     elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
       ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.js\"
+    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
+      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.mjs\"
     else
-      echo \"Error: Neither server.js nor index.js found in \$REMOTE_DIR_EXPANDED\" >&2
+      echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
+      echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
       exit 1
     fi
 
@@ -537,15 +621,22 @@ else
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     START_WRAPPER=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env.sh\"
 
-    # Detect which entry file to use (server.js or index.js)
+    # Detect which entry file to use.
     if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
       ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.js\"
       echo 'Using server.js as entry point'
+    elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
+      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.mjs\"
+      echo 'Using server.mjs as entry point'
     elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
       ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.js\"
       echo 'Using index.js as entry point'
+    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
+      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.mjs\"
+      echo 'Using index.mjs as entry point'
     else
-      echo \"Error: Neither server.js nor index.js found in \$REMOTE_DIR_EXPANDED\" >&2
+      echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
+      echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
       exit 1
     fi
 
@@ -585,6 +676,15 @@ EOF_START_WRAPPER
 
       # Create LaunchAgent directory if it doesn't exist
       mkdir -p \"\$HOME/Library/LaunchAgents\"
+
+      for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
+        [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
+        [[ \"\$OLD_SERVICE_LABEL\" == \"${SERVICE_LABEL}\" ]] && continue
+        echo \"Removing legacy launchd service: \$OLD_SERVICE_LABEL\"
+        launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+        launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+        rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+      done
 
       # Create plist file
       cat > \"\$PLIST\" << 'EOF_PLIST'
@@ -676,10 +776,19 @@ EOF_PLIST
       # Create systemd user directory
       mkdir -p \"\$HOME/.config/systemd/user\"
 
+      for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
+        [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
+        [[ \"\$OLD_SERVICE_LABEL\" == \"${SERVICE_LABEL}\" ]] && continue
+        echo \"Removing legacy systemd service: \${OLD_SERVICE_LABEL}.service\"
+        systemctl --user disable \"\${OLD_SERVICE_LABEL}.service\" >/dev/null 2>&1 || true
+        systemctl --user stop --no-block \"\${OLD_SERVICE_LABEL}.service\" >/dev/null 2>&1 || true
+        rm -f \"\$HOME/.config/systemd/user/\${OLD_SERVICE_LABEL}.service\"
+      done
+
       # Create systemd service file
       cat > \"\$SERVICE_FILE\" << EOF_SYSTEMD
 [Unit]
-Description=${PROJECT_NAME} API Service
+Description=${SERVICE_DESCRIPTION}
 After=network.target
 
 [Service]
@@ -728,7 +837,7 @@ else
   healthcheck_last_output=""
   for attempt in {1..10}; do
     if healthcheck_last_output="$(ssh "$HOST" "$HEALTHCHECK_CMD" 2>&1)"; then
-      if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+      if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|\"ok\"[[:space:]]*:[[:space:]]*true'; then
         healthcheck_ok=1
         break
       fi

@@ -36,6 +36,11 @@ project_exists() {
   jq -e --arg name "$project_name" '.[] | select(.name == $name)' "$CONFIG_FILE" >/dev/null
 }
 
+get_project_service_label() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
+}
+
 if [[ $# -eq 0 ]]; then
   echo "==> Interactive start mode"
   echo ""
@@ -61,6 +66,9 @@ if [[ $# -eq 0 ]]; then
 elif [[ $# -eq 2 ]]; then
   PROJECT_NAME="$1"
   HOST="$2"
+elif [[ $# -ge 2 ]]; then
+  PROJECT_NAME="${(j: :)argv[1,$(( $# - 1 ))]}"
+  HOST="${argv[$#]}"
 else
   usage
   echo ""
@@ -79,7 +87,10 @@ if ! project_exists "$PROJECT_NAME"; then
   exit 1
 fi
 
-SERVICE_LABEL="com.${PROJECT_NAME}.api"
+SERVICE_LABEL="$(get_project_service_label "$PROJECT_NAME")"
+if [[ -z "$SERVICE_LABEL" ]]; then
+  SERVICE_LABEL="com.${PROJECT_NAME}.api"
+fi
 SERVICE_UNIT="${SERVICE_LABEL}.service"
 
 echo "==> Starting project: $PROJECT_NAME"

@@ -43,6 +43,16 @@ get_project_and_alias_names() {
   ' "$CONFIG_FILE"
 }
 
+get_project_service_label() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
+}
+
+get_project_legacy_service_labels() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | (.legacy_service_labels // [])[]' "$CONFIG_FILE"
+}
+
 if [[ $# -eq 0 ]]; then
   echo "==> Interactive stop mode"
   echo ""
@@ -68,6 +78,9 @@ if [[ $# -eq 0 ]]; then
 elif [[ $# -eq 2 ]]; then
   PROJECT_NAME="$1"
   HOST="$2"
+elif [[ $# -ge 2 ]]; then
+  PROJECT_NAME="${(j: :)argv[1,$(( $# - 1 ))]}"
+  HOST="${argv[$#]}"
 else
   usage
   echo ""
@@ -96,10 +109,15 @@ SERVICE_LABELS=()
 for name in "${PROJECT_AND_ALIAS_NAMES[@]}"; do
   SERVICE_LABELS+=("com.${name}.api")
 done
+SERVICE_LABEL="$(get_project_service_label "$PROJECT_NAME")"
+if [[ -n "$SERVICE_LABEL" ]]; then
+  SERVICE_LABELS+=("$SERVICE_LABEL")
+fi
+SERVICE_LABELS+=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
 typeset -U SERVICE_LABELS
 
 PROJECT_NAME_REGEX="${(j:|:)PROJECT_AND_ALIAS_NAMES}"
-PROCESS_REGEX="/dev/(.*/)?(${PROJECT_NAME_REGEX})/(server|index)\\.js"
+PROCESS_REGEX="/dev/(.*/)?(${PROJECT_NAME_REGEX})/(server|index)\\.(js|mjs)"
 
 echo "==> Stopping project: $PROJECT_NAME"
 echo "    Remote host: $HOST"

@@ -17,9 +17,26 @@
     },
     {
         "name": "top-scores",
+        "aliases": [
+            "top-scores-api"
+        ],
         "path": "/Users/mwagstaff/dev/top-scores/api",
         "start_command": "npm start",
         "metrics_port": 3011
+    },
+    {
+        "name": "top-scores-web",
+        "path": "/Users/mwagstaff/dev/top-scores/web",
+        "start_command": "npm start",
+        "build_command": "npm run build",
+        "service_label": "com.top-scores.website",
+        "service_description": "Top Scores website",
+        "legacy_service_labels": [
+            "com.top-scores-web.api"
+        ],
+        "startup_port": 3020,
+        "metrics_port": 3020,
+        "public_url": "https://top-scores.skynolimit.dev"
     },
     {
         "name": "train-track-api",
