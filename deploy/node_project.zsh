@@ -128,6 +128,71 @@ clear_cached_bw_session() {
   rm -f "$BW_SESSION_CACHE_FILE"
 }
 
+ensure_remote_port_available() {
+  local host="$1"
+  local port="$2"
+
+  if [[ -z "$port" || "$port" == "null" ]]; then
+    echo "==> Startup port not configured; skipping port cleanup."
+    return 0
+  fi
+
+  echo "==> Ensuring port ${port} is free before restart..."
+  ssh "$host" "
+    set -eu
+    TARGET_PORT='$port'
+
+    get_listening_pids() {
+      if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -tiTCP:\"\$TARGET_PORT\" -sTCP:LISTEN 2>/dev/null || true
+      elif command -v fuser >/dev/null 2>&1; then
+        fuser -n tcp \"\$TARGET_PORT\" 2>/dev/null | tr ' ' '\n' || true
+      elif command -v ss >/dev/null 2>&1; then
+        ss -ltnp \"( sport = :\$TARGET_PORT )\" 2>/dev/null | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' || true
+      else
+        echo \"Warning: could not inspect port \$TARGET_PORT because lsof, fuser, and ss are unavailable.\" >&2
+        return 0
+      fi | awk 'NF {print \$1}' | sort -u
+    }
+
+    PIDS=\"\$(get_listening_pids)\"
+    if [[ -z \"\$PIDS\" ]]; then
+      echo \"No existing listeners found on port \$TARGET_PORT.\"
+      exit 0
+    fi
+
+    echo \"Found existing listener(s) on port \$TARGET_PORT: \$PIDS\"
+    if command -v ps >/dev/null 2>&1; then
+      ps -fp \$PIDS || true
+    fi
+
+    kill \$PIDS 2>/dev/null || true
+
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 1
+      PIDS=\"\$(get_listening_pids)\"
+      [[ -z \"\$PIDS\" ]] && break
+    done
+
+    if [[ -n \"\${PIDS:-}\" ]]; then
+      echo \"Listener(s) still present on port \$TARGET_PORT after SIGTERM; sending SIGKILL...\"
+      kill -9 \$PIDS 2>/dev/null || true
+      sleep 1
+    fi
+
+    FINAL_PIDS=\"\$(get_listening_pids)\"
+    if [[ -n \"\$FINAL_PIDS\" ]]; then
+      echo \"Error: port \$TARGET_PORT is still in use by: \$FINAL_PIDS\" >&2
+      if command -v ps >/dev/null 2>&1; then
+        ps -fp \$FINAL_PIDS >&2 || true
+      fi
+      exit 1
+    fi
+
+    echo \"Port \$TARGET_PORT is clear.\"
+  "
+}
+
 tail_with_redeploy_controls() {
   local tail_script="$1"
   shift
@@ -533,8 +598,63 @@ else
   echo "==> Skipping Bitwarden env sync (BW_ENV_SYNC=${BW_ENV_SYNC})"
 fi
 
+SERVICE_SETUP_REQUIRED=0
 if [[ "$QUICK_MODE" == "1" ]]; then
+  service_probe="$(ssh "$HOST" "
+    set -e
+    LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
+    current_found=0
+    legacy_found=0
+
+    if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
+      UID_NUM=\"\$(id -u)\"
+      for DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
+        if ! launchctl print \"\$DOMAIN\" >/dev/null 2>&1; then
+          continue
+        fi
+        if launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" >/dev/null 2>&1; then
+          current_found=1
+        fi
+        for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
+          [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
+          if launchctl print \"\$DOMAIN/\$OLD_SERVICE_LABEL\" >/dev/null 2>&1; then
+            legacy_found=1
+          fi
+        done
+      done
+    elif command -v systemctl >/dev/null 2>&1; then
+      if systemctl --user status ${SERVICE_LABEL}.service >/dev/null 2>&1; then
+        current_found=1
+      fi
+      for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
+        [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
+        if systemctl --user status \"\${OLD_SERVICE_LABEL}.service\" >/dev/null 2>&1; then
+          legacy_found=1
+        fi
+      done
+    fi
+
+    printf '%s %s\n' \"\$current_found\" \"\$legacy_found\"
+  " 2>/dev/null || true)"
+
+  current_service_present="${service_probe%% *}"
+  legacy_service_present="${service_probe##* }"
+
+  if [[ "$current_service_present" != "1" || "$legacy_service_present" == "1" ]]; then
+    SERVICE_SETUP_REQUIRED=1
+    if [[ "$current_service_present" != "1" && "$legacy_service_present" == "1" ]]; then
+      echo "==> Quick mode: current service label not found; migrating legacy service configuration..."
+    elif [[ "$current_service_present" != "1" ]]; then
+      echo "==> Quick mode: service configuration missing; recreating service..."
+    else
+      echo "==> Quick mode: legacy service labels detected; refreshing service configuration..."
+    fi
+  fi
+fi
+
+if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
   echo "==> Quick mode: restarting existing service..."
+  ensure_remote_port_available "$HOST" "$STARTUP_PORT"
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
@@ -614,12 +734,18 @@ EOF_START_WRAPPER
     fi
   "
 else
-  echo "==> Setting up and restarting service..."
+  if [[ "$QUICK_MODE" == "1" ]]; then
+    echo "==> Quick mode: setting up and restarting service..."
+  else
+    echo "==> Setting up and restarting service..."
+  fi
+  ensure_remote_port_available "$HOST" "$STARTUP_PORT"
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     START_WRAPPER=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env.sh\"
+    LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
 
     # Detect which entry file to use.
     if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then

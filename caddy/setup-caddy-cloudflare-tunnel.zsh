@@ -33,6 +33,17 @@ echo "==> Writing Caddyfile (HTTP-only) to ${CADDYFILE}..."
 sudo tee "${CADDYFILE}" >/dev/null <<CADDY
 :${CADDY_PORT} {
 
+  # Standalone Top Scores website on its own hostname.
+  @top_scores_website host top-scores.skynolimit.dev
+  handle @top_scores_website {
+    reverse_proxy http://127.0.0.1:3020 {
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
+  }
+
   # Normalize Grafana base path (Grafana expects a trailing slash)
   @grafana_base path /grafana
   redir @grafana_base /grafana/ 308
@@ -136,6 +147,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: api.skynolimit.dev
+  - hostname: top-scores.skynolimit.dev
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: top-scores.skynolimit.dev
   - service: http_status:404
 YAML
 
@@ -154,6 +170,10 @@ echo "--> via Caddy:"
 curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 20 || true
 
 echo
+echo "--> via Caddy (Top Scores website hostname):"
+curl -i -H "Host: top-scores.skynolimit.dev" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/" | head -n 20 || true
+
+echo
 echo "--> via Caddy (Grafana /grafana and /grafana/):"
 # Show redirect for /grafana and confirm /grafana/ returns non-empty HTML
 curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/grafana" | head -n 20 || true
@@ -167,9 +187,14 @@ echo "--> direct service:"
 curl -i "http://127.0.0.1:4000/" | head -n 20 || true
 
 echo
+echo "--> direct Top Scores website service:"
+curl -i "http://127.0.0.1:3020/" | head -n 20 || true
+
+echo
 echo "==> Done. External tests:"
 echo "    https://api.skynolimit.dev/healthcheck"
 echo "    https://api.skynolimit.dev/grafana"
+echo "    https://top-scores.skynolimit.dev"
 EOF
 
 echo
