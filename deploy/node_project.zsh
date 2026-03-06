@@ -606,6 +606,11 @@ if [[ "$QUICK_MODE" == "1" ]]; then
     current_found=0
     legacy_found=0
 
+    systemd_unit_exists() {
+      local unit=\"\$1\"
+      [[ \"\$(systemctl --user show \"\$unit\" --property=LoadState --value 2>/dev/null || true)\" == 'loaded' ]]
+    }
+
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       UID_NUM=\"\$(id -u)\"
       for DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
@@ -623,12 +628,12 @@ if [[ "$QUICK_MODE" == "1" ]]; then
         done
       done
     elif command -v systemctl >/dev/null 2>&1; then
-      if systemctl --user status ${SERVICE_LABEL}.service >/dev/null 2>&1; then
+      if systemd_unit_exists ${SERVICE_LABEL}.service; then
         current_found=1
       fi
       for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
         [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
-        if systemctl --user status \"\${OLD_SERVICE_LABEL}.service\" >/dev/null 2>&1; then
+        if systemd_unit_exists \"\${OLD_SERVICE_LABEL}.service\"; then
           legacy_found=1
         fi
       done
@@ -714,11 +719,12 @@ EOF_START_WRAPPER
       echo 'Service restarted via launchd'
 
     elif command -v systemctl >/dev/null 2>&1; then
-      if ! systemctl --user status ${SERVICE_LABEL}.service >/dev/null 2>&1; then
+      if [[ \"\$(systemctl --user show ${SERVICE_LABEL}.service --property=LoadState --value 2>/dev/null || true)\" != 'loaded' ]]; then
         echo \"Error: systemd service not found: ${SERVICE_LABEL}.service\" >&2
         echo \"Run a full deploy first to create/update service configuration.\" >&2
         exit 1
       fi
+      systemctl --user reset-failed ${SERVICE_LABEL}.service >/dev/null 2>&1 || true
       systemctl --user restart ${SERVICE_LABEL}.service
       sleep 1
       if ! systemctl --user is-active --quiet ${SERVICE_LABEL}.service; then
