@@ -70,6 +70,31 @@ get_project_build_command() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
 }
 
+project_package_has_script() {
+  local project_dir="$1"
+  local script_name="$2"
+  local package_json="$project_dir/package.json"
+  [[ -f "$package_json" ]] || return 1
+  jq -e --arg script_name "$script_name" '(.scripts[$script_name]? // "") != ""' "$package_json" >/dev/null
+}
+
+project_uses_vite() {
+  local project_dir="$1"
+  local package_json="$project_dir/package.json"
+  [[ -f "$package_json" ]] || return 1
+  jq -e '
+    (.dependencies.vite? // .devDependencies.vite? // .optionalDependencies.vite? // .peerDependencies.vite?) != null
+    or ((.scripts.build? // "") | test("(^|[[:space:]])vite([[:space:]]|$)"))
+  ' "$package_json" >/dev/null
+}
+
+project_build_runs_prepare_assets() {
+  local project_dir="$1"
+  local package_json="$project_dir/package.json"
+  [[ -f "$package_json" ]] || return 1
+  jq -e '(.scripts.build? // "") | test("prepare-assets")' "$package_json" >/dev/null
+}
+
 get_project_service_label() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
@@ -423,6 +448,9 @@ fi
 
 # Expand tilde in path if present
 LOCAL_DIR="${LOCAL_DIR/#\~/$HOME}"
+PROJECT_IS_VITE=0
+PROJECT_HAS_PREPARE_ASSETS=0
+PROJECT_BUILD_RUNS_PREPARE_ASSETS=0
 
 REMOTE_DIR="~/dev/${PROJECT_NAME}"
 LEGACY_SERVICE_LABELS_SSH="${(j: :)${(q)LEGACY_SERVICE_LABELS}}"
@@ -447,6 +475,18 @@ echo ""
 if [[ ! -d "$LOCAL_DIR" ]]; then
   echo "Local dir not found: $LOCAL_DIR" >&2
   exit 1
+fi
+
+if project_uses_vite "$LOCAL_DIR"; then
+  PROJECT_IS_VITE=1
+fi
+
+if project_package_has_script "$LOCAL_DIR" "prepare-assets"; then
+  PROJECT_HAS_PREPARE_ASSETS=1
+fi
+
+if project_build_runs_prepare_assets "$LOCAL_DIR"; then
+  PROJECT_BUILD_RUNS_PREPARE_ASSETS=1
 fi
 
 echo "==> Checking if rsync is installed on remote host..."
@@ -487,7 +527,30 @@ rsync -az --delete \
   "${HOST}:${REMOTE_DIR}/"
 
 if [[ "$QUICK_MODE" == "1" ]]; then
-  echo "==> Quick mode enabled; skipping dependency install."
+  echo "==> Quick mode enabled; skipping standard dependency install."
+  if [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
+    echo "==> Quick mode: rebuilding Vite assets on server..."
+    ssh "$HOST" "
+      set -e
+      export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+      cd $REMOTE_DIR
+
+      if ! npm ls vite >/dev/null 2>&1; then
+        echo 'Installing Vite build dependencies for quick deploy...'
+        if [[ -f package-lock.json ]]; then
+          npm ci
+        else
+          npm install
+        fi
+      fi
+
+      if [[ '$PROJECT_HAS_PREPARE_ASSETS' == '1' && '$PROJECT_BUILD_RUNS_PREPARE_ASSETS' != '1' ]]; then
+        npm run prepare-assets
+      fi
+
+      $BUILD_COMMAND
+    "
+  fi
 else
   echo "==> Installing deps on server..."
   if [[ -n "$BUILD_COMMAND" ]]; then
