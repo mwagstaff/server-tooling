@@ -218,6 +218,53 @@ ensure_remote_port_available() {
   "
 }
 
+resolve_project_name_noninteractive() {
+  local input_name="$1"
+  local normalized_input
+  local exact_match
+  local -a partial_matches
+
+  if [[ -z "$input_name" ]]; then
+    return 1
+  fi
+
+  normalized_input="${(L)input_name}"
+
+  exact_match="$(jq -r --arg q "$normalized_input" '
+    ([.[] | select(
+      (.name | ascii_downcase) == $q
+      or (((.aliases // []) | map(ascii_downcase) | index($q)) != null)
+    ) | .name][0]) // empty
+  ' "$CONFIG_FILE")"
+  if [[ -n "$exact_match" ]]; then
+    echo "$exact_match"
+    return 0
+  fi
+
+  partial_matches=("${(@f)$(project_match_list_candidates "$CONFIG_FILE" "$input_name")}")
+  partial_matches=("${(@)partial_matches:#}")
+
+  if (( ${#partial_matches[@]} == 1 )); then
+    echo "$partial_matches[1]"
+    return 0
+  fi
+
+  if (( ${#partial_matches[@]} > 1 )); then
+    return 2
+  fi
+
+  return 1
+}
+
+project_query_looks_like_project() {
+  local query="$1"
+  local status
+
+  resolve_project_name_noninteractive "$query" >/dev/null 2>&1
+  status=$?
+  [[ "$status" -eq 0 || "$status" -eq 2 ]]
+}
+
 tail_with_redeploy_controls() {
   local tail_script="$1"
   shift
@@ -378,20 +425,70 @@ if [[ $# -eq 0 ]]; then
   if [[ -z "$HOST" ]]; then
     HOST="ocl"
   fi
-elif [[ $# -eq 2 ]]; then
-  # Manual mode - project name and host provided
-  PROJECT_NAME="$1"
-  HOST="$2"
 elif [[ $# -ge 2 ]]; then
-  # Manual mode with multi-token fuzzy project query. The final positional
-  # argument is the host; all earlier positional arguments are part of the query.
-  PROJECT_NAME="${(j: :)argv[1,$(( $# - 1 ))]}"
-  HOST="${argv[$#]}"
+  # Support both PROJECT... HOST and HOST PROJECT... forms.
+  HOST_FIRST_CANDIDATE="${argv[1]}"
+  HOST_FIRST_QUERY="${(j: :)argv[2,$#]}"
+  HOST_LAST_QUERY="${(j: :)argv[1,$(( $# - 1 ))]}"
+  HOST_LAST_CANDIDATE="${argv[$#]}"
+
+  HOST_FIRST_STATUS=1
+  HOST_LAST_STATUS=1
+  HOST_FIRST_PROJECT=""
+  HOST_LAST_PROJECT=""
+
+  if HOST_FIRST_PROJECT="$(resolve_project_name_noninteractive "$HOST_FIRST_QUERY")"; then
+    HOST_FIRST_STATUS=0
+  else
+    HOST_FIRST_STATUS=$?
+  fi
+
+  if HOST_LAST_PROJECT="$(resolve_project_name_noninteractive "$HOST_LAST_QUERY")"; then
+    HOST_LAST_STATUS=0
+  else
+    HOST_LAST_STATUS=$?
+  fi
+
+  if [[ "$HOST_FIRST_STATUS" -eq 0 && "$HOST_LAST_STATUS" -ne 0 ]]; then
+    PROJECT_NAME="$HOST_FIRST_QUERY"
+    HOST="$HOST_FIRST_CANDIDATE"
+  elif [[ "$HOST_LAST_STATUS" -eq 0 && "$HOST_FIRST_STATUS" -ne 0 ]]; then
+    PROJECT_NAME="$HOST_LAST_QUERY"
+    HOST="$HOST_LAST_CANDIDATE"
+  elif [[ "$HOST_FIRST_STATUS" -eq 2 && "$HOST_LAST_STATUS" -eq 1 ]]; then
+    PROJECT_NAME="$HOST_FIRST_QUERY"
+    HOST="$HOST_FIRST_CANDIDATE"
+  elif [[ "$HOST_LAST_STATUS" -eq 2 && "$HOST_FIRST_STATUS" -eq 1 ]]; then
+    PROJECT_NAME="$HOST_LAST_QUERY"
+    HOST="$HOST_LAST_CANDIDATE"
+  elif [[ "$HOST_FIRST_STATUS" -eq 0 && "$HOST_LAST_STATUS" -eq 0 ]]; then
+    if ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+      PROJECT_NAME="$HOST_FIRST_QUERY"
+      HOST="$HOST_FIRST_CANDIDATE"
+    elif project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && ! project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+      PROJECT_NAME="$HOST_LAST_QUERY"
+      HOST="$HOST_LAST_CANDIDATE"
+    else
+      echo "Error: Could not determine which positional argument is the host." >&2
+      echo "Tried both '$HOST_FIRST_CANDIDATE' and '$HOST_LAST_CANDIDATE' as the deployment target." >&2
+      echo "Use a less ambiguous project query or keep the existing PROJECT... HOST order." >&2
+      exit 1
+    fi
+  elif [[ "$HOST_FIRST_STATUS" -eq 2 && "$HOST_LAST_STATUS" -eq 2 ]]; then
+    echo "Error: Project query is ambiguous in both HOST PROJECT... and PROJECT... HOST forms." >&2
+    echo "Use a more specific project query." >&2
+    exit 1
+  else
+    # Backward-compatible fallback: treat the final positional argument as the host.
+    PROJECT_NAME="$HOST_LAST_QUERY"
+    HOST="$HOST_LAST_CANDIDATE"
+  fi
 else
   echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
-  echo "  When using fuzzy matching, the final positional argument is treated as the host." >&2
+  echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
   echo "  Example: $0 top web ocl --quick" >&2
+  echo "  Example: $0 ocl --quick top web" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
   echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
