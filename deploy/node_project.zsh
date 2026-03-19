@@ -156,6 +156,7 @@ clear_cached_bw_session() {
 ensure_remote_port_available() {
   local host="$1"
   local port="$2"
+  local service_label="${3:-}"
 
   if [[ -z "$port" || "$port" == "null" ]]; then
     echo "==> Startup port not configured; skipping port cleanup."
@@ -166,6 +167,11 @@ ensure_remote_port_available() {
   ssh "$host" "
     set -eu
     TARGET_PORT='$port'
+    SERVICE_LABEL='$service_label'
+    SERVICE_UNIT=''
+    if [[ -n \"\$SERVICE_LABEL\" ]]; then
+      SERVICE_UNIT=\"\$SERVICE_LABEL.service\"
+    fi
 
     get_listening_pids() {
       if command -v lsof >/dev/null 2>&1; then
@@ -180,6 +186,71 @@ ensure_remote_port_available() {
       fi | awk 'NF {print \$1}' | sort -u
     }
 
+    systemd_unit_exists() {
+      local unit=\"\$1\"
+      [[ -n \"\$unit\" ]] || return 1
+      [[ \"\$(systemctl --user show \"\$unit\" --property=LoadState --value 2>/dev/null || true)\" == 'loaded' ]]
+    }
+
+    systemd_unit_is_running() {
+      local unit=\"\$1\"
+      local active_state
+      [[ -n \"\$unit\" ]] || return 1
+      active_state=\"\$(systemctl --user show \"\$unit\" --property=ActiveState --value 2>/dev/null || true)\"
+      [[ \"\$active_state\" == 'active' || \"\$active_state\" == 'activating' || \"\$active_state\" == 'deactivating' || \"\$active_state\" == 'reloading' ]]
+    }
+
+    print_listening_processes() {
+      local pids=\"\$1\"
+      if [[ -n \"\$pids\" ]] && command -v ps >/dev/null 2>&1; then
+        ps -fp \$pids || true
+      fi
+    }
+
+    wait_for_listener_exit() {
+      local attempts=\"\$1\"
+      local remaining_pids=''
+      local attempt=0
+      while [[ \"\$attempt\" -lt \"\$attempts\" ]]; do
+        remaining_pids=\"\$(get_listening_pids)\"
+        if [[ -z \"\$remaining_pids\" ]]; then
+          return 0
+        fi
+        attempt=\$((attempt + 1))
+        sleep 1
+      done
+      [[ -z \"\$(get_listening_pids)\" ]]
+    }
+
+    stop_systemd_service_if_needed() {
+      [[ -n \"\$SERVICE_UNIT\" ]] || return 0
+      command -v systemctl >/dev/null 2>&1 || return 0
+      systemd_unit_exists \"\$SERVICE_UNIT\" || return 0
+      systemd_unit_is_running \"\$SERVICE_UNIT\" || return 0
+
+      echo \"Stopping systemd service \$SERVICE_UNIT before freeing port \$TARGET_PORT...\"
+      systemctl --user reset-failed \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
+      systemctl --user stop --no-block \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
+
+      if wait_for_listener_exit 10 && ! systemd_unit_is_running \"\$SERVICE_UNIT\"; then
+        return 0
+      fi
+
+      echo \"Systemd service \$SERVICE_UNIT did not stop cleanly; forcing termination...\"
+      systemctl --user kill --kill-who=all --signal=SIGTERM \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
+      sleep 1
+      systemctl --user kill --kill-who=all --signal=SIGKILL \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
+      systemctl --user stop --no-block \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
+
+      if wait_for_listener_exit 5 && ! systemd_unit_is_running \"\$SERVICE_UNIT\"; then
+        return 0
+      fi
+
+      echo \"Systemd service \$SERVICE_UNIT is still not fully stopped.\" >&2
+      systemctl --user status \"\$SERVICE_UNIT\" --no-pager >&2 || true
+      return 1
+    }
+
     PIDS=\"\$(get_listening_pids)\"
     if [[ -z \"\$PIDS\" ]]; then
       echo \"No existing listeners found on port \$TARGET_PORT.\"
@@ -187,20 +258,24 @@ ensure_remote_port_available() {
     fi
 
     echo \"Found existing listener(s) on port \$TARGET_PORT: \$PIDS\"
-    if command -v ps >/dev/null 2>&1; then
-      ps -fp \$PIDS || true
+    print_listening_processes \"\$PIDS\"
+
+    stop_systemd_service_if_needed || true
+
+    PIDS=\"\$(get_listening_pids)\"
+    if [[ -z \"\$PIDS\" ]]; then
+      echo \"Port \$TARGET_PORT was released after stopping the service.\"
+      exit 0
     fi
 
     kill \$PIDS 2>/dev/null || true
 
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      sleep 1
-      PIDS=\"\$(get_listening_pids)\"
-      [[ -z \"\$PIDS\" ]] && break
-    done
+    wait_for_listener_exit 10 || true
+    PIDS=\"\$(get_listening_pids)\"
 
     if [[ -n \"\${PIDS:-}\" ]]; then
       echo \"Listener(s) still present on port \$TARGET_PORT after SIGTERM; sending SIGKILL...\"
+      print_listening_processes \"\$PIDS\"
       kill -9 \$PIDS 2>/dev/null || true
       sleep 1
     fi
@@ -208,8 +283,9 @@ ensure_remote_port_available() {
     FINAL_PIDS=\"\$(get_listening_pids)\"
     if [[ -n \"\$FINAL_PIDS\" ]]; then
       echo \"Error: port \$TARGET_PORT is still in use by: \$FINAL_PIDS\" >&2
-      if command -v ps >/dev/null 2>&1; then
-        ps -fp \$FINAL_PIDS >&2 || true
+      print_listening_processes \"\$FINAL_PIDS\" >&2 || true
+      if [[ -n \"\$SERVICE_UNIT\" ]] && command -v systemctl >/dev/null 2>&1 && systemd_unit_exists \"\$SERVICE_UNIT\"; then
+        systemctl --user status \"\$SERVICE_UNIT\" --no-pager >&2 || true
       fi
       exit 1
     fi
@@ -819,7 +895,7 @@ fi
 
 if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
   echo "==> Quick mode: restarting existing service..."
-  ensure_remote_port_available "$HOST" "$STARTUP_PORT"
+  ensure_remote_port_available "$HOST" "$STARTUP_PORT" "$SERVICE_LABEL"
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
@@ -905,7 +981,7 @@ else
   else
     echo "==> Setting up and restarting service..."
   fi
-  ensure_remote_port_available "$HOST" "$STARTUP_PORT"
+  ensure_remote_port_available "$HOST" "$STARTUP_PORT" "$SERVICE_LABEL"
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
