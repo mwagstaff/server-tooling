@@ -192,12 +192,10 @@ ensure_remote_port_available() {
       [[ \"\$(systemctl --user show \"\$unit\" --property=LoadState --value 2>/dev/null || true)\" == 'loaded' ]]
     }
 
-    systemd_unit_is_running() {
+    systemd_unit_active_state() {
       local unit=\"\$1\"
-      local active_state
       [[ -n \"\$unit\" ]] || return 1
-      active_state=\"\$(systemctl --user show \"\$unit\" --property=ActiveState --value 2>/dev/null || true)\"
-      [[ \"\$active_state\" == 'active' || \"\$active_state\" == 'activating' || \"\$active_state\" == 'deactivating' || \"\$active_state\" == 'reloading' ]]
+      systemctl --user show \"\$unit\" --property=ActiveState --value 2>/dev/null || true
     }
 
     print_listening_processes() {
@@ -223,26 +221,34 @@ ensure_remote_port_available() {
     }
 
     stop_systemd_service_if_needed() {
+      local active_state=''
       [[ -n \"\$SERVICE_UNIT\" ]] || return 0
       command -v systemctl >/dev/null 2>&1 || return 0
       systemd_unit_exists \"\$SERVICE_UNIT\" || return 0
-      systemd_unit_is_running \"\$SERVICE_UNIT\" || return 0
+      active_state=\"\$(systemd_unit_active_state \"\$SERVICE_UNIT\")\"
+      [[ \"\$active_state\" == 'active' || \"\$active_state\" == 'activating' || \"\$active_state\" == 'deactivating' || \"\$active_state\" == 'reloading' ]] || return 0
 
       echo \"Stopping systemd service \$SERVICE_UNIT before freeing port \$TARGET_PORT...\"
       systemctl --user reset-failed \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
       systemctl --user stop --no-block \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
 
-      if wait_for_listener_exit 10 && ! systemd_unit_is_running \"\$SERVICE_UNIT\"; then
+      if wait_for_listener_exit 15; then
+        active_state=\"\$(systemd_unit_active_state \"\$SERVICE_UNIT\")\"
+        if [[ \"\$active_state\" == 'deactivating' ]]; then
+          echo \"Systemd service \$SERVICE_UNIT is still deactivating, but port \$TARGET_PORT is free.\"
+        fi
         return 0
       fi
 
       echo \"Systemd service \$SERVICE_UNIT did not stop cleanly; forcing termination...\"
       systemctl --user kill --kill-who=all --signal=SIGTERM \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
-      sleep 1
+      if wait_for_listener_exit 3; then
+        return 0
+      fi
       systemctl --user kill --kill-who=all --signal=SIGKILL \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
       systemctl --user stop --no-block \"\$SERVICE_UNIT\" >/dev/null 2>&1 || true
 
-      if wait_for_listener_exit 5 && ! systemd_unit_is_running \"\$SERVICE_UNIT\"; then
+      if wait_for_listener_exit 5; then
         return 0
       fi
 
