@@ -133,7 +133,7 @@ sanitize_grafana_slug() {
 
 have_valid_bw_session() {
   [[ -n "${BW_SESSION:-}" ]] || return 1
-  bw list items --folderid "$BW_FOLDER_ID" --session "$BW_SESSION" >/dev/null 2>&1
+  bw --nointeraction --session "$BW_SESSION" list items --folderid "$BW_FOLDER_ID" >/dev/null 2>&1
 }
 
 cache_bw_session() {
@@ -151,6 +151,42 @@ clear_cached_bw_session() {
   [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
   [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 0
   rm -f "$BW_SESSION_CACHE_FILE"
+}
+
+bw_output_indicates_session_issue() {
+  local output="$1"
+  [[ "$output" == *"Vault is locked"* ]] \
+    || [[ "$output" == *"You are not logged in"* ]] \
+    || [[ "$output" == *"session"* && "$output" == *"expired"* ]] \
+    || [[ "$output" == *"session"* && "$output" == *"invalid"* ]] \
+    || [[ "$output" == *"Master password"* ]] \
+    || [[ "$output" == *"The decryption operation failed"* ]] \
+    || [[ "$output" == *"The provided key is not the expected type"* ]]
+}
+
+run_bw_with_session() {
+  local output status attempt
+
+  for attempt in 1 2; do
+    output="$(bw --nointeraction --session "$BW_SESSION" "$@" 2>&1)" && {
+      printf '%s\n' "$output"
+      return 0
+    }
+    status=$?
+
+    if [[ "$attempt" -eq 1 ]] && bw_output_indicates_session_issue "$output"; then
+      echo "==> Bitwarden session became invalid; unlocking again..."
+      clear_cached_bw_session
+      unset BW_SESSION
+      ensure_bw_session
+      continue
+    fi
+
+    printf '%s\n' "$output" >&2
+    return "$status"
+  done
+
+  return 1
 }
 
 ensure_remote_port_available() {
@@ -769,9 +805,9 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   echo "==> Syncing Bitwarden-managed environment variables..."
   ensure_bw_session
   echo "==> Refreshing Bitwarden vault data..."
-  bw sync --session "$BW_SESSION"
+  run_bw_with_session sync >/dev/null
 
-  bw_items_json="$(bw list items --folderid "$BW_FOLDER_ID" --session "$BW_SESSION")"
+  bw_items_json="$(run_bw_with_session list items --folderid "$BW_FOLDER_ID")"
   matching_item_ids="$(
     echo "$bw_items_json" | jq -r --arg project "$PROJECT_NAME" --arg apps_field "$BW_APPS_FIELD_NAME" '
       def norm: ascii_downcase | gsub("^\\s+|\\s+$"; "");
@@ -799,7 +835,7 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   typeset -a matched_env_var_names=()
   while IFS= read -r item_id; do
     [[ -z "$item_id" ]] && continue
-    item_json="$(bw get item "$item_id" --session "$BW_SESSION")"
+    item_json="$(run_bw_with_session get item "$item_id")"
     item_name="$(echo "$item_json" | jq -r '.name // empty')"
     item_value="$(echo "$item_json" | jq -r --arg apps_field "$BW_APPS_FIELD_NAME" '
       ([.fields[]?
@@ -1323,6 +1359,20 @@ else
         ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
       fi
 
+      if [[ -z "${GRAFANA_PASSWORD:-}" ]]; then
+        ensure_bw_session
+        grafana_bw_item_name="${GRAFANA_BW_ITEM_NAME:-GRAFANA_LOGIN}"
+        grafana_bw_item_json="$(run_bw_with_session list items --search "$grafana_bw_item_name" 2>/dev/null \
+          | jq -r --arg name "$grafana_bw_item_name" '.[] | select(.name == $name) | .login.password // empty' \
+          | head -1)"
+        if [[ -n "$grafana_bw_item_json" ]]; then
+          GRAFANA_PASSWORD="$grafana_bw_item_json"
+          echo "   Loaded GRAFANA_PASSWORD from Bitwarden item '$grafana_bw_item_name'"
+        else
+          echo "   Warning: GRAFANA_PASSWORD not set and Bitwarden item '$grafana_bw_item_name' not found or has no password" >&2
+        fi
+      fi
+
       DEPLOY_HOST="$HOST" \
       PROJECT_NAME="$GRAFANA_PROJECT_NAME" \
       PROJECT_SLUG="$GRAFANA_PROJECT_SLUG" \
@@ -1335,6 +1385,7 @@ else
       DASHBOARD_DIR="$PROJECT_DASHBOARD_DIR" \
       PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
       PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
+      GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-}" \
         "$DASHBOARD_SCRIPT"
     fi
   else

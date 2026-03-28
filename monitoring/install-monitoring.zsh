@@ -9,20 +9,172 @@ GRAFANA_HOST_PORT="${GRAFANA_HOST_PORT:-3001}"
 PROM_HOST_PORT="${PROM_HOST_PORT:-9090}"
 GRAFANA_ROOT_URL="${GRAFANA_ROOT_URL:-https://api.skynolimit.dev/grafana}"
 GRAFANA_DOMAIN="${GRAFANA_DOMAIN:-api.skynolimit.dev}"
+GRAFANA_USER="${GRAFANA_USER:-admin}"
+GRAFANA_BW_ITEM_NAME="${GRAFANA_BW_ITEM_NAME:-GRAFANA_LOGIN}"
+BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
+BW_SESSION_CACHE_ENABLED="${BW_SESSION_CACHE_ENABLED:-1}"
+BW_SESSION_CACHE_FILE="${BW_SESSION_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-session}"
 
 PROM_IMAGE="${PROM_IMAGE:-prom/prometheus:latest}"
 GRAFANA_IMAGE="${GRAFANA_IMAGE:-grafana/grafana:latest}"
+
+have_valid_bw_session() {
+  [[ -n "${BW_SESSION:-}" ]] || return 1
+  bw --nointeraction --session "$BW_SESSION" list items --folderid "$BW_FOLDER_ID" >/dev/null 2>&1
+}
+
+cache_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
+  [[ -n "${BW_SESSION:-}" ]] || return 0
+  local cache_dir
+  cache_dir="${BW_SESSION_CACHE_FILE:h}"
+  mkdir -p "$cache_dir"
+  umask 077
+  printf '%s\n' "$BW_SESSION" > "$BW_SESSION_CACHE_FILE"
+  chmod 600 "$BW_SESSION_CACHE_FILE"
+}
+
+clear_cached_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 0
+  [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 0
+  rm -f "$BW_SESSION_CACHE_FILE"
+}
+
+bw_output_indicates_session_issue() {
+  local output="$1"
+  [[ "$output" == *"Vault is locked"* ]] \
+    || [[ "$output" == *"You are not logged in"* ]] \
+    || [[ "$output" == *"session"* && "$output" == *"expired"* ]] \
+    || [[ "$output" == *"session"* && "$output" == *"invalid"* ]] \
+    || [[ "$output" == *"Master password"* ]] \
+    || [[ "$output" == *"The decryption operation failed"* ]] \
+    || [[ "$output" == *"The provided key is not the expected type"* ]]
+}
+
+run_bw_with_session() {
+  local output status attempt
+
+  for attempt in 1 2; do
+    output="$(bw --nointeraction --session "$BW_SESSION" "$@" 2>&1)" && {
+      printf '%s\n' "$output"
+      return 0
+    }
+    status=$?
+
+    if [[ "$attempt" -eq 1 ]] && bw_output_indicates_session_issue "$output"; then
+      echo "==> Bitwarden session became invalid; unlocking again..."
+      clear_cached_bw_session
+      unset BW_SESSION
+      ensure_bw_session
+      continue
+    fi
+
+    printf '%s\n' "$output" >&2
+    return "$status"
+  done
+
+  return 1
+}
+
+load_cached_bw_session() {
+  [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 1
+  [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 1
+
+  local cached_session
+  cached_session="$(<"$BW_SESSION_CACHE_FILE")"
+  [[ -n "$cached_session" ]] || return 1
+
+  BW_SESSION="$cached_session"
+  export BW_SESSION
+
+  if have_valid_bw_session; then
+    echo "==> Using cached Bitwarden session from ${BW_SESSION_CACHE_FILE}"
+    return 0
+  fi
+
+  echo "==> Cached Bitwarden session is invalid; unlocking again..."
+  clear_cached_bw_session
+  return 1
+}
+
+ensure_bw_session() {
+  if ! command -v bw >/dev/null 2>&1; then
+    echo "Error: Bitwarden CLI 'bw' is required but was not found in PATH" >&2
+    exit 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required to read Bitwarden items" >&2
+    exit 1
+  fi
+
+  if have_valid_bw_session; then
+    echo "==> Using existing Bitwarden session"
+    return
+  fi
+
+  if load_cached_bw_session; then
+    return
+  fi
+
+  if ! bw login --check >/dev/null 2>&1; then
+    echo "==> Bitwarden login required (2FA prompt may appear)..."
+    bw login
+  fi
+
+  echo "==> Unlocking Bitwarden vault..."
+  BW_SESSION="$(bw unlock --raw)"
+  export BW_SESSION
+
+  if ! have_valid_bw_session; then
+    echo "Error: Could not establish a valid Bitwarden session" >&2
+    exit 1
+  fi
+
+  cache_bw_session
+}
+
+load_grafana_password() {
+  if [[ -n "${GRAFANA_PASSWORD:-}" ]]; then
+    GRAFANA_PASSWORD_SOURCE="environment"
+    return
+  fi
+
+  ensure_bw_session
+  echo "==> Refreshing Bitwarden vault data..."
+  run_bw_with_session sync >/dev/null
+
+  GRAFANA_PASSWORD="$(
+    run_bw_with_session list items --search "$GRAFANA_BW_ITEM_NAME" 2>/dev/null \
+      | jq -r --arg name "$GRAFANA_BW_ITEM_NAME" '.[] | select(.name == $name) | .login.password // empty' \
+      | head -n 1
+  )"
+
+  if [[ -z "$GRAFANA_PASSWORD" ]]; then
+    echo "Error: Bitwarden item '$GRAFANA_BW_ITEM_NAME' was not found or has no password" >&2
+    exit 1
+  fi
+
+  GRAFANA_PASSWORD_SOURCE="Bitwarden item '$GRAFANA_BW_ITEM_NAME'"
+}
+
+load_grafana_password
+GRAFANA_PASSWORD_B64="$(printf '%s' "$GRAFANA_PASSWORD" | base64 | tr -d '\n')"
 
 echo "==> Installing Prometheus + Grafana on: ${TARGET_HOST}"
 echo "==> Remote dir: ${REMOTE_DIR}"
 echo "==> Grafana port: ${GRAFANA_HOST_PORT} -> container 3000"
 echo "==> Grafana root URL: ${GRAFANA_ROOT_URL}"
 echo "==> Grafana domain: ${GRAFANA_DOMAIN}"
+echo "==> Grafana admin user: ${GRAFANA_USER}"
+echo "==> Grafana admin password source: ${GRAFANA_PASSWORD_SOURCE}"
 echo "==> Prometheus port: ${PROM_HOST_PORT} -> container 9090"
 echo
 
 ssh -o BatchMode=yes "${TARGET_HOST}" "bash -s" <<EOF
 set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
 
 REMOTE_DIR="${REMOTE_DIR}"
 GRAFANA_HOST_PORT="${GRAFANA_HOST_PORT}"
@@ -31,6 +183,8 @@ PROM_IMAGE="${PROM_IMAGE}"
 GRAFANA_IMAGE="${GRAFANA_IMAGE}"
 GRAFANA_ROOT_URL="${GRAFANA_ROOT_URL}"
 GRAFANA_DOMAIN="${GRAFANA_DOMAIN}"
+GRAFANA_USER="${GRAFANA_USER}"
+GRAFANA_PASSWORD_B64="${GRAFANA_PASSWORD_B64}"
 
 echo "==> Updating apt + installing Docker + Compose (if needed)"
 sudo apt-get update -y
@@ -44,6 +198,8 @@ case "\$REMOTE_DIR" in
   "~") REMOTE_DIR="\$HOME" ;;
   "~/"*) REMOTE_DIR="\$HOME/\${REMOTE_DIR#~/}" ;;
 esac
+
+GRAFANA_PASSWORD="\$(printf '%s' "\$GRAFANA_PASSWORD_B64" | base64 --decode)"
 
 if ! docker compose version >/dev/null 2>&1; then
   echo "==> Installing Docker Compose"
@@ -64,7 +220,8 @@ if ! groups "\$USER" | grep -q "\\bdocker\\b"; then
 fi
 
 echo "==> Creating monitoring directory"
-mkdir -p "\$REMOTE_DIR"
+sudo install -d -o "\$USER" -g "\$USER" -m 0755 "\$REMOTE_DIR"
+sudo chown -R "\$USER:\$USER" "\$REMOTE_DIR"
 cd "\$REMOTE_DIR"
 
 echo "==> Writing prometheus.yml"
@@ -115,6 +272,8 @@ services:
   grafana:
     image: \${GRAFANA_IMAGE}
     container_name: grafana
+    env_file:
+      - ./grafana.env
     environment:
       # Correct external URL + sub-path (you already had these)
       - GF_SERVER_ROOT_URL=\${GRAFANA_ROOT_URL}
@@ -144,6 +303,13 @@ volumes:
   grafana_data:
 YAML
 
+echo "==> Writing grafana.env"
+{
+  printf 'GF_SECURITY_ADMIN_USER=%s\n' "\$GRAFANA_USER"
+  printf 'GF_SECURITY_ADMIN_PASSWORD=%s\n' "\$GRAFANA_PASSWORD"
+} > grafana.env
+chmod 600 grafana.env
+
 echo "==> Starting services"
 export PROM_IMAGE GRAFANA_IMAGE PROM_HOST_PORT GRAFANA_HOST_PORT GRAFANA_ROOT_URL GRAFANA_DOMAIN
 if docker compose version >/dev/null 2>&1; then
@@ -155,6 +321,21 @@ else
   exit 1
 fi
 
+echo "==> Ensuring Grafana admin password matches configured secret"
+grafana_password_set=0
+for _attempt in \$(seq 1 30); do
+  if sudo docker exec grafana grafana cli --homepath /usr/share/grafana admin reset-admin-password "\$GRAFANA_PASSWORD" >/dev/null 2>&1; then
+    grafana_password_set=1
+    break
+  fi
+  sleep 2
+done
+
+if [[ "\$grafana_password_set" != "1" ]]; then
+  echo "ERROR: failed to set Grafana admin password after container startup" >&2
+  exit 1
+fi
+
 echo
 echo "==> Status"
 sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
@@ -162,7 +343,7 @@ sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 echo
 echo "==> Done."
 echo "Prometheus: http://<YOUR_ORACLE_PUBLIC_IP>:\${PROM_HOST_PORT}"
-echo "Grafana:    \${GRAFANA_ROOT_URL}  (default login admin/admin)"
+echo "Grafana:    \${GRAFANA_ROOT_URL}  (login \${GRAFANA_USER}; password managed via ${GRAFANA_PASSWORD_SOURCE})"
 EOF
 
 echo
