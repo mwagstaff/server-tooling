@@ -41,6 +41,25 @@ get_project_service_label() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
 }
 
+get_project_service_labels() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) as $project |
+    if (($project.services // []) | length) > 0 then
+      $project.services[]
+      | .service_label // (
+          if ((.name // "api") == "api") then
+            ($project.service_label // "com.\($project.name).api")
+          else
+            "com.\($project.name).\(.name)"
+          end
+        )
+    else
+      .service_label // "com.\($project.name).api"
+    end
+  ' "$CONFIG_FILE"
+}
+
 if [[ $# -eq 0 ]]; then
   echo "==> Interactive start mode"
   echo ""
@@ -87,20 +106,24 @@ if ! project_exists "$PROJECT_NAME"; then
   exit 1
 fi
 
-SERVICE_LABEL="$(get_project_service_label "$PROJECT_NAME")"
-if [[ -z "$SERVICE_LABEL" ]]; then
-  SERVICE_LABEL="com.${PROJECT_NAME}.api"
+SERVICE_LABELS=("${(@f)$(get_project_service_labels "$PROJECT_NAME")}")
+if [[ ${#SERVICE_LABELS[@]} -eq 0 ]]; then
+  SERVICE_LABELS=("com.${PROJECT_NAME}.api")
 fi
-SERVICE_UNIT="${SERVICE_LABEL}.service"
 
 echo "==> Starting project: $PROJECT_NAME"
 echo "    Remote host: $HOST"
-echo "    Service label: $SERVICE_LABEL"
-echo "    Service unit: $SERVICE_UNIT"
+echo "    Service labels:"
+for service_label in "${SERVICE_LABELS[@]}"; do
+  echo "      - $service_label"
+done
 echo ""
+
+SERVICE_LABELS_SSH="${(j: :)SERVICE_LABELS}"
 
 ssh -o ConnectTimeout=10 "$HOST" "
 set -eu
+SERVICE_LABELS=(${SERVICE_LABELS_SSH})
 
 if command -v launchctl >/dev/null 2>&1; then
   UID_NUM=\"\$(id -u)\"
@@ -114,34 +137,38 @@ if command -v launchctl >/dev/null 2>&1; then
     exit 1
   fi
 
-  PLIST=\"\$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist\"
-
-  if [[ ! -f \"\$PLIST\" ]]; then
-    echo \"Error: launchd plist not found: \$PLIST\" >&2
-    exit 1
-  fi
-
   echo \"Detected launchd (macOS). Using domain: \$DOMAIN\"
 
-  # Clear out any previous load in either common user domain before starting.
-  launchctl bootout \"gui/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
-  launchctl bootout \"user/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
+  for SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+    PLIST=\"\$HOME/Library/LaunchAgents/\${SERVICE_LABEL}.plist\"
 
-  launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"
-  launchctl enable \"\$DOMAIN/$SERVICE_LABEL\" || true
-  launchctl kickstart -k \"\$DOMAIN/$SERVICE_LABEL\"
+    if [[ ! -f \"\$PLIST\" ]]; then
+      echo \"Error: launchd plist not found: \$PLIST\" >&2
+      exit 1
+    fi
 
-  if launchctl print \"\$DOMAIN/$SERVICE_LABEL\" >/dev/null 2>&1; then
-    echo 'Final state: loaded'
-  else
-    echo 'Error: Service is not loaded after start.' >&2
-    exit 1
-  fi
+    launchctl bootout \"gui/\$UID_NUM/\$SERVICE_LABEL\" 2>/dev/null || true
+    launchctl bootout \"user/\$UID_NUM/\$SERVICE_LABEL\" 2>/dev/null || true
+
+    launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"
+    launchctl enable \"\$DOMAIN/\$SERVICE_LABEL\" || true
+    launchctl kickstart -k \"\$DOMAIN/\$SERVICE_LABEL\"
+
+    if launchctl print \"\$DOMAIN/\$SERVICE_LABEL\" >/dev/null 2>&1; then
+      echo \"Started \$SERVICE_LABEL\"
+    else
+      echo \"Error: Service is not loaded after start: \$SERVICE_LABEL\" >&2
+      exit 1
+    fi
+  done
 elif command -v systemctl >/dev/null 2>&1; then
   echo 'Detected systemd (Linux).'
   systemctl --user daemon-reload
-  systemctl --user enable --now '$SERVICE_UNIT'
-  systemctl --user status '$SERVICE_UNIT' --no-pager || true
+  for SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+    SERVICE_UNIT=\"\${SERVICE_LABEL}.service\"
+    systemctl --user enable --now \"\$SERVICE_UNIT\"
+    systemctl --user status \"\$SERVICE_UNIT\" --no-pager || true
+  done
 else
   echo 'Error: Neither launchctl nor systemctl is available on this host.' >&2
   exit 1
@@ -149,4 +176,4 @@ fi
 "
 
 echo ""
-echo "✅ Started and enabled $SERVICE_LABEL on $HOST"
+echo "✅ Started and enabled ${#SERVICE_LABELS[@]} service(s) on $HOST"

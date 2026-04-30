@@ -48,9 +48,34 @@ get_project_service_label() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .service_label // empty' "$CONFIG_FILE"
 }
 
+get_project_service_labels() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) as $project |
+    if (($project.services // []) | length) > 0 then
+      $project.services[]
+      | .service_label // (
+          if ((.name // "api") == "api") then
+            ($project.service_label // "com.\($project.name).api")
+          else
+            "com.\($project.name).\(.name)"
+          end
+        )
+    else
+      .service_label // "com.\($project.name).api"
+    end
+  ' "$CONFIG_FILE"
+}
+
 get_project_legacy_service_labels() {
   local project_name="$1"
-  jq -r --arg name "$project_name" '.[] | select(.name == $name) | (.legacy_service_labels // [])[]' "$CONFIG_FILE"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) as $project |
+    (
+      ($project.legacy_service_labels // [])
+      + ((($project.services // []) | map(.legacy_service_labels // []) | add) // [])
+    )[]
+  ' "$CONFIG_FILE"
 }
 
 if [[ $# -eq 0 ]]; then
@@ -109,15 +134,12 @@ SERVICE_LABELS=()
 for name in "${PROJECT_AND_ALIAS_NAMES[@]}"; do
   SERVICE_LABELS+=("com.${name}.api")
 done
-SERVICE_LABEL="$(get_project_service_label "$PROJECT_NAME")"
-if [[ -n "$SERVICE_LABEL" ]]; then
-  SERVICE_LABELS+=("$SERVICE_LABEL")
-fi
+SERVICE_LABELS+=("${(@f)$(get_project_service_labels "$PROJECT_NAME")}")
 SERVICE_LABELS+=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
 typeset -U SERVICE_LABELS
 
 PROJECT_NAME_REGEX="${(j:|:)PROJECT_AND_ALIAS_NAMES}"
-PROCESS_REGEX="/dev/(.*/)?(${PROJECT_NAME_REGEX})/(server|index)\\.(js|mjs)"
+PROCESS_REGEX="/dev/(.*/)?(${PROJECT_NAME_REGEX})/(server|scraper|monitor|audit|index)\\.(js|mjs)"
 
 echo "==> Stopping project: $PROJECT_NAME"
 echo "    Remote host: $HOST"

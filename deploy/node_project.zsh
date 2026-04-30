@@ -107,7 +107,84 @@ get_project_service_description() {
 
 get_project_legacy_service_labels() {
   local project_name="$1"
-  jq -r --arg name "$project_name" '.[] | select(.name == $name) | (.legacy_service_labels // [])[]' "$CONFIG_FILE"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) as $project |
+    (
+      ($project.legacy_service_labels // [])
+      + ((($project.services // []) | map(.legacy_service_labels // []) | add) // [])
+    )[]
+  ' "$CONFIG_FILE"
+}
+
+get_project_services_json() {
+  local project_name="$1"
+  jq -c --arg name "$project_name" '
+    .[] | select(.name == $name) as $project |
+    if (($project.services // []) | length) > 0 then
+      $project.services | map(
+        . as $service |
+        {
+          name: ($service.name // "api"),
+          service_label: (
+            $service.service_label
+            // (
+              if (($service.name // "api") == "api") then
+                ($project.service_label // "com.\($project.name).api")
+              else
+                "com.\($project.name).\($service.name)"
+              end
+            )
+          ),
+          service_description: (
+            $service.service_description
+            // (
+              if (($service.name // "api") == "api") then
+                ($project.service_description // "\($project.name) API Service")
+              else
+                "\($project.name) \($service.name) Service"
+              end
+            )
+          ),
+          entry_file: ($service.entry_file // ""),
+          startup_port: ($service.startup_port // ""),
+          metrics_port: ($service.metrics_port // ""),
+          log_file: (
+            $service.log_file
+            // (
+              if (($service.name // "api") == "api") then
+                "\($project.name).log"
+              else
+                "\($project.name)-\($service.name).log"
+              end
+            )
+          ),
+          error_log_file: (
+            $service.error_log_file
+            // (
+              if (($service.name // "api") == "api") then
+                "\($project.name).error.log"
+              else
+                "\($project.name)-\($service.name).error.log"
+              end
+            )
+          )
+        }
+      )
+    else
+      [
+        {
+          name: "api",
+          service_label: ($project.service_label // "com.\($project.name).api"),
+          service_description: ($project.service_description // "\($project.name) API Service"),
+          entry_file: ($project.entry_file // ""),
+          startup_port: ($project.startup_port // $project.metrics_port // ""),
+          metrics_port: ($project.metrics_port // ""),
+          log_file: ($project.log_file // "\($project.name).log"),
+          error_log_file: ($project.error_log_file // "\($project.name).error.log")
+        }
+      ]
+    end
+  ' "$CONFIG_FILE"
 }
 
 sanitize_env_var_name() {
@@ -628,6 +705,7 @@ BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
 SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
 SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
 LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
+SERVICES_JSON="$(get_project_services_json "$PROJECT_NAME")"
 
 if [[ -z "$SERVICE_LABEL" ]]; then
   SERVICE_LABEL="com.${PROJECT_NAME}.api"
@@ -640,6 +718,63 @@ fi
 LEGACY_SERVICE_LABELS=("${(@)LEGACY_SERVICE_LABELS:#}")
 LEGACY_SERVICE_LABELS=("${(@)LEGACY_SERVICE_LABELS:#$SERVICE_LABEL}")
 typeset -U LEGACY_SERVICE_LABELS
+
+if [[ -n "$SERVICES_JSON" && "$SERVICES_JSON" != "null" ]]; then
+  SERVICE_SPECS=("${(@f)$(printf '%s\n' "$SERVICES_JSON" | jq -r '
+    .[] | [
+      .name,
+      .service_label,
+      .service_description,
+      (if (.entry_file // "") == "" then "__AUTO__" else .entry_file end),
+      (if (.startup_port // "") == "" then "__NONE__" else (.startup_port | tostring) end),
+      (if (.metrics_port // "") == "" then "__NONE__" else (.metrics_port | tostring) end),
+      .log_file,
+      .error_log_file
+    ] | @tsv
+  ')}")
+else
+  SERVICE_SPECS=()
+fi
+
+SERVICE_NAMES=()
+SERVICE_LABELS=()
+SERVICE_DESCRIPTIONS=()
+SERVICE_ENTRY_FILES=()
+SERVICE_STARTUP_PORTS=()
+SERVICE_METRICS_PORTS=()
+SERVICE_LOG_FILES=()
+SERVICE_ERROR_LOG_FILES=()
+
+for service_spec in "${SERVICE_SPECS[@]}"; do
+  service_fields=("${(ps:\t:)service_spec}")
+  SERVICE_NAMES+=("${service_fields[1]}")
+  SERVICE_LABELS+=("${service_fields[2]}")
+  SERVICE_DESCRIPTIONS+=("${service_fields[3]}")
+  SERVICE_ENTRY_FILES+=("${service_fields[4]}")
+  SERVICE_STARTUP_PORTS+=("${service_fields[5]}")
+  SERVICE_METRICS_PORTS+=("${service_fields[6]}")
+  SERVICE_LOG_FILES+=("${service_fields[7]}")
+  SERVICE_ERROR_LOG_FILES+=("${service_fields[8]}")
+done
+
+if [[ ${#SERVICE_LABELS[@]} -eq 0 ]]; then
+  SERVICE_NAMES=("api")
+  SERVICE_LABELS=("$SERVICE_LABEL")
+  SERVICE_DESCRIPTIONS=("$SERVICE_DESCRIPTION")
+  SERVICE_ENTRY_FILES=("__AUTO__")
+  SERVICE_STARTUP_PORTS=("${STARTUP_PORT:-__NONE__}")
+  SERVICE_METRICS_PORTS=("${METRICS_PORT:-__NONE__}")
+  SERVICE_LOG_FILES=("${PROJECT_NAME}.log")
+  SERVICE_ERROR_LOG_FILES=("${PROJECT_NAME}.error.log")
+fi
+
+SERVICE_NAMES_SSH="${(j: :)SERVICE_NAMES}"
+SERVICE_LABELS_SSH="${(j: :)SERVICE_LABELS}"
+SERVICE_ENTRY_FILES_SSH="${(j: :)SERVICE_ENTRY_FILES}"
+SERVICE_STARTUP_PORTS_SSH="${(j: :)SERVICE_STARTUP_PORTS}"
+SERVICE_METRICS_PORTS_SSH="${(j: :)SERVICE_METRICS_PORTS}"
+SERVICE_LOG_FILES_SSH="${(j: :)SERVICE_LOG_FILES}"
+SERVICE_ERROR_LOG_FILES_SSH="${(j: :)SERVICE_ERROR_LOG_FILES}"
 
 if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "Error: Project '$PROJECT_NAME' not found in config file" >&2
@@ -676,6 +811,12 @@ echo "    Remote host: $HOST"
 echo "    Remote path: $REMOTE_DIR"
 echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
+if [[ ${#SERVICE_LABELS[@]} -gt 1 ]]; then
+  echo "    Managed services:"
+  for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
+    echo "      - ${SERVICE_LABELS[$idx]} (${SERVICE_NAMES[$idx]})"
+  done
+fi
 if [[ ${#LEGACY_SERVICE_LABELS[@]} -gt 0 ]]; then
   echo "    Legacy service labels to remove:"
   printf '      - %s\n' "${LEGACY_SERVICE_LABELS[@]}"
@@ -733,6 +874,7 @@ rsync -az --delete \
   --exclude '.env' \
   --exclude "$BW_REMOTE_ENV_FILE_NAME" \
   --exclude '.start-with-bw-env.sh' \
+  --exclude 'certs' \
   --exclude 'coverage' \
   --exclude 'dist' \
   --exclude '.next' \
@@ -740,6 +882,19 @@ rsync -az --delete \
   --exclude '*.local' \
   "$LOCAL_DIR/" \
   "${HOST}:${REMOTE_DIR}/"
+
+echo "==> Ensuring app certs symlink exists..."
+ssh "$HOST" "
+  set -euo pipefail
+  REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
+  APP_CERTS_DIR=\"\$REMOTE_DIR_EXPANDED/certs\"
+  SHARED_CERTS_DIR=\"\$HOME/.certs\"
+
+  if [[ ! -e \"\$APP_CERTS_DIR\" && ! -L \"\$APP_CERTS_DIR\" ]]; then
+    ln -s \"\$SHARED_CERTS_DIR\" \"\$APP_CERTS_DIR\"
+    echo \"   Linked \$APP_CERTS_DIR -> \$SHARED_CERTS_DIR\"
+  fi
+"
 
 if [[ "$QUICK_MODE" == "1" ]]; then
   echo "==> Quick mode enabled; skipping standard dependency install."
@@ -881,7 +1036,8 @@ if [[ "$QUICK_MODE" == "1" ]]; then
   service_probe="$(ssh "$HOST" "
     set -e
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
-    current_found=0
+    SERVICE_LABELS=(${SERVICE_LABELS_SSH})
+    current_found=1
     legacy_found=0
 
     systemd_unit_exists() {
@@ -895,9 +1051,18 @@ if [[ "$QUICK_MODE" == "1" ]]; then
         if ! launchctl print \"\$DOMAIN\" >/dev/null 2>&1; then
           continue
         fi
-        if launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" >/dev/null 2>&1; then
+        domain_found=1
+        for CURRENT_SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+          [[ -n \"\$CURRENT_SERVICE_LABEL\" ]] || continue
+          if ! launchctl print \"\$DOMAIN/\$CURRENT_SERVICE_LABEL\" >/dev/null 2>&1; then
+            domain_found=0
+          fi
+        done
+        if [[ \"\$domain_found\" == \"1\" ]]; then
           current_found=1
+          break
         fi
+        current_found=0
         for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
           [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
           if launchctl print \"\$DOMAIN/\$OLD_SERVICE_LABEL\" >/dev/null 2>&1; then
@@ -906,9 +1071,12 @@ if [[ "$QUICK_MODE" == "1" ]]; then
         done
       done
     elif command -v systemctl >/dev/null 2>&1; then
-      if systemd_unit_exists ${SERVICE_LABEL}.service; then
-        current_found=1
-      fi
+      for CURRENT_SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+        [[ -n \"\$CURRENT_SERVICE_LABEL\" ]] || continue
+        if ! systemd_unit_exists \"\${CURRENT_SERVICE_LABEL}.service\"; then
+          current_found=0
+        fi
+      done
       for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
         [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
         if systemd_unit_exists \"\${OLD_SERVICE_LABEL}.service\"; then
@@ -937,30 +1105,59 @@ fi
 
 if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
   echo "==> Quick mode: restarting existing service..."
-  ensure_remote_port_available "$HOST" "$STARTUP_PORT" "$SERVICE_LABEL"
+  for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
+    current_startup_port="${SERVICE_STARTUP_PORTS[$idx]}"
+    if [[ "$current_startup_port" == "__NONE__" ]]; then
+      continue
+    fi
+    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}"
+  done
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
-    START_WRAPPER=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
-
-    if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.js\"
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.mjs\"
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.js\"
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.mjs\"
-    else
-      echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
-      echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
-      exit 1
+    SERVICE_NAMES=(${SERVICE_NAMES_SSH})
+    SERVICE_LABELS=(${SERVICE_LABELS_SSH})
+    SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
+    ARRAY_OFFSET=0
+    if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
+      ARRAY_OFFSET=1
     fi
+    SERVICE_COUNT=\${#SERVICE_LABELS[@]}
 
-    # Rebuild wrapper in quick mode since rsync --delete may have removed it.
-    cat > \"\$START_WRAPPER\" << EOF_START_WRAPPER
+    detect_entry_file() {
+      local requested_entry=\"\$1\"
+      if [[ -n \"\$requested_entry\" && \"\$requested_entry\" != \"__AUTO__\" ]]; then
+        local explicit_path=\"\$REMOTE_DIR_EXPANDED/\$requested_entry\"
+        if [[ ! -f \"\$explicit_path\" ]]; then
+          echo \"Error: Configured entry file not found: \$explicit_path\" >&2
+          exit 1
+        fi
+        printf '%s\n' \"\$explicit_path\"
+        return 0
+      fi
+
+      if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/server.js\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/server.mjs\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/index.js\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/index.mjs\"
+      else
+        echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
+        echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
+        exit 1
+      fi
+    }
+
+    build_wrapper() {
+      local service_name=\"\$1\"
+      local entry_file=\"\$2\"
+      local start_wrapper=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env-\${service_name}.sh\"
+      cat > \"\$start_wrapper\" << EOF_START_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -969,48 +1166,68 @@ if [[ -f \"\$BW_ENV_FILE\" ]]; then
   source \"\$BW_ENV_FILE\"
 fi
 
-exec \"\$(command -v node)\" \"\$ENTRY_FILE\"
+exec \"\$(command -v node)\" \"\$entry_file\"
 EOF_START_WRAPPER
-    chmod 700 \"\$START_WRAPPER\"
+      chmod 700 \"\$start_wrapper\"
+      printf '%s\n' \"\$start_wrapper\"
+    }
 
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       UID_NUM=\"\$(id -u)\"
-      DOMAIN=''
-      if launchctl print \"gui/\$UID_NUM/${SERVICE_LABEL}\" >/dev/null 2>&1; then
-        DOMAIN=\"gui/\$UID_NUM\"
-      elif launchctl print \"user/\$UID_NUM/${SERVICE_LABEL}\" >/dev/null 2>&1; then
-        DOMAIN=\"user/\$UID_NUM\"
-      else
-        echo \"Error: launchd service not found: ${SERVICE_LABEL}\" >&2
-        echo \"Checked domains: gui/\$UID_NUM and user/\$UID_NUM\" >&2
-        echo \"Run a full deploy first to create/update service configuration.\" >&2
-        exit 1
-      fi
-      echo \"Using launchd domain: \$DOMAIN\"
-      launchctl kickstart -k \"\$DOMAIN/${SERVICE_LABEL}\"
-      sleep 1
-      if ! launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" | grep -q 'state = running'; then
-        echo \"Error: launchd service did not remain running: ${SERVICE_LABEL}\" >&2
-        launchctl print \"\$DOMAIN/${SERVICE_LABEL}\" || true
-        exit 1
-      fi
-      echo 'Service restarted via launchd'
+      for idx in \$(seq 0 \$((SERVICE_COUNT - 1))); do
+        array_index=\$((idx + ARRAY_OFFSET))
+        service_name=\"\${SERVICE_NAMES[\$array_index]}\"
+        service_label=\"\${SERVICE_LABELS[\$array_index]}\"
+        requested_entry=\"\${SERVICE_ENTRY_FILES[\$array_index]}\"
+        entry_file=\"\$(detect_entry_file \"\$requested_entry\")\"
+        build_wrapper \"\$service_name\" \"\$entry_file\" >/dev/null
+
+        DOMAIN=''
+        if launchctl print \"gui/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
+          DOMAIN=\"gui/\$UID_NUM\"
+        elif launchctl print \"user/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
+          DOMAIN=\"user/\$UID_NUM\"
+        else
+          echo \"Error: launchd service not found: \$service_label\" >&2
+          echo \"Checked domains: gui/\$UID_NUM and user/\$UID_NUM\" >&2
+          echo \"Run a full deploy first to create/update service configuration.\" >&2
+          exit 1
+        fi
+        echo \"Using launchd domain for \$service_label: \$DOMAIN\"
+        launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+        sleep 1
+        if ! launchctl print \"\$DOMAIN/\$service_label\" | grep -q 'state = running'; then
+          echo \"Error: launchd service did not remain running: \$service_label\" >&2
+          launchctl print \"\$DOMAIN/\$service_label\" || true
+          exit 1
+        fi
+      done
+      echo 'Services restarted via launchd'
 
     elif command -v systemctl >/dev/null 2>&1; then
-      if [[ \"\$(systemctl --user show ${SERVICE_LABEL}.service --property=LoadState --value 2>/dev/null || true)\" != 'loaded' ]]; then
-        echo \"Error: systemd service not found: ${SERVICE_LABEL}.service\" >&2
-        echo \"Run a full deploy first to create/update service configuration.\" >&2
-        exit 1
-      fi
-      systemctl --user reset-failed ${SERVICE_LABEL}.service >/dev/null 2>&1 || true
-      systemctl --user restart ${SERVICE_LABEL}.service
-      sleep 1
-      if ! systemctl --user is-active --quiet ${SERVICE_LABEL}.service; then
-        echo \"Error: systemd service did not remain active: ${SERVICE_LABEL}.service\" >&2
-        systemctl --user status ${SERVICE_LABEL}.service --no-pager || true
-        exit 1
-      fi
-      echo 'Service restarted via systemd'
+      for idx in \$(seq 0 \$((SERVICE_COUNT - 1))); do
+        array_index=\$((idx + ARRAY_OFFSET))
+        service_name=\"\${SERVICE_NAMES[\$array_index]}\"
+        service_label=\"\${SERVICE_LABELS[\$array_index]}\"
+        requested_entry=\"\${SERVICE_ENTRY_FILES[\$array_index]}\"
+        entry_file=\"\$(detect_entry_file \"\$requested_entry\")\"
+        build_wrapper \"\$service_name\" \"\$entry_file\" >/dev/null
+
+        if [[ \"\$(systemctl --user show \${service_label}.service --property=LoadState --value 2>/dev/null || true)\" != 'loaded' ]]; then
+          echo \"Error: systemd service not found: \${service_label}.service\" >&2
+          echo \"Run a full deploy first to create/update service configuration.\" >&2
+          exit 1
+        fi
+        systemctl --user reset-failed \${service_label}.service >/dev/null 2>&1 || true
+        systemctl --user restart \${service_label}.service
+        sleep 1
+        if ! systemctl --user is-active --quiet \${service_label}.service; then
+          echo \"Error: systemd service did not remain active: \${service_label}.service\" >&2
+          systemctl --user status \${service_label}.service --no-pager || true
+          exit 1
+        fi
+      done
+      echo 'Services restarted via systemd'
 
     else
       echo \"Error: Neither launchd nor systemd found. Cannot manage service.\" >&2
@@ -1021,36 +1238,63 @@ else
   if [[ "$QUICK_MODE" == "1" ]]; then
     echo "==> Quick mode: setting up and restarting service..."
   else
-    echo "==> Setting up and restarting service..."
+    echo "==> Setting up and restarting services..."
   fi
-  ensure_remote_port_available "$HOST" "$STARTUP_PORT" "$SERVICE_LABEL"
+  for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
+    current_startup_port="${SERVICE_STARTUP_PORTS[$idx]}"
+    if [[ "$current_startup_port" == "__NONE__" ]]; then
+      continue
+    fi
+    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}"
+  done
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
-    START_WRAPPER=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
-
-    # Detect which entry file to use.
-    if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.js\"
-      echo 'Using server.js as entry point'
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/server.mjs\"
-      echo 'Using server.mjs as entry point'
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.js\"
-      echo 'Using index.js as entry point'
-    elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
-      ENTRY_FILE=\"\$REMOTE_DIR_EXPANDED/index.mjs\"
-      echo 'Using index.mjs as entry point'
-    else
-      echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
-      echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
-      exit 1
+    SERVICE_NAMES=(${SERVICE_NAMES_SSH})
+    SERVICE_LABELS=(${SERVICE_LABELS_SSH})
+    SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
+    SERVICE_LOG_FILES=(${SERVICE_LOG_FILES_SSH})
+    SERVICE_ERROR_LOG_FILES=(${SERVICE_ERROR_LOG_FILES_SSH})
+    ARRAY_OFFSET=0
+    if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
+      ARRAY_OFFSET=1
     fi
+    SERVICE_COUNT=\${#SERVICE_LABELS[@]}
 
-    cat > \"\$START_WRAPPER\" << EOF_START_WRAPPER
+    detect_entry_file() {
+      local requested_entry=\"\$1\"
+      if [[ -n \"\$requested_entry\" && \"\$requested_entry\" != \"__AUTO__\" ]]; then
+        local explicit_path=\"\$REMOTE_DIR_EXPANDED/\$requested_entry\"
+        if [[ ! -f \"\$explicit_path\" ]]; then
+          echo \"Error: Configured entry file not found: \$explicit_path\" >&2
+          exit 1
+        fi
+        printf '%s\n' \"\$explicit_path\"
+        return 0
+      fi
+
+      if [[ -f \"\$REMOTE_DIR_EXPANDED/server.js\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/server.js\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/server.mjs\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/server.mjs\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.js\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/index.js\"
+      elif [[ -f \"\$REMOTE_DIR_EXPANDED/index.mjs\" ]]; then
+        printf '%s\n' \"\$REMOTE_DIR_EXPANDED/index.mjs\"
+      else
+        echo \"Error: No supported entry file found in \$REMOTE_DIR_EXPANDED\" >&2
+        echo \"Checked: server.js, server.mjs, index.js, index.mjs\" >&2
+        exit 1
+      fi
+    }
+
+    build_wrapper() {
+      local service_name=\"\$1\"
+      local entry_file=\"\$2\"
+      local start_wrapper=\"\$REMOTE_DIR_EXPANDED/.start-with-bw-env-\${service_name}.sh\"
+      cat > \"\$start_wrapper\" << EOF_START_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -1059,15 +1303,15 @@ if [[ -f \"\$BW_ENV_FILE\" ]]; then
   source \"\$BW_ENV_FILE\"
 fi
 
-exec \"\$(command -v node)\" \"\$ENTRY_FILE\"
+exec \"\$(command -v node)\" \"\$entry_file\"
 EOF_START_WRAPPER
-    chmod 700 \"\$START_WRAPPER\"
-    echo \"Startup wrapper prepared at \$START_WRAPPER\"
+      chmod 700 \"\$start_wrapper\"
+      printf '%s\n' \"\$start_wrapper\"
+    }
 
     # Detect OS and use appropriate service manager
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       echo \"==> Using launchd (macOS)\"
-      PLIST=\"\$HOME/Library/LaunchAgents/${SERVICE_LABEL}.plist\"
       UID_NUM=\"\$(id -u)\"
       DOMAIN=''
       HAVE_GUI_DOMAIN=0
@@ -1096,8 +1340,14 @@ EOF_START_WRAPPER
         rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
       done
 
-      # Create plist file
-      cat > \"\$PLIST\" << 'EOF_PLIST'
+      write_launchd_service() {
+        local service_label=\"\$1\"
+        local service_name=\"\$2\"
+        local service_log_file=\"\$3\"
+        local service_error_log_file=\"\$4\"
+        local start_wrapper=\"\$5\"
+        local plist=\"\$HOME/Library/LaunchAgents/\${service_label}.plist\"
+        cat > \"\$plist\" << 'EOF_PLIST'
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\">
@@ -1116,9 +1366,9 @@ EOF_START_WRAPPER
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>REMOTE_DIR_PLACEHOLDER/PROJECT_NAME_PLACEHOLDER.log</string>
+  <string>LOG_FILE_PLACEHOLDER</string>
   <key>StandardErrorPath</key>
-  <string>REMOTE_DIR_PLACEHOLDER/PROJECT_NAME_PLACEHOLDER.error.log</string>
+  <string>ERROR_LOG_FILE_PLACEHOLDER</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -1127,61 +1377,77 @@ EOF_START_WRAPPER
 </dict>
 </plist>
 EOF_PLIST
+        sed -i '' \"s|REMOTE_DIR_PLACEHOLDER|\$REMOTE_DIR_EXPANDED|g\" \"\$plist\"
+        sed -i '' \"s|START_WRAPPER_PLACEHOLDER|\$start_wrapper|g\" \"\$plist\"
+        sed -i '' \"s|SERVICE_LABEL_PLACEHOLDER|\$service_label|g\" \"\$plist\"
+        sed -i '' \"s|LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_log_file|g\" \"\$plist\"
+        sed -i '' \"s|ERROR_LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_error_log_file|g\" \"\$plist\"
+        if command -v plutil >/dev/null 2>&1; then
+          if ! plutil -lint \"\$plist\" >/dev/null 2>&1; then
+            echo \"Error: launchd plist is invalid: \$plist\" >&2
+            plutil -lint \"\$plist\" >&2 || true
+            exit 1
+          fi
+        fi
+        printf '%s\n' \"\$plist\"
+      }
 
-      # Replace placeholders
-      sed -i '' \"s|REMOTE_DIR_PLACEHOLDER|\$REMOTE_DIR_EXPANDED|g\" \"\$PLIST\"
-      sed -i '' \"s|START_WRAPPER_PLACEHOLDER|\$START_WRAPPER|g\" \"\$PLIST\"
-      sed -i '' \"s|SERVICE_LABEL_PLACEHOLDER|${SERVICE_LABEL}|g\" \"\$PLIST\"
-      sed -i '' \"s|PROJECT_NAME_PLACEHOLDER|${PROJECT_NAME}|g\" \"\$PLIST\"
-      if command -v plutil >/dev/null 2>&1; then
-        if ! plutil -lint \"\$PLIST\" >/dev/null 2>&1; then
-          echo \"Error: launchd plist is invalid: \$PLIST\" >&2
-          plutil -lint \"\$PLIST\" >&2 || true
+      restart_launchd_service() {
+        local service_label=\"\$1\"
+        local plist=\"\$2\"
+        local bootstrap_ok=0
+        launchctl bootout \"gui/\$UID_NUM/\$service_label\" 2>/dev/null || true
+        launchctl bootout \"user/\$UID_NUM/\$service_label\" 2>/dev/null || true
+        for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
+          if ! launchctl print \"\$TRY_DOMAIN\" >/dev/null 2>&1; then
+            continue
+          fi
+          echo \"Attempting launchd bootstrap for \$service_label in domain: \$TRY_DOMAIN\"
+          set +e
+          BOOTSTRAP_OUTPUT=\"\$(launchctl bootstrap \"\$TRY_DOMAIN\" \"\$plist\" 2>&1)\"
+          BOOTSTRAP_STATUS=\$?
+          set -e
+          if [[ \"\$BOOTSTRAP_STATUS\" -ne 0 ]]; then
+            echo \"Bootstrap failed in \$TRY_DOMAIN: \$BOOTSTRAP_OUTPUT\" >&2
+            launchctl bootout \"\$TRY_DOMAIN/\$service_label\" 2>/dev/null || true
+            continue
+          fi
+          launchctl enable \"\$TRY_DOMAIN/\$service_label\" || true
+          launchctl kickstart -k \"\$TRY_DOMAIN/\$service_label\"
+          if launchctl print \"\$TRY_DOMAIN/\$service_label\" >/dev/null 2>&1; then
+            bootstrap_ok=1
+            DOMAIN=\"\$TRY_DOMAIN\"
+            break
+          fi
+        done
+        if [[ \"\$bootstrap_ok\" -ne 1 ]]; then
+          echo \"Error: launchd service did not load: \$service_label\" >&2
+          echo \"Plist: \$plist\" >&2
+          ls -l \"\$plist\" >&2 || true
+          if command -v plutil >/dev/null 2>&1; then
+            plutil -p \"\$plist\" >&2 || true
+          fi
           exit 1
         fi
-      fi
+      }
 
-      # Restart service
-      launchctl bootout \"gui/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
-      launchctl bootout \"user/\$UID_NUM/$SERVICE_LABEL\" 2>/dev/null || true
-      BOOTSTRAP_OK=0
-      for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
-        if ! launchctl print \"\$TRY_DOMAIN\" >/dev/null 2>&1; then
-          continue
-        fi
-        echo \"Attempting launchd bootstrap in domain: \$TRY_DOMAIN\"
-        set +e
-        BOOTSTRAP_OUTPUT=\"\$(launchctl bootstrap \"\$TRY_DOMAIN\" \"\$PLIST\" 2>&1)\"
-        BOOTSTRAP_STATUS=\$?
-        set -e
-        if [[ \"\$BOOTSTRAP_STATUS\" -ne 0 ]]; then
-          echo \"Bootstrap failed in \$TRY_DOMAIN: \$BOOTSTRAP_OUTPUT\" >&2
-          launchctl bootout \"\$TRY_DOMAIN/$SERVICE_LABEL\" 2>/dev/null || true
-          continue
-        fi
-        launchctl enable \"\$TRY_DOMAIN/$SERVICE_LABEL\" || true
-        launchctl kickstart -k \"\$TRY_DOMAIN/$SERVICE_LABEL\"
-        if launchctl print \"\$TRY_DOMAIN/$SERVICE_LABEL\" >/dev/null 2>&1; then
-          DOMAIN=\"\$TRY_DOMAIN\"
-          BOOTSTRAP_OK=1
-          break
-        fi
+      for idx in \$(seq 0 \$((SERVICE_COUNT - 1))); do
+        array_index=\$((idx + ARRAY_OFFSET))
+        service_name=\"\${SERVICE_NAMES[\$array_index]}\"
+        service_label=\"\${SERVICE_LABELS[\$array_index]}\"
+        service_log_file=\"\${SERVICE_LOG_FILES[\$array_index]}\"
+        service_error_log_file=\"\${SERVICE_ERROR_LOG_FILES[\$array_index]}\"
+        requested_entry=\"\${SERVICE_ENTRY_FILES[\$array_index]}\"
+        entry_file=\"\$(detect_entry_file \"\$requested_entry\")\"
+        start_wrapper=\"\$(build_wrapper \"\$service_name\" \"\$entry_file\")\"
+        plist=\"\$(write_launchd_service \"\$service_label\" \"\$service_name\" \"\$service_log_file\" \"\$service_error_log_file\" \"\$start_wrapper\")\"
+        restart_launchd_service \"\$service_label\" \"\$plist\"
       done
-      if [[ \"\$BOOTSTRAP_OK\" -ne 1 ]]; then
-        echo \"Error: launchd service did not load: ${SERVICE_LABEL}\" >&2
-        echo \"Plist: \$PLIST\" >&2
-        ls -l \"\$PLIST\" >&2 || true
-        if command -v plutil >/dev/null 2>&1; then
-          plutil -p \"\$PLIST\" >&2 || true
-        fi
-        exit 1
-      fi
-      echo \"Service loaded in launchd domain: \$DOMAIN\"
-      echo 'Service restarted via launchd'
+      echo \"Services loaded in launchd domain: \$DOMAIN\"
+      echo 'Services restarted via launchd'
 
     elif command -v systemctl >/dev/null 2>&1; then
       echo \"==> Using systemd (Linux)\"
-      SERVICE_FILE=\"\$HOME/.config/systemd/user/${SERVICE_LABEL}.service\"
 
       # Create systemd user directory
       mkdir -p \"\$HOME/.config/systemd/user\"
@@ -1195,37 +1461,60 @@ EOF_PLIST
         rm -f \"\$HOME/.config/systemd/user/\${OLD_SERVICE_LABEL}.service\"
       done
 
-      # Create systemd service file
-      cat > \"\$SERVICE_FILE\" << EOF_SYSTEMD
+      write_systemd_service() {
+        local service_label=\"\$1\"
+        local service_description=\"\$2\"
+        local service_log_file=\"\$3\"
+        local service_error_log_file=\"\$4\"
+        local start_wrapper=\"\$5\"
+        local service_file=\"\$HOME/.config/systemd/user/\${service_label}.service\"
+        cat > \"\$service_file\" << EOF_SYSTEMD
 [Unit]
-Description=${SERVICE_DESCRIPTION}
+Description=\${service_description}
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=\$REMOTE_DIR_EXPANDED
-ExecStart=START_WRAPPER_PLACEHOLDER
+ExecStart=\${start_wrapper}
 Restart=always
 RestartSec=10
-StandardOutput=append:\$REMOTE_DIR_EXPANDED/${PROJECT_NAME}.log
-StandardError=append:\$REMOTE_DIR_EXPANDED/${PROJECT_NAME}.error.log
+StandardOutput=append:\$REMOTE_DIR_EXPANDED/\${service_log_file}
+StandardError=append:\$REMOTE_DIR_EXPANDED/\${service_error_log_file}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
 
 [Install]
 WantedBy=default.target
 EOF_SYSTEMD
+        printf '%s\n' \"\$service_file\"
+      }
 
-      sed -i \"s|START_WRAPPER_PLACEHOLDER|\$START_WRAPPER|g\" \"\$SERVICE_FILE\"
-
-      # Reload systemd, enable and restart service
+      for idx in \$(seq 0 \$((SERVICE_COUNT - 1))); do
+        array_index=\$((idx + ARRAY_OFFSET))
+        service_name=\"\${SERVICE_NAMES[\$array_index]}\"
+        service_label=\"\${SERVICE_LABELS[\$array_index]}\"
+        if [[ \"\$service_name\" == \"api\" ]]; then
+          service_description=\"${PROJECT_NAME} API Service\"
+        else
+          service_description=\"${PROJECT_NAME} \${service_name} Service\"
+        fi
+        service_log_file=\"\${SERVICE_LOG_FILES[\$array_index]}\"
+        service_error_log_file=\"\${SERVICE_ERROR_LOG_FILES[\$array_index]}\"
+        requested_entry=\"\${SERVICE_ENTRY_FILES[\$array_index]}\"
+        entry_file=\"\$(detect_entry_file \"\$requested_entry\")\"
+        start_wrapper=\"\$(build_wrapper \"\$service_name\" \"\$entry_file\")\"
+        write_systemd_service \"\$service_label\" \"\$service_description\" \"\$service_log_file\" \"\$service_error_log_file\" \"\$start_wrapper\" >/dev/null
+      done
       systemctl --user daemon-reload
-      systemctl --user enable ${SERVICE_LABEL}.service
-      systemctl --user restart ${SERVICE_LABEL}.service
-      echo 'Service restarted via systemd'
-
-      # Show service status
-      systemctl --user status ${SERVICE_LABEL}.service --no-pager || true
+      for idx in \$(seq 0 \$((SERVICE_COUNT - 1))); do
+        array_index=\$((idx + ARRAY_OFFSET))
+        service_label=\"\${SERVICE_LABELS[\$array_index]}\"
+        systemctl --user enable \"\${service_label}.service\"
+        systemctl --user restart \"\${service_label}.service\"
+        systemctl --user status \"\${service_label}.service\" --no-pager || true
+      done
+      echo 'Services restarted via systemd'
 
     else
       echo \"Error: Neither launchd nor systemd found. Cannot manage service.\" >&2
@@ -1237,34 +1526,44 @@ fi
 if [[ "$QUICK_MODE" == "1" ]]; then
   echo "==> Quick mode enabled; skipping healthcheck verification."
 else
-  echo "==> Verifying service healthcheck..."
-  HEALTHCHECK_URL="http://localhost:${STARTUP_PORT}/healthcheck"
-  HEALTHCHECK_CMD="curl -sS --max-time 10 ${HEALTHCHECK_URL}"
-  echo "   Debug command:"
-  echo "   ssh ${HOST} '${HEALTHCHECK_CMD}'"
+  echo "==> Verifying service healthchecks..."
+  for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
+    current_service_name="${SERVICE_NAMES[$idx]}"
+    current_startup_port="${SERVICE_STARTUP_PORTS[$idx]}"
+    current_service_label="${SERVICE_LABELS[$idx]}"
+    if [[ "$current_startup_port" == "__NONE__" ]]; then
+      echo "   Skipping healthcheck for ${current_service_label} (${current_service_name}): no startup port configured."
+      continue
+    fi
 
-  healthcheck_ok=0
-  healthcheck_last_output=""
-  for attempt in {1..10}; do
-    if healthcheck_last_output="$(ssh "$HOST" "$HEALTHCHECK_CMD" 2>&1)"; then
-      if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|\"ok\"[[:space:]]*:[[:space:]]*true'; then
-        healthcheck_ok=1
-        break
+    HEALTHCHECK_URL="http://localhost:${current_startup_port}/healthcheck"
+    HEALTHCHECK_CMD="curl -sS --max-time 10 ${HEALTHCHECK_URL}"
+    echo "   ${current_service_label} (${current_service_name}):"
+    echo "   ssh ${HOST} '${HEALTHCHECK_CMD}'"
+
+    healthcheck_ok=0
+    healthcheck_last_output=""
+    for attempt in {1..10}; do
+      if healthcheck_last_output="$(ssh "$HOST" "$HEALTHCHECK_CMD" 2>&1)"; then
+        if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|\"ok\"[[:space:]]*:[[:space:]]*true'; then
+          healthcheck_ok=1
+          break
+        fi
       fi
-    fi
-    sleep 2
-  done
+      sleep 2
+    done
 
-  if [[ "$healthcheck_ok" -eq 1 ]]; then
-    echo "✅ Healthcheck OK at ${HEALTHCHECK_URL}"
-    echo "   Response: ${healthcheck_last_output}"
-  else
-    echo "❌ Healthcheck failed at ${HEALTHCHECK_URL}" >&2
-    if [[ -n "$healthcheck_last_output" ]]; then
-      echo "   Last output: ${healthcheck_last_output}" >&2
+    if [[ "$healthcheck_ok" -eq 1 ]]; then
+      echo "✅ Healthcheck OK for ${current_service_name} at ${HEALTHCHECK_URL}"
+      echo "   Response: ${healthcheck_last_output}"
+    else
+      echo "❌ Healthcheck failed for ${current_service_name} at ${HEALTHCHECK_URL}" >&2
+      if [[ -n "$healthcheck_last_output" ]]; then
+        echo "   Last output: ${healthcheck_last_output}" >&2
+      fi
+      exit 1
     fi
-    exit 1
-  fi
+  done
 fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
@@ -1331,20 +1630,38 @@ else
         ssh "$HOST" "sudo docker inspect prometheus --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
       )"
 
-      if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
-        AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_HOST_IP}:${METRICS_PORT}"
-      elif [[ -n "$AUTO_PROM_GW" ]]; then
-        AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_GW}:${METRICS_PORT}"
-      else
-        AUTO_PROM_SCRAPE_TARGET="host.docker.internal:${METRICS_PORT}"
+      AUTO_PROM_METRICS_PORTS=()
+      for current_metrics_port in "${SERVICE_METRICS_PORTS[@]}"; do
+        if [[ "$current_metrics_port" == "__NONE__" || -z "$current_metrics_port" ]]; then
+          continue
+        fi
+        AUTO_PROM_METRICS_PORTS+=("$current_metrics_port")
+      done
+      if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -eq 0 && -n "${METRICS_PORT:-}" ]]; then
+        AUTO_PROM_METRICS_PORTS=("$METRICS_PORT")
       fi
+      typeset -U AUTO_PROM_METRICS_PORTS
+
+      if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
+        AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_HOST_IP"
+      elif [[ -n "$AUTO_PROM_GW" ]]; then
+        AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_GW"
+      else
+        AUTO_PROM_SCRAPE_HOST="host.docker.internal"
+      fi
+
+      AUTO_PROM_SCRAPE_TARGETS_ARR=()
+      for current_metrics_port in "${AUTO_PROM_METRICS_PORTS[@]}"; do
+        AUTO_PROM_SCRAPE_TARGETS_ARR+=("${AUTO_PROM_SCRAPE_HOST}:${current_metrics_port}")
+      done
+      AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_SCRAPE_TARGETS_ARR[1]}"
+      AUTO_PROM_SCRAPE_TARGETS="${(j:,:)AUTO_PROM_SCRAPE_TARGETS_ARR}"
 
       echo "   Prometheus config: ${AUTO_PROM_CONFIG_FILE}"
       echo "   Host IP candidate: ${AUTO_PROM_HOST_IP:-<none>}"
       echo "   Docker GW fallback: ${AUTO_PROM_GW:-<none>}"
-      echo "   Prometheus scrape target: ${AUTO_PROM_SCRAPE_TARGET}"
+      echo "   Prometheus scrape targets: ${AUTO_PROM_SCRAPE_TARGETS}"
 
-      AUTO_PROM_SCRAPE_PORT="${AUTO_PROM_SCRAPE_TARGET##*:}"
       AUTO_PROM_NET_NAME="$(
         ssh "$HOST" "sudo docker inspect prometheus --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
       )"
@@ -1355,8 +1672,10 @@ else
         )"
       fi
       if [[ -n "$AUTO_PROM_SUBNET" ]]; then
-        echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
-        ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
+        for AUTO_PROM_SCRAPE_PORT in "${AUTO_PROM_METRICS_PORTS[@]}"; do
+          echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
+          ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
+        done
       fi
 
       if [[ -z "${GRAFANA_PASSWORD:-}" ]]; then
@@ -1384,6 +1703,7 @@ else
       METRICS_PORT="$METRICS_PORT" \
       DASHBOARD_DIR="$PROJECT_DASHBOARD_DIR" \
       PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
+      PROM_SCRAPE_TARGETS="${PROM_SCRAPE_TARGETS:-${AUTO_PROM_SCRAPE_TARGETS}}" \
       PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
       GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-}" \
         "$DASHBOARD_SCRIPT"

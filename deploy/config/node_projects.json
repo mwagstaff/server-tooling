@@ -22,7 +22,52 @@
         ],
         "path": "/Users/mwagstaff/dev/top-scores/api",
         "start_command": "npm start",
-        "metrics_port": 3011
+        "startup_port": 3011,
+        "metrics_port": 3011,
+        "service_label": "com.top-scores.api",
+        "service_description": "top-scores API Service",
+        "services": [
+            {
+                "name": "scraper",
+                "service_label": "com.top-scores.scraper",
+                "service_description": "top-scores Scraper Service",
+                "entry_file": "scraper.js",
+                "startup_port": 3013,
+                "metrics_port": 3013,
+                "log_file": "top-scores-scraper.log",
+                "error_log_file": "top-scores-scraper.error.log"
+            },
+            {
+                "name": "api",
+                "service_label": "com.top-scores.api",
+                "service_description": "top-scores API Service",
+                "entry_file": "server.js",
+                "startup_port": 3011,
+                "metrics_port": 3011,
+                "log_file": "top-scores.log",
+                "error_log_file": "top-scores.error.log"
+            },
+            {
+                "name": "monitor",
+                "service_label": "com.top-scores.monitor",
+                "service_description": "top-scores Monitor Service",
+                "entry_file": "monitor.js",
+                "startup_port": 3014,
+                "metrics_port": 3014,
+                "log_file": "top-scores-monitor.log",
+                "error_log_file": "top-scores-monitor.error.log"
+            },
+            {
+                "name": "audit",
+                "service_label": "com.top-scores.audit",
+                "service_description": "top-scores Audit Service",
+                "entry_file": "audit.js",
+                "startup_port": 3015,
+                "metrics_port": 3015,
+                "log_file": "top-scores-audit.log",
+                "error_log_file": "top-scores-audit.error.log"
+            }
+        ]
     },
     {
         "name": "top-scores-web",
