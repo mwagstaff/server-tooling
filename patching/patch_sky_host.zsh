@@ -22,6 +22,8 @@ set -euo pipefail
 #   --npm-project-dirs DIRS   Alias for --npm-project-roots
 #   --compose-dirs DIRS       Comma-separated remote dirs where docker compose pull/up runs, default ~/monitoring
 #   --allow-ports PORTS       Comma-separated UFW TCP ports to allow, default 80,443
+#   --docker-host-scrape-ports PORTS
+#                             UFW TCP port/range Docker networks may scrape on host, default 3010:3015
 #   --skip-stack-updates      Skip npm/docker/cloudflared/tailscale update attempts
 #   --skip-livepatch          Skip canonical-livepatch snap install
 #   --skip-ssh-hardening      Do not enforce SSH hardening drop-in
@@ -38,6 +40,7 @@ FULL_UPGRADE_TIME="${PATCH_FULL_UPGRADE_TIME:-Sun 04:00}"
 NPM_PROJECT_ROOTS="${PATCH_NPM_PROJECT_ROOTS:-${PATCH_NPM_PROJECT_DIRS:-~/dev}}"
 COMPOSE_DIRS="${PATCH_COMPOSE_DIRS:-~/monitoring}"
 ALLOW_PORTS="${PATCH_ALLOW_PORTS:-80,443}"
+DOCKER_HOST_SCRAPE_PORTS="${PATCH_DOCKER_HOST_SCRAPE_PORTS:-3010:3015}"
 SKIP_STACK_UPDATES=0
 SKIP_LIVEPATCH=0
 SKIP_SSH_HARDENING=0
@@ -66,6 +69,8 @@ Options:
   --npm-project-dirs DIRS   Alias for --npm-project-roots
   --compose-dirs DIRS       Comma-separated remote dirs where docker compose pull/up runs, default ~/monitoring
   --allow-ports PORTS       Comma-separated UFW TCP ports to allow, default 80,443
+  --docker-host-scrape-ports PORTS
+                            UFW TCP port/range Docker networks may scrape on host, default 3010:3015
   --skip-stack-updates      Skip npm/docker/cloudflared/tailscale update attempts
   --skip-livepatch          Skip canonical-livepatch snap install
   --skip-ssh-hardening      Do not enforce SSH hardening drop-in
@@ -128,6 +133,14 @@ while [[ $# -gt 0 ]]; do
       ALLOW_PORTS="$2"
       shift 2
       ;;
+    --docker-host-scrape-ports)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --docker-host-scrape-ports" >&2
+        exit 1
+      fi
+      DOCKER_HOST_SCRAPE_PORTS="$2"
+      shift 2
+      ;;
     --skip-stack-updates)
       SKIP_STACK_UPDATES=1
       shift
@@ -171,12 +184,12 @@ shell_quote() {
 
 echo "==> Patching and hardening host: ${TARGET_HOST}"
 echo "==> dry_run=${DRY_RUN} email=${EMAIL} reboot_time=${REBOOT_TIME} full_upgrade_time=${FULL_UPGRADE_TIME}"
-echo "==> npm_project_roots=${NPM_PROJECT_ROOTS:-none} compose_dirs=${COMPOSE_DIRS:-none} allow_ports=${ALLOW_PORTS}"
+echo "==> npm_project_roots=${NPM_PROJECT_ROOTS:-none} compose_dirs=${COMPOSE_DIRS:-none} allow_ports=${ALLOW_PORTS} docker_host_scrape_ports=${DOCKER_HOST_SCRAPE_PORTS:-none}"
 echo "==> skip_stack_updates=${SKIP_STACK_UPDATES} skip_livepatch=${SKIP_LIVEPATCH} skip_ssh_hardening=${SKIP_SSH_HARDENING} skip_ufw=${SKIP_UFW}"
 echo
 
 ssh -o BatchMode=yes -o ConnectTimeout=10 "${TARGET_HOST}" \
-  "DRY_RUN=$(shell_quote "${DRY_RUN}") ALERT_EMAIL=$(shell_quote "${EMAIL}") REBOOT_TIME=$(shell_quote "${REBOOT_TIME}") FULL_UPGRADE_TIME=$(shell_quote "${FULL_UPGRADE_TIME}") NPM_PROJECT_ROOTS=$(shell_quote "${NPM_PROJECT_ROOTS}") COMPOSE_DIRS=$(shell_quote "${COMPOSE_DIRS}") ALLOW_PORTS=$(shell_quote "${ALLOW_PORTS}") SKIP_STACK_UPDATES=$(shell_quote "${SKIP_STACK_UPDATES}") SKIP_LIVEPATCH=$(shell_quote "${SKIP_LIVEPATCH}") SKIP_SSH_HARDENING=$(shell_quote "${SKIP_SSH_HARDENING}") SKIP_UFW=$(shell_quote "${SKIP_UFW}") bash -s" <<'REMOTE_SCRIPT'
+  "DRY_RUN=$(shell_quote "${DRY_RUN}") ALERT_EMAIL=$(shell_quote "${EMAIL}") REBOOT_TIME=$(shell_quote "${REBOOT_TIME}") FULL_UPGRADE_TIME=$(shell_quote "${FULL_UPGRADE_TIME}") NPM_PROJECT_ROOTS=$(shell_quote "${NPM_PROJECT_ROOTS}") COMPOSE_DIRS=$(shell_quote "${COMPOSE_DIRS}") ALLOW_PORTS=$(shell_quote "${ALLOW_PORTS}") DOCKER_HOST_SCRAPE_PORTS=$(shell_quote "${DOCKER_HOST_SCRAPE_PORTS}") SKIP_STACK_UPDATES=$(shell_quote "${SKIP_STACK_UPDATES}") SKIP_LIVEPATCH=$(shell_quote "${SKIP_LIVEPATCH}") SKIP_SSH_HARDENING=$(shell_quote "${SKIP_SSH_HARDENING}") SKIP_UFW=$(shell_quote "${SKIP_UFW}") bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 print_section() {
@@ -262,6 +275,21 @@ discover_npm_project_dirs() {
           dirname "${package_json}"
         done
   done | sort -u
+}
+
+discover_docker_network_subnets() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  run_priv docker network ls -q 2>/dev/null \
+    | while IFS= read -r network_id; do
+        [ -n "${network_id}" ] || continue
+        run_priv docker network inspect \
+          --format '{{range .IPAM.Config}}{{if .Subnet}}{{.Subnet}}{{"\n"}}{{end}}{{end}}' \
+          "${network_id}" 2>/dev/null || true
+      done \
+    | awk 'NF && $0 ~ /^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/ {print}' \
+    | sort -u
 }
 
 write_root_file() {
@@ -545,6 +573,7 @@ FULL_UPGRADE_TIME="${FULL_UPGRADE_TIME:-Sun 04:00}"
 NPM_PROJECT_ROOTS="${NPM_PROJECT_ROOTS:-~/dev}"
 COMPOSE_DIRS="${COMPOSE_DIRS:-~/monitoring}"
 ALLOW_PORTS="${ALLOW_PORTS:-80,443}"
+DOCKER_HOST_SCRAPE_PORTS="${DOCKER_HOST_SCRAPE_PORTS:-3010:3015}"
 SKIP_STACK_UPDATES="${SKIP_STACK_UPDATES:-0}"
 SKIP_LIVEPATCH="${SKIP_LIVEPATCH:-0}"
 SKIP_SSH_HARDENING="${SKIP_SSH_HARDENING:-0}"
@@ -713,6 +742,16 @@ else
       run_cmd ufw allow "${port}/tcp"
     fi
   done
+  if [ -n "${DOCKER_HOST_SCRAPE_PORTS}" ] && command -v docker >/dev/null 2>&1; then
+    mapfile -t docker_subnets < <(discover_docker_network_subnets)
+    if [ "${#docker_subnets[@]}" -eq 0 ]; then
+      echo "No Docker network subnets found for host scrape UFW rules."
+    else
+      for subnet in "${docker_subnets[@]}"; do
+        run_cmd ufw allow in from "${subnet}" to any port "${DOCKER_HOST_SCRAPE_PORTS}" proto tcp
+      done
+    fi
+  fi
   run_cmd ufw logging on
   run_cmd ufw --force enable
   run_cmd systemctl enable --now ufw
