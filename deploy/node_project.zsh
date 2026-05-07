@@ -70,6 +70,19 @@ get_project_build_command() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
 }
 
+get_project_remote_dir() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .remote_dir // empty' "$CONFIG_FILE"
+}
+
+get_project_static_env() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) | .static_env // {} |
+    to_entries[] | "export \(.key)=\(.value | @sh)"
+  ' "$CONFIG_FILE"
+}
+
 project_package_has_script() {
   local project_dir="$1"
   local script_name="$2"
@@ -802,7 +815,12 @@ PROJECT_IS_VITE=0
 PROJECT_HAS_PREPARE_ASSETS=0
 PROJECT_BUILD_RUNS_PREPARE_ASSETS=0
 
-REMOTE_DIR="~/dev/${PROJECT_NAME}"
+CONFIGURED_REMOTE_DIR="$(get_project_remote_dir "$PROJECT_NAME")"
+if [[ -n "$CONFIGURED_REMOTE_DIR" ]]; then
+  REMOTE_DIR="$CONFIGURED_REMOTE_DIR"
+else
+  REMOTE_DIR="~/dev/${PROJECT_NAME}"
+fi
 LEGACY_SERVICE_LABELS_SSH="${(j: :)${(q)LEGACY_SERVICE_LABELS}}"
 
 echo "==> Deploying project: $PROJECT_NAME"
@@ -835,6 +853,11 @@ fi
 
 if project_uses_vite "$LOCAL_DIR"; then
   PROJECT_IS_VITE=1
+fi
+
+PROJECT_IS_PNPM=0
+if [[ -f "$LOCAL_DIR/pnpm-workspace.yaml" || -f "$LOCAL_DIR/pnpm-lock.yaml" ]]; then
+  PROJECT_IS_PNPM=1
 fi
 
 if project_package_has_script "$LOCAL_DIR" "prepare-assets"; then
@@ -870,7 +893,6 @@ rsync -az --delete \
   --exclude '.DS_Store' \
   --exclude 'npm-debug.log' \
   --exclude 'yarn.lock' \
-  --exclude 'pnpm-lock.yaml' \
   --exclude '.env' \
   --exclude "$BW_REMOTE_ENV_FILE_NAME" \
   --exclude '.start-with-bw-env.sh' \
@@ -895,6 +917,13 @@ ssh "$HOST" "
     echo \"   Linked \$APP_CERTS_DIR -> \$SHARED_CERTS_DIR\"
   fi
 "
+
+STATIC_ENV_CONTENT="$(get_project_static_env "$PROJECT_NAME")"
+if [[ -n "$STATIC_ENV_CONTENT" ]]; then
+  echo "==> Writing static (non-sensitive) environment config..."
+  printf '#!/usr/bin/env bash\n%s\n' "$STATIC_ENV_CONTENT" | \
+    ssh "$HOST" "cat > ${REMOTE_DIR}/.static-config.env.sh && chmod 600 ${REMOTE_DIR}/.static-config.env.sh"
+fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
   echo "==> Quick mode enabled; skipping standard dependency install."
@@ -923,7 +952,15 @@ if [[ "$QUICK_MODE" == "1" ]]; then
   fi
 else
   echo "==> Installing deps on server..."
-  if [[ -n "$BUILD_COMMAND" ]]; then
+  if [[ "$PROJECT_IS_PNPM" == "1" ]]; then
+    if [[ -n "$BUILD_COMMAND" ]]; then
+      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+        cd $REMOTE_DIR && pnpm install"
+    else
+      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+        cd $REMOTE_DIR && pnpm install --prod"
+    fi
+  elif [[ -n "$BUILD_COMMAND" ]]; then
     ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
       cd $REMOTE_DIR && \
       if [[ -f package-lock.json ]]; then
@@ -947,10 +984,12 @@ else
       cd $REMOTE_DIR && \
       $BUILD_COMMAND"
 
-    echo "==> Pruning dev dependencies on server..."
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
-      cd $REMOTE_DIR && \
-      npm prune --omit=dev"
+    if [[ "$PROJECT_IS_PNPM" != "1" ]]; then
+      echo "==> Pruning dev dependencies on server..."
+      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+        cd $REMOTE_DIR && \
+        npm prune --omit=dev"
+    fi
   fi
 fi
 
@@ -963,16 +1002,27 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   run_bw_with_session sync >/dev/null
 
   bw_items_json="$(run_bw_with_session list items --folderid "$BW_FOLDER_ID")"
+  project_aliases_json="$(jq -c --arg name "$PROJECT_NAME" '
+    [.[] | select(.name == $name) | .aliases // [] | .[]] | map(ascii_downcase)
+  ' "$CONFIG_FILE")"
   matching_item_ids="$(
-    echo "$bw_items_json" | jq -r --arg project "$PROJECT_NAME" --arg apps_field "$BW_APPS_FIELD_NAME" '
+    echo "$bw_items_json" | jq -r \
+      --arg project "$PROJECT_NAME" \
+      --arg apps_field "$BW_APPS_FIELD_NAME" \
+      --argjson aliases "$project_aliases_json" '
       def norm: ascii_downcase | gsub("^\\s+|\\s+$"; "");
       ($project | norm) as $project_norm
+      | ([$project_norm] + $aliases) as $project_names
       | .[]?
       | .id as $id
       | ((.fields // [] | map(select((.name // "" | norm) == ($apps_field | norm))) | .[0].value) // "") as $apps
-      | ($apps | split(",") | map(norm) | map(select(length > 0))) as $apps_tokens
+      | ($apps | split("[,;\\s]+"; "x") | map(norm) | map(select(length > 0))) as $apps_tokens
       | select(
-          $apps_tokens | any(. as $token | ($project_norm | contains($token)) or ($token | contains($project_norm)))
+          $apps_tokens | any(. as $token |
+            $project_names | any(. == $token)
+            or ($project_norm | contains($token))
+            or ($token | contains($project_norm))
+          )
         )
       | $id
     '
@@ -1116,6 +1166,7 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
+    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config.env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
@@ -1160,6 +1211,11 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
       cat > \"\$start_wrapper\" << EOF_START_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ -f \"\$STATIC_CONFIG_ENV_FILE\" ]]; then
+  # shellcheck disable=SC1090
+  source \"\$STATIC_CONFIG_ENV_FILE\"
+fi
 
 if [[ -f \"\$BW_ENV_FILE\" ]]; then
   # shellcheck disable=SC1090
@@ -1251,6 +1307,7 @@ else
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
+    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config.env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
@@ -1297,6 +1354,11 @@ else
       cat > \"\$start_wrapper\" << EOF_START_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ -f \"\$STATIC_CONFIG_ENV_FILE\" ]]; then
+  # shellcheck disable=SC1090
+  source \"\$STATIC_CONFIG_ENV_FILE\"
+fi
 
 if [[ -f \"\$BW_ENV_FILE\" ]]; then
   # shellcheck disable=SC1090

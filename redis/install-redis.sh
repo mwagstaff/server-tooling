@@ -30,6 +30,40 @@ fi
 log "Ensuring Docker starts on boot"
 ssh "${SSH_OPTS[@]}" "${HOST}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
 
+log "Ensuring redis-cli is installed"
+ssh "${SSH_OPTS[@]}" "${HOST}" bash <<'EOF'
+set -e
+
+if command -v redis-cli >/dev/null 2>&1; then
+  echo "redis-cli is already installed: $(redis-cli --version)"
+  exit 0
+fi
+
+echo "Installing redis-cli..."
+if command -v apt-get >/dev/null 2>&1; then
+  sudo apt-get update -y
+  sudo apt-get install -y redis-tools
+elif command -v dnf >/dev/null 2>&1; then
+  sudo dnf install -y redis
+elif command -v yum >/dev/null 2>&1; then
+  sudo yum install -y redis
+elif command -v apk >/dev/null 2>&1; then
+  sudo apk add --no-cache redis
+elif command -v pacman >/dev/null 2>&1; then
+  sudo pacman -Sy --noconfirm redis
+else
+  echo "ERROR: No supported package manager found to install redis-cli" >&2
+  exit 1
+fi
+
+if ! command -v redis-cli >/dev/null 2>&1; then
+  echo "ERROR: redis-cli installation completed but redis-cli is still not on PATH" >&2
+  exit 1
+fi
+
+echo "redis-cli installed: $(redis-cli --version)"
+EOF
+
 log "Setting up Redis container"
 ssh "${SSH_OPTS[@]}" "${HOST}" bash -s -- "${REDIS_VERSION}" "${REDIS_PORT}" "${REDIS_DATA_DIR}" <<'EOF'
 set -e

@@ -95,5 +95,40 @@
         "path": "/home/mwagstaff/dev/server-tooling/bromley-bins",
         "start_command": "npm start",
         "metrics_port": 3010
+    },
+    {
+        "name": "kidventures-api",
+        "aliases": ["kv-api", "kidventures"],
+        "path": "/Users/mwagstaff/dev/kidventures",
+        "remote_dir": "~/dev/kidventures",
+        "entry_file": "services/api/dist/index.js",
+        "build_command": "pnpm exec turbo build --filter @kidventures/shared-types && pnpm --filter @kidventures/api build",
+        "startup_port": 3100,
+        "metrics_port": 3100,
+        "service_label": "com.kidventures.api",
+        "service_description": "Kidventures API Service",
+        "static_env": {
+            "ADMIN_EMAILS": "mike.wagstaff@gmail.com"
+        }
+    },
+    {
+        "name": "kidventures-web",
+        "aliases": ["kv-web"],
+        "path": "/Users/mwagstaff/dev/kidventures",
+        "remote_dir": "~/dev/kidventures",
+        "entry_file": "apps/web/start.js",
+        "build_command": "pnpm exec turbo build --filter @kidventures/shared-types && pnpm --filter @kidventures/web build",
+        "startup_port": 3200,
+        "metrics_port": 3200,
+        "service_label": "com.kidventures.web",
+        "service_description": "Kidventures Website",
+        "public_url": "https://kidventures.net",
+        "static_env": {
+            "PORT": "3200",
+            "HOSTNAME": "127.0.0.1",
+            "NEXT_PUBLIC_API_URL": "https://api.skynolimit.dev/kidventures",
+            "PUBLIC_URL": "https://kidventures.net",
+            "INTERNAL_API_URL": "http://localhost:3100"
+        }
     }
 ]
