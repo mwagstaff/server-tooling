@@ -279,6 +279,88 @@ run_bw_with_session() {
   return 1
 }
 
+escape_json_string_control_chars() {
+  perl -0777 -ne '
+    my $out = "";
+    my $in_string = 0;
+    my $escaped = 0;
+
+    for (my $i = 0; $i < length($_); $i++) {
+      my $ch = substr($_, $i, 1);
+      my $ord = ord($ch);
+
+      if ($in_string) {
+        if ($escaped) {
+          $out .= $ch;
+          $escaped = 0;
+          next;
+        }
+
+        if ($ch eq "\\") {
+          $out .= $ch;
+          $escaped = 1;
+          next;
+        }
+
+        if ($ch eq "\"") {
+          $out .= $ch;
+          $in_string = 0;
+          next;
+        }
+
+        if ($ord <= 0x1f) {
+          if ($ch eq "\n") {
+            $out .= "\\n";
+          } elsif ($ch eq "\r") {
+            $out .= "\\r";
+          } elsif ($ch eq "\t") {
+            $out .= "\\t";
+          } elsif ($ch eq "\f") {
+            $out .= "\\f";
+          } elsif ($ch eq "\b") {
+            $out .= "\\b";
+          } else {
+            $out .= sprintf("\\u%04x", $ord);
+          }
+          next;
+        }
+      } elsif ($ch eq "\"") {
+        $in_string = 1;
+      }
+
+      $out .= $ch;
+    }
+
+    print $out;
+  '
+}
+
+run_bw_json_with_session() {
+  local output sanitized
+
+  output="$(run_bw_with_session "$@")"
+  if printf '%s' "$output" | jq -e . >/dev/null 2>&1; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+
+  if ! command -v perl >/dev/null 2>&1; then
+    echo "Error: Bitwarden CLI returned invalid JSON and perl is required to sanitize it" >&2
+    return 1
+  fi
+
+  sanitized="$(printf '%s' "$output" | escape_json_string_control_chars)"
+  if printf '%s' "$sanitized" | jq -e . >/dev/null 2>&1; then
+    echo "   Warning: Bitwarden returned JSON with unescaped control characters; sanitized before parsing." >&2
+    printf '%s\n' "$sanitized"
+    return 0
+  fi
+
+  echo "Error: Bitwarden CLI returned invalid JSON for: bw $*" >&2
+  echo "       Try 'bw sync' or clear the cached session: rm -f ${BW_SESSION_CACHE_FILE}" >&2
+  return 1
+}
+
 ensure_remote_port_available() {
   local host="$1"
   local port="$2"
@@ -1001,12 +1083,12 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   echo "==> Refreshing Bitwarden vault data..."
   run_bw_with_session sync >/dev/null
 
-  bw_items_json="$(run_bw_with_session list items --folderid "$BW_FOLDER_ID")"
+  bw_items_json="$(run_bw_json_with_session list items --folderid "$BW_FOLDER_ID")"
   project_aliases_json="$(jq -c --arg name "$PROJECT_NAME" '
     [.[] | select(.name == $name) | .aliases // [] | .[]] | map(ascii_downcase)
   ' "$CONFIG_FILE")"
   matching_item_ids="$(
-    echo "$bw_items_json" | jq -r \
+    printf '%s\n' "$bw_items_json" | jq -r \
       --arg project "$PROJECT_NAME" \
       --arg apps_field "$BW_APPS_FIELD_NAME" \
       --argjson aliases "$project_aliases_json" '
@@ -1040,9 +1122,9 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   typeset -a matched_env_var_names=()
   while IFS= read -r item_id; do
     [[ -z "$item_id" ]] && continue
-    item_json="$(run_bw_with_session get item "$item_id")"
-    item_name="$(echo "$item_json" | jq -r '.name // empty')"
-    item_value="$(echo "$item_json" | jq -r --arg apps_field "$BW_APPS_FIELD_NAME" '
+    item_json="$(run_bw_json_with_session get item "$item_id")"
+    item_name="$(printf '%s\n' "$item_json" | jq -r '.name // empty')"
+    item_value="$(printf '%s\n' "$item_json" | jq -r --arg apps_field "$BW_APPS_FIELD_NAME" '
       ([.fields[]?
         | select((.name // "" | ascii_downcase) != ($apps_field | ascii_downcase))
         | .value
