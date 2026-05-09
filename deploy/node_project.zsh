@@ -555,6 +555,23 @@ project_query_looks_like_project() {
   [[ "$status" -eq 0 || "$status" -eq 2 ]]
 }
 
+notify_deploy_complete() {
+  local project_name="$1"
+  local host="$2"
+
+  printf '\a'
+
+  if [[ "$OSTYPE" == darwin* ]] && command -v osascript >/dev/null 2>&1; then
+    osascript - "$project_name" "$host" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+  set projectName to item 1 of argv
+  set hostName to item 2 of argv
+  display notification ("Deploy complete on " & hostName) with title "Node deploy" subtitle projectName
+end run
+APPLESCRIPT
+  fi
+}
+
 tail_with_redeploy_controls() {
   local tail_script="$1"
   shift
@@ -1858,6 +1875,7 @@ else
 fi
 
 echo "✅ Deploy complete."
+notify_deploy_complete "$PROJECT_NAME" "$HOST"
 
 if [[ "$TAIL_MODE" == "1" ]]; then
   TAIL_SCRIPT="$SCRIPT_DIR/tail_node_project.zsh"
