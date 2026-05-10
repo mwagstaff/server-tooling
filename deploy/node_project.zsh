@@ -559,16 +559,20 @@ notify_deploy_complete() {
   local project_name="$1"
   local host="$2"
 
-  printf '\a'
+  if [[ "$OSTYPE" == darwin* ]]; then
+    if command -v say >/dev/null 2>&1; then
+      say "Deploy complete: ${project_name}" >/dev/null 2>&1 || true
+    fi
 
-  if [[ "$OSTYPE" == darwin* ]] && command -v osascript >/dev/null 2>&1; then
-    osascript - "$project_name" "$host" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+    if command -v osascript >/dev/null 2>&1; then
+      osascript - "$project_name" "$host" <<'APPLESCRIPT' >/dev/null 2>&1 || true
 on run argv
   set projectName to item 1 of argv
   set hostName to item 2 of argv
   display notification ("Deploy complete on " & hostName) with title "Node deploy" subtitle projectName
 end run
 APPLESCRIPT
+    fi
   fi
 }
 
