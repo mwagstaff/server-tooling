@@ -998,6 +998,7 @@ rsync -az --delete \
   --exclude 'certs' \
   --exclude 'coverage' \
   --exclude 'dist' \
+  --exclude 'scripts/' \
   --exclude '.next' \
   --exclude '.turbo' \
   --exclude '*.local' \
