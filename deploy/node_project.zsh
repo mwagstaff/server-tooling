@@ -630,6 +630,72 @@ tail_with_redeploy_controls() {
   fi
 }
 
+run_remote_pnpm_install() {
+  local -a install_args=("$@")
+
+  ssh "$HOST" "bash -s" -- "$REMOTE_DIR" "${install_args[@]}" <<'REMOTE_SCRIPT'
+set -euo pipefail
+
+export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+
+remote_dir="$1"
+shift
+
+case "$remote_dir" in
+  "~")
+    remote_dir="$HOME"
+    ;;
+  "~/"*)
+    remote_dir="$HOME/${remote_dir#~/}"
+    ;;
+esac
+
+cd "$remote_dir"
+
+lock_key="$(printf '%s' "$PWD" | cksum | awk '{print $1}')"
+lock_dir="${TMPDIR:-/tmp}/node_project_pnpm_${USER:-user}_${lock_key}.lock"
+lock_timeout_seconds="${DEPLOY_PNPM_LOCK_TIMEOUT_SECONDS:-300}"
+lock_start="$(date +%s)"
+lock_acquired=0
+tmp_output=""
+
+cleanup() {
+  if [[ -n "$tmp_output" ]]; then
+    rm -f "$tmp_output"
+  fi
+  if [[ "$lock_acquired" == "1" ]]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  now="$(date +%s)"
+  if (( now - lock_start >= lock_timeout_seconds )); then
+    echo "Timed out waiting for pnpm install lock: $lock_dir" >&2
+    exit 1
+  fi
+  echo "Waiting for another pnpm install in $PWD to finish..."
+  sleep 2
+done
+lock_acquired=1
+
+tmp_output="$(mktemp "${TMPDIR:-/tmp}/node_project_pnpm.XXXXXX" 2>/dev/null || mktemp -t node_project_pnpm)"
+if pnpm install "$@" 2>&1 | tee "$tmp_output"; then
+  exit 0
+fi
+install_status="${PIPESTATUS[0]}"
+
+if grep -Eq "ENOENT.*node_modules/\\.pnpm/node_modules|node_modules/\\.pnpm/node_modules.*ENOENT" "$tmp_output"; then
+  echo "pnpm hit a hoisted node_modules ENOENT; clearing hoisted links and retrying once..." >&2
+  rm -rf node_modules/.pnpm/node_modules
+  pnpm install "$@"
+else
+  exit "$install_status"
+fi
+REMOTE_SCRIPT
+}
+
 load_cached_bw_session() {
   [[ "$BW_SESSION_CACHE_ENABLED" == "1" ]] || return 1
   [[ -f "$BW_SESSION_CACHE_FILE" ]] || return 1
@@ -1058,11 +1124,9 @@ else
   echo "==> Installing deps on server..."
   if [[ "$PROJECT_IS_PNPM" == "1" ]]; then
     if [[ -n "$BUILD_COMMAND" ]]; then
-      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
-        cd $REMOTE_DIR && pnpm install"
+      run_remote_pnpm_install
     else
-      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
-        cd $REMOTE_DIR && pnpm install --prod"
+      run_remote_pnpm_install --prod
     fi
   elif [[ -n "$BUILD_COMMAND" ]]; then
     ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
