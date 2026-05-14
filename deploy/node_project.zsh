@@ -83,6 +83,11 @@ get_project_static_env() {
   ' "$CONFIG_FILE"
 }
 
+get_project_bw_remote_env_file_name() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .bw_remote_env_file_name // empty' "$CONFIG_FILE"
+}
+
 project_package_has_script() {
   local project_dir="$1"
   local script_name="$2"
@@ -561,7 +566,7 @@ notify_deploy_complete() {
 
   if [[ "$OSTYPE" == darwin* ]]; then
     if command -v say >/dev/null 2>&1; then
-      say "Deploy complete: ${project_name}" >/dev/null 2>&1 || true
+      afplay /System/Library/Sounds/Glass.aiff
     fi
 
     if command -v osascript >/dev/null 2>&1; then
@@ -888,6 +893,10 @@ SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
 SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
 LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
 SERVICES_JSON="$(get_project_services_json "$PROJECT_NAME")"
+CONFIGURED_BW_REMOTE_ENV_FILE_NAME="$(get_project_bw_remote_env_file_name "$PROJECT_NAME")"
+if [[ -n "$CONFIGURED_BW_REMOTE_ENV_FILE_NAME" ]]; then
+  BW_REMOTE_ENV_FILE_NAME="$CONFIGURED_BW_REMOTE_ENV_FILE_NAME"
+fi
 
 if [[ -z "$SERVICE_LABEL" ]]; then
   SERVICE_LABEL="com.${PROJECT_NAME}.api"
@@ -1064,7 +1073,10 @@ rsync -az --delete \
   --exclude 'yarn.lock' \
   --exclude '.env' \
   --exclude "$BW_REMOTE_ENV_FILE_NAME" \
+  --exclude '.bw-secrets*.env.sh' \
   --exclude '.start-with-bw-env.sh' \
+  --exclude '.start-with-bw-env-*.sh' \
+  --exclude '.claude' \
   --exclude 'certs' \
   --exclude 'coverage' \
   --exclude 'dist' \
