@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-HOST="${1:-ocl}"
+HOST="${1:-sky}"
 
 CADDY_LISTEN_IP="127.0.0.1"
 CADDY_PORT="4080"
@@ -29,6 +29,7 @@ CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
 SYSTEM_CLOUDFLARED_CONFIG="/etc/cloudflared/config.yml"
 SYSTEM_CLOUDFLARED_SERVICE="/etc/systemd/system/cloudflared.service"
+CLOUDFLARED_PROTOCOL="http2"
 TUNNEL_ID_REGEX='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
 echo "==> Installing Caddy (if needed)..."
@@ -275,7 +276,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${CLOUDFLARED_BIN} --no-autoupdate --config ${SYSTEM_CLOUDFLARED_CONFIG} tunnel run
+# Prefer HTTP/2 over the default auto/QUIC transport. On sky, QUIC edge
+# connections have occasionally timed out together and briefly dropped traffic.
+ExecStart=${CLOUDFLARED_BIN} --no-autoupdate --protocol ${CLOUDFLARED_PROTOCOL} --config ${SYSTEM_CLOUDFLARED_CONFIG} tunnel run
 Restart=always
 RestartSec=5s
 TimeoutStartSec=0

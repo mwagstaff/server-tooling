@@ -109,7 +109,8 @@
         "service_label": "com.kidventures.api",
         "service_description": "Kidventures API Service",
         "static_env": {
-            "ADMIN_EMAILS": "mike.wagstaff@gmail.com"
+            "ADMIN_EMAILS": "mike.wagstaff@gmail.com",
+            "CORS_ORIGINS": "http://localhost:3200,https://kidventures.net"
         }
     },
     {
