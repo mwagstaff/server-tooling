@@ -110,7 +110,7 @@
         "service_description": "Kidventures API Service",
         "static_env": {
             "ADMIN_EMAILS": "mike.wagstaff@gmail.com",
-            "CORS_ORIGINS": "http://localhost:3200,https://kidventures.net"
+            "CORS_ORIGINS": "http://localhost:3200,https://kidsplorers.com"
         }
     },
     {
@@ -137,12 +137,12 @@
                 "error_log_file": "kidventures-web.error.log"
             }
         ],
-        "public_url": "https://kidventures.net",
+        "public_url": "https://kidsplorers.com",
         "static_env": {
             "PORT": "3200",
             "HOSTNAME": "127.0.0.1",
             "NEXT_PUBLIC_API_URL": "https://api.skynolimit.dev/kidventures",
-            "PUBLIC_URL": "https://kidventures.net",
+            "PUBLIC_URL": "https://kidsplorers.com",
             "INTERNAL_API_URL": "http://localhost:3100"
         }
     }
