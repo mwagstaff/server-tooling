@@ -8,13 +8,13 @@ set -euo pipefail
 #   HOST: Target hostname (default: sky)
 #
 # After install, run the seed:
-#   ssh sky 'cd /home/mwagstaff/dev/kidventures && npm run seed -w services/api'
+#   ssh sky 'cd /home/mwagstaff/dev/kidsplorers && npm run seed -w services/api'
 
 HOST="${1:-sky}"
 MONGO_VERSION="${MONGO_VERSION:-7}"
 MONGO_PORT="${MONGO_PORT:-27017}"
 MONGO_DATA_DIR="/var/lib/mongo-data"
-MONGO_CONTAINER="mongo-kidventures"
+MONGO_CONTAINER="mongo-kidsplorers"
 
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new)
 
@@ -171,7 +171,7 @@ echo "  Stop    :  ssh ${HOST} 'sudo docker stop ${MONGO_CONTAINER}'"
 echo "  Start   :  ssh ${HOST} 'sudo docker start ${MONGO_CONTAINER}'"
 echo ""
 echo "💾 Backups — add to cron on ${HOST}:"
-echo "  0 3 * * * sudo docker exec ${MONGO_CONTAINER} mongodump --archive --gzip --db kidventures | gzip > /backups/kidventures/\$(date +\\%Y\\%m\\%d).gz"
+echo "  0 3 * * * sudo docker exec ${MONGO_CONTAINER} mongodump --archive --gzip --db kidsplorers | gzip > /backups/kidsplorers/\$(date +\\%Y\\%m\\%d).gz"
 echo ""
 echo "📥 Next step — run the seed:"
-echo "  ssh ${HOST} 'cd ~/dev/kidventures && MONGODB_URI=mongodb://localhost:${MONGO_PORT}/kidventures npm run seed -w services/api'"
+echo "  ssh ${HOST} 'cd ~/dev/kidsplorers && MONGODB_URI=mongodb://localhost:${MONGO_PORT}/kidsplorers npm run seed -w services/api'"

@@ -97,52 +97,52 @@
         "metrics_port": 3010
     },
     {
-        "name": "kidventures-api",
-        "aliases": ["kv-api", "kidventures"],
-        "path": "/Users/mwagstaff/dev/kidventures",
-    "remote_dir": "~/dev/kidventures",
+        "name": "kidsplorers-api",
+        "aliases": ["kv-api", "kidsplorers"],
+        "path": "/Users/mwagstaff/dev/kidsplorers",
+    "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.api.env.sh",
     "entry_file": "services/api/dist/index.js",
-        "build_command": "pnpm exec turbo build --filter @kidventures/shared-types && pnpm --filter @kidventures/api build",
+        "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/api build",
         "startup_port": 3100,
         "metrics_port": 3100,
-        "service_label": "com.kidventures.api",
-        "service_description": "Kidventures API Service",
+        "service_label": "com.kidsplorers.api",
+        "service_description": "kidsplorers API Service",
         "static_env": {
             "ADMIN_EMAILS": "mike.wagstaff@gmail.com",
             "CORS_ORIGINS": "http://localhost:3200,https://kidsplorers.com"
         }
     },
     {
-        "name": "kidventures-web",
+        "name": "kidsplorers-web",
         "aliases": ["kv-web"],
-        "path": "/Users/mwagstaff/dev/kidventures",
-    "remote_dir": "~/dev/kidventures",
+        "path": "/Users/mwagstaff/dev/kidsplorers",
+    "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.web.env.sh",
     "entry_file": "apps/web/start.js",
-        "build_command": "pnpm exec turbo build --filter @kidventures/shared-types && pnpm --filter @kidventures/web build",
+        "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/web build",
         "startup_port": 3200,
         "metrics_port": 3200,
-        "service_label": "com.kidventures.web",
-        "service_description": "Kidventures Website",
+        "service_label": "com.kidsplorers.web",
+        "service_description": "kidsplorers Website",
         "services": [
             {
                 "name": "web",
-                "service_label": "com.kidventures.web",
-                "service_description": "Kidventures Website",
+                "service_label": "com.kidsplorers.web",
+                "service_description": "kidsplorers Website",
                 "entry_file": "apps/web/start.js",
                 "startup_port": 3200,
                 "metrics_port": 3200,
-                "log_file": "kidventures-web.log",
-                "error_log_file": "kidventures-web.error.log"
+                "log_file": "kidsplorers-web.log",
+                "error_log_file": "kidsplorers-web.error.log"
             }
         ],
-        "public_url": "https://kidsplorers.com",
+        "public_url": "https://kidsplorers.skynolimit.dev",
         "static_env": {
             "PORT": "3200",
             "HOSTNAME": "127.0.0.1",
-            "NEXT_PUBLIC_API_URL": "https://api.skynolimit.dev/kidventures",
-            "PUBLIC_URL": "https://kidsplorers.com",
+            "NEXT_PUBLIC_API_URL": "https://api.skynolimit.dev/kidsplorers",
+            "PUBLIC_URL": "https://kidsplorers.skynolimit.dev",
             "INTERNAL_API_URL": "http://localhost:3100"
         }
     }

@@ -20,10 +20,9 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PA
 CADDY_LISTEN_IP="127.0.0.1"
 CADDY_PORT="4080"
 CADDYFILE="/etc/caddy/Caddyfile"
-API_HOSTNAME="api.skynolimit.dev"
+API_HOSTNAME="api.kidsplorers.com"
 TOP_SCORES_HOSTNAME="top-scores.skynolimit.dev"
-KIDVENTURES_HOSTNAME="kidsplorers.com"
-KIDVENTURES_LEGACY_HOSTNAME="kidventures.skynolimit.dev"
+KIDSPLORERS_HOSTNAME="kidsplorers.com"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
@@ -55,9 +54,9 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
     }
   }
 
-  # Kidventures website on its dedicated hostname, with the old skynolimit.dev hostname kept during cutover.
-  @kidventures_web host ${KIDVENTURES_HOSTNAME} ${KIDVENTURES_LEGACY_HOSTNAME}
-  handle @kidventures_web {
+  # Kidsplorers website on its dedicated hostname
+  @kidsplorers_web host ${KIDSPLORERS_HOSTNAME}
+  handle @kidsplorers_web {
     reverse_proxy http://127.0.0.1:3200 {
       header_up Host {host}
       header_up X-Forwarded-Host {host}
@@ -126,7 +125,7 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
     }
   }
 
-  handle_path /kidventures* {
+  handle_path /kidsplorers* {
     reverse_proxy http://127.0.0.1:3100 {
       header_up Host 127.0.0.1
       header_up X-Forwarded-Host {host}
@@ -199,16 +198,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${TOP_SCORES_HOSTNAME}
-  - hostname: ${KIDVENTURES_HOSTNAME}
+  - hostname: ${KIDSPLORERS_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
       http2Origin: false
-      httpHostHeader: ${KIDVENTURES_HOSTNAME}
-  - hostname: ${KIDVENTURES_LEGACY_HOSTNAME}
-    service: http://127.0.0.1:${CADDY_PORT}
-    originRequest:
-      http2Origin: false
-      httpHostHeader: ${KIDVENTURES_LEGACY_HOSTNAME}
+      httpHostHeader: ${KIDSPLORERS_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -239,16 +233,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${TOP_SCORES_HOSTNAME}
-  - hostname: ${KIDVENTURES_HOSTNAME}
+  - hostname: ${KIDSPLORERS_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
       http2Origin: false
-      httpHostHeader: ${KIDVENTURES_HOSTNAME}
-  - hostname: ${KIDVENTURES_LEGACY_HOSTNAME}
-    service: http://127.0.0.1:${CADDY_PORT}
-    originRequest:
-      http2Origin: false
-      httpHostHeader: ${KIDVENTURES_LEGACY_HOSTNAME}
+      httpHostHeader: ${KIDSPLORERS_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -319,25 +308,20 @@ echo "--> direct Top Scores website service:"
 curl -i "http://127.0.0.1:3020/" | head -n 20 || true
 
 echo
-echo "--> via Caddy (Kidventures website hostname):"
-curl -i -H "Host: ${KIDVENTURES_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/" | head -n 5 || true
+echo "--> via Caddy (Kidsplorers website hostname):"
+curl -i -H "Host: ${KIDSPLORERS_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/" | head -n 5 || true
 
 echo
-echo "--> via Caddy (Kidventures legacy website hostname):"
-curl -i -H "Host: ${KIDVENTURES_LEGACY_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/" | head -n 5 || true
-
-echo
-echo "--> via Caddy (Kidventures API path):"
-curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/kidventures/v1/health" | head -n 5 || true
+echo "--> via Caddy (Kidsplorers API path):"
+curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/kidsplorers/v1/health" | head -n 5 || true
 
 echo
 echo "==> Done. External tests:"
 echo "    https://${API_HOSTNAME}/healthcheck"
 echo "    https://${API_HOSTNAME}/grafana"
 echo "    https://${TOP_SCORES_HOSTNAME}"
-echo "    https://${KIDVENTURES_HOSTNAME}"
-echo "    https://${KIDVENTURES_LEGACY_HOSTNAME}"
-echo "    https://${API_HOSTNAME}/kidventures/v1/health"
+echo "    https://${KIDSPLORERS_HOSTNAME}"
+echo "    https://${API_HOSTNAME}/kidsplorers/v1/health"
 EOF
 
 echo

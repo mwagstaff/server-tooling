@@ -52,6 +52,44 @@ curl_json() {
   curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" -H "Content-Type: application/json" "$@"
 }
 
+curl_json_with_status() {
+  local body_file status
+  body_file="$(mktemp)"
+  status="$(
+    curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" -H "Content-Type: application/json" \
+      -o "$body_file" -w '%{http_code}' "$@"
+  )"
+  printf '%s\n' "$status"
+  cat "$body_file"
+  rm -f "$body_file"
+}
+
+grafana_error_message() {
+  local response="$1"
+  local message
+  if jq -e . >/dev/null 2>&1 <<< "$response"; then
+    message="$(jq -r '
+      [
+        .message,
+        .error,
+        .status,
+        .errors[]?.message,
+        .errors[]?
+      ]
+      | map(select(type == "string" and length > 0))
+      | unique
+      | join("; ")
+    ' <<< "$response")"
+    if [[ -n "$message" ]]; then
+      echo "$message"
+      return
+    fi
+    jq -c . <<< "$response"
+    return
+  fi
+  printf '%s' "${response:-empty response}"
+}
+
 url_encode() {
   jq -rn --arg v "$1" '$v|@uri'
 }
@@ -464,12 +502,12 @@ EOF
 }
 
 ensure_folder() {
-  local existing_uid query response created_uid
+  local existing_uid query response created_uid status body
 
   # Prefer explicit folder UID if it already exists.
   existing_uid="$(
     curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/folders/$FOLDER_UID" \
-      | jq -r '.uid // empty'
+      | jq -r '.uid // empty' 2>/dev/null || true
   )"
   if [[ "$existing_uid" == "$FOLDER_UID" ]]; then
     echo "Using existing folder uid=$FOLDER_UID"
@@ -480,8 +518,8 @@ ensure_folder() {
   query="$(url_encode "$FOLDER_TITLE")"
   existing_uid="$(
     curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/search?type=dash-folder&query=$query" \
-      | jq -r --arg t "$FOLDER_TITLE" '.[] | select(.title == $t) | .uid' \
-      | head -n 1
+      | jq -r --arg t "$FOLDER_TITLE" '.[] | select(.title == $t) | .uid' 2>/dev/null \
+      | head -n 1 || true
   )"
 
   if [[ -n "$existing_uid" ]]; then
@@ -492,12 +530,37 @@ ensure_folder() {
 
   response="$(
     jq -cn --arg uid "$FOLDER_UID" --arg title "$FOLDER_TITLE" '{uid: $uid, title: $title}' \
-      | curl_json -X POST "$API/folders" -d @-
+      | curl_json_with_status -X POST "$API/folders" -d @-
   )"
+  status="$(head -n 1 <<< "$response")"
+  body="$(tail -n +2 <<< "$response")"
 
-  created_uid="$(jq -r '.uid // empty' <<< "$response")"
+  created_uid="$(jq -r '.uid // empty' <<< "$body" 2>/dev/null || true)"
   if [[ -z "$created_uid" ]]; then
-    echo "Failed to create Grafana folder \"$FOLDER_TITLE\": $(jq -r '.message // "unknown error"' <<< "$response")" >&2
+    if [[ "$status" == "409" || "$status" == "412" ]]; then
+      existing_uid="$(
+        curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/folders/$FOLDER_UID" \
+          | jq -r '.uid // empty' 2>/dev/null || true
+      )"
+      if [[ "$existing_uid" == "$FOLDER_UID" ]]; then
+        echo "Using existing folder uid=$FOLDER_UID"
+        return
+      fi
+
+      query="$(url_encode "$FOLDER_TITLE")"
+      existing_uid="$(
+        curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/search?type=dash-folder&query=$query" \
+          | jq -r --arg t "$FOLDER_TITLE" '.[] | select(.title == $t) | .uid' 2>/dev/null \
+          | head -n 1 || true
+      )"
+      if [[ -n "$existing_uid" ]]; then
+        FOLDER_UID="$existing_uid"
+        echo "Using existing folder \"$FOLDER_TITLE\" (uid=$FOLDER_UID)"
+        return
+      fi
+    fi
+
+    echo "Failed to create Grafana folder \"$FOLDER_TITLE\" (HTTP $status): $(grafana_error_message "$body")" >&2
     exit 1
   fi
 
