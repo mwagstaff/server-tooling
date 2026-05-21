@@ -226,6 +226,27 @@ sanitize_grafana_slug() {
   echo "$slug"
 }
 
+find_free_local_port() {
+  local port
+  for port in {32100..32199}; do
+    if command -v lsof >/dev/null 2>&1; then
+      if ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "$port"
+        return 0
+      fi
+    elif command -v nc >/dev/null 2>&1; then
+      if ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1; then
+        echo "$port"
+        return 0
+      fi
+    else
+      echo "$port"
+      return 0
+    fi
+  done
+  return 1
+}
+
 have_valid_bw_session() {
   [[ -n "${BW_SESSION:-}" ]] || return 1
   bw --nointeraction --session "$BW_SESSION" list items --folderid "$BW_FOLDER_ID" >/dev/null 2>&1
@@ -1934,6 +1955,43 @@ else
         fi
       fi
 
+      GRAFANA_IMPORT_URL="${GRAFANA_URL:-}"
+      GRAFANA_TUNNEL_PID=""
+      GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_HOST_HEADER:-}"
+      GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_FORWARDED_PREFIX:-}"
+      if [[ -z "$GRAFANA_IMPORT_URL" ]]; then
+        GRAFANA_TUNNEL_PORT="$(find_free_local_port)"
+        GRAFANA_IMPORT_URL="http://127.0.0.1:${GRAFANA_TUNNEL_PORT}"
+        GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_IMPORT_HOST_HEADER:-api.skynolimit.dev}"
+        GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_IMPORT_FORWARDED_PREFIX:-/grafana}"
+        echo "   Grafana URL: ${GRAFANA_IMPORT_URL} (SSH tunnel to ${HOST}:127.0.0.1:3001)"
+        ssh -o ExitOnForwardFailure=yes -N \
+          -L "127.0.0.1:${GRAFANA_TUNNEL_PORT}:127.0.0.1:3001" \
+          "$HOST" &
+        GRAFANA_TUNNEL_PID="$!"
+
+        tunnel_ready=0
+        for _ in {1..20}; do
+          if curl -sS --max-time 2 "${GRAFANA_IMPORT_URL}/api/health" >/dev/null 2>&1; then
+            tunnel_ready=1
+            break
+          fi
+          sleep 0.25
+        done
+
+        if [[ "$tunnel_ready" != "1" ]]; then
+          if [[ -n "$GRAFANA_TUNNEL_PID" ]]; then
+            kill "$GRAFANA_TUNNEL_PID" >/dev/null 2>&1 || true
+            wait "$GRAFANA_TUNNEL_PID" 2>/dev/null || true
+          fi
+          echo "Error: Grafana SSH tunnel did not become ready at ${GRAFANA_IMPORT_URL}" >&2
+          exit 1
+        fi
+      else
+        echo "   Grafana URL: ${GRAFANA_IMPORT_URL}"
+      fi
+
+      set +e
       DEPLOY_HOST="$HOST" \
       PROJECT_NAME="$GRAFANA_PROJECT_NAME" \
       PROJECT_SLUG="$GRAFANA_PROJECT_SLUG" \
@@ -1947,8 +2005,22 @@ else
       PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
       PROM_SCRAPE_TARGETS="${PROM_SCRAPE_TARGETS:-${AUTO_PROM_SCRAPE_TARGETS}}" \
       PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
+      GRAFANA_URL="$GRAFANA_IMPORT_URL" \
+      GRAFANA_HOST_HEADER="$GRAFANA_IMPORT_HOST_HEADER" \
+      GRAFANA_FORWARDED_PROTO="${GRAFANA_FORWARDED_PROTO:-https}" \
+      GRAFANA_FORWARDED_PREFIX="$GRAFANA_IMPORT_FORWARDED_PREFIX" \
       GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-}" \
         "$DASHBOARD_SCRIPT"
+      dashboard_status="$?"
+      set -e
+
+      if [[ -n "$GRAFANA_TUNNEL_PID" ]]; then
+        kill "$GRAFANA_TUNNEL_PID" >/dev/null 2>&1 || true
+        wait "$GRAFANA_TUNNEL_PID" 2>/dev/null || true
+      fi
+      if [[ "$dashboard_status" -ne 0 ]]; then
+        exit "$dashboard_status"
+      fi
     fi
   else
     echo "==> No Grafana dashboard import script found (checked ${LOCAL_DASHBOARD_SCRIPT} and ${CENTRAL_DASHBOARD_SCRIPT}), skipping..."

@@ -47,16 +47,35 @@ PROM_SCRAPE_JOB_NAME="${PROM_SCRAPE_JOB_NAME:-$PROJECT_SLUG}"
 PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-host.docker.internal:${METRICS_PORT:-3010}}"
 PROM_SCRAPE_TARGETS="${PROM_SCRAPE_TARGETS:-$PROM_SCRAPE_TARGET}"
 PROM_SCRAPE_METRICS_PATH="${PROM_SCRAPE_METRICS_PATH:-/metrics}"
+GRAFANA_HOST_HEADER="${GRAFANA_HOST_HEADER:-}"
+GRAFANA_FORWARDED_PROTO="${GRAFANA_FORWARDED_PROTO:-https}"
+GRAFANA_FORWARDED_PREFIX="${GRAFANA_FORWARDED_PREFIX:-}"
+
+grafana_curl() {
+  local args
+  args=(-sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD")
+  if [[ -n "$GRAFANA_HOST_HEADER" ]]; then
+    args+=(
+      -H "Host: $GRAFANA_HOST_HEADER"
+      -H "X-Forwarded-Host: $GRAFANA_HOST_HEADER"
+      -H "X-Forwarded-Proto: $GRAFANA_FORWARDED_PROTO"
+    )
+  fi
+  if [[ -n "$GRAFANA_FORWARDED_PREFIX" ]]; then
+    args+=(-H "X-Forwarded-Prefix: $GRAFANA_FORWARDED_PREFIX")
+  fi
+  curl "${args[@]}" "$@"
+}
 
 curl_json() {
-  curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" -H "Content-Type: application/json" "$@"
+  grafana_curl -H "Content-Type: application/json" "$@"
 }
 
 curl_json_with_status() {
   local body_file status
   body_file="$(mktemp)"
   status="$(
-    curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" -H "Content-Type: application/json" \
+    grafana_curl -H "Content-Type: application/json" \
       -o "$body_file" -w '%{http_code}' "$@"
   )"
   printf '%s\n' "$status"
@@ -115,12 +134,12 @@ ensure_prometheus_datasource() {
   ds_url="$PROM_DS_URL"
 
   # Prefer lookup by UID to avoid colliding with generic names like "Prometheus".
-  response="$(curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" \
+  response="$(grafana_curl \
     "$API/datasources/uid/$(url_encode "$PROM_DS_UID")")"
   existing_id="$(jq -r '.id // empty' <<< "$response")"
 
   if [[ -z "$existing_id" ]]; then
-    response="$(curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" \
+    response="$(grafana_curl \
       "$API/datasources/name/$(url_encode "$PROM_DS_NAME")")"
     existing_id="$(jq -r '.id // empty' <<< "$response")"
   fi
@@ -506,7 +525,7 @@ ensure_folder() {
 
   # Prefer explicit folder UID if it already exists.
   existing_uid="$(
-    curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/folders/$FOLDER_UID" \
+    grafana_curl "$API/folders/$FOLDER_UID" \
       | jq -r '.uid // empty' 2>/dev/null || true
   )"
   if [[ "$existing_uid" == "$FOLDER_UID" ]]; then
@@ -517,7 +536,7 @@ ensure_folder() {
   # Fall back to an existing folder title if present.
   query="$(url_encode "$FOLDER_TITLE")"
   existing_uid="$(
-    curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/search?type=dash-folder&query=$query" \
+    grafana_curl "$API/search?type=dash-folder&query=$query" \
       | jq -r --arg t "$FOLDER_TITLE" '.[] | select(.title == $t) | .uid' 2>/dev/null \
       | head -n 1 || true
   )"
@@ -539,7 +558,7 @@ ensure_folder() {
   if [[ -z "$created_uid" ]]; then
     if [[ "$status" == "409" || "$status" == "412" ]]; then
       existing_uid="$(
-        curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/folders/$FOLDER_UID" \
+        grafana_curl "$API/folders/$FOLDER_UID" \
           | jq -r '.uid // empty' 2>/dev/null || true
       )"
       if [[ "$existing_uid" == "$FOLDER_UID" ]]; then
@@ -549,7 +568,7 @@ ensure_folder() {
 
       query="$(url_encode "$FOLDER_TITLE")"
       existing_uid="$(
-        curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/search?type=dash-folder&query=$query" \
+        grafana_curl "$API/search?type=dash-folder&query=$query" \
           | jq -r --arg t "$FOLDER_TITLE" '.[] | select(.title == $t) | .uid' 2>/dev/null \
           | head -n 1 || true
       )"
@@ -572,7 +591,7 @@ delete_dashboard_uid() {
   local uid="$1"
   local reason="${2:-dashboard}"
   echo "Deleting $reason uid=$uid"
-  curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" -X DELETE "$API/dashboards/uid/$uid" >/dev/null
+  grafana_curl -X DELETE "$API/dashboards/uid/$uid" >/dev/null
 }
 
 dashboard_uid_for_file() {
@@ -656,7 +675,7 @@ import_dashboard_file() {
   # and delete any that aren't the UID we're about to use.
   # (We scope by folderUid to avoid nuking similarly-named dashboards elsewhere.)
   encoded_title="$(url_encode "$title")"
-  existing_uids="$(curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" \
+  existing_uids="$(grafana_curl \
     "$API/search?type=dash-db&folderUids=$FOLDER_UID&query=$encoded_title" \
     | jq -r --arg t "$title" '.[] | select(.title == $t) | .uid')"
 
@@ -702,7 +721,7 @@ delete_dashboards_missing_locally() {
   echo "Checking for stale dashboards in folder uid=$FOLDER_UID"
 
   # Get ALL dashboards, then filter by folderUid in jq (more reliable than API parameter)
-  curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" \
+  grafana_curl \
     "$API/search?type=dash-db" | \
     jq -r --arg folder_uid "$FOLDER_UID" \
       '.[] | select(.folderUid == $folder_uid) | .uid' | \
@@ -710,7 +729,7 @@ delete_dashboards_missing_locally() {
     [[ -z "$uid" ]] && continue
 
     # Double-check the dashboard actually belongs to our folder by fetching its metadata
-    dashboard_data="$(curl -sS -u "$GRAFANA_USER:$GRAFANA_PASSWORD" "$API/dashboards/uid/$uid")"
+    dashboard_data="$(grafana_curl "$API/dashboards/uid/$uid")"
     folder_uid="$(echo "$dashboard_data" | jq -r '.meta.folderUid // empty')"
 
     # Only delete if it's truly in our folder AND not in our local files

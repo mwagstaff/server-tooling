@@ -21,6 +21,7 @@ CADDY_LISTEN_IP="127.0.0.1"
 CADDY_PORT="4080"
 CADDYFILE="/etc/caddy/Caddyfile"
 API_HOSTNAME="api.kidsplorers.com"
+LEGACY_API_HOSTNAME="api.skynolimit.dev"
 TOP_SCORES_HOSTNAME="top-scores.skynolimit.dev"
 KIDSPLORERS_HOSTNAME="kidsplorers.com"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
@@ -42,6 +43,17 @@ fi
 echo "==> Writing Caddyfile (HTTP-only) to ${CADDYFILE}..."
 sudo tee "${CADDYFILE}" >/dev/null <<CADDY
 :${CADDY_PORT} {
+
+  # Kidsplorers API on its dedicated hostname.
+  @kidsplorers_api host ${API_HOSTNAME}
+  handle @kidsplorers_api {
+    reverse_proxy http://127.0.0.1:3100 {
+      header_up Host 127.0.0.1
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
+  }
 
   # Standalone Top Scores website on its own hostname.
   @top_scores_website host ${TOP_SCORES_HOSTNAME}
@@ -188,6 +200,11 @@ tunnel: ${TUNNEL_ID}
 credentials-file: ${CLOUDFLARED_CREDS_FILE}
 
 ingress:
+  - hostname: ${LEGACY_API_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${LEGACY_API_HOSTNAME}
   - hostname: ${API_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
@@ -223,6 +240,11 @@ tunnel: ${TUNNEL_ID}
 credentials-file: ${SYSTEM_CLOUDFLARED_CREDS_FILE}
 
 ingress:
+  - hostname: ${LEGACY_API_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${LEGACY_API_HOSTNAME}
   - hostname: ${API_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
