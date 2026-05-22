@@ -20,6 +20,10 @@ BW_REMOTE_ENV_FILE_NAME="${BW_REMOTE_ENV_FILE_NAME:-.bw-secrets.env.sh}"
 BW_ENV_SYNC="${BW_ENV_SYNC:-1}"
 BW_SESSION_CACHE_ENABLED="${BW_SESSION_CACHE_ENABLED:-1}"
 BW_SESSION_CACHE_FILE="${BW_SESSION_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-session}"
+BW_SYNC_TTL_SECONDS="${BW_SYNC_TTL_SECONDS:-900}"
+BW_SYNC_CACHE_FILE="${BW_SYNC_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-last-sync}"
+BW_FORCE_SYNC="${BW_FORCE_SYNC:-0}"
+BW_SKIP_SYNC="${BW_SKIP_SYNC:-0}"
 QUICK_MODE=0
 TAIL_MODE=0
 TAIL_ERRORS_ONLY=0
@@ -249,7 +253,9 @@ find_free_local_port() {
 
 have_valid_bw_session() {
   [[ -n "${BW_SESSION:-}" ]] || return 1
-  bw --nointeraction --session "$BW_SESSION" list items --folderid "$BW_FOLDER_ID" >/dev/null 2>&1
+  local bw_vault_status
+  bw_vault_status="$(bw --nointeraction --session "$BW_SESSION" status 2>/dev/null | jq -r '.status // empty' 2>/dev/null)" || return 1
+  [[ "$bw_vault_status" == "unlocked" ]]
 }
 
 cache_bw_session() {
@@ -269,6 +275,46 @@ clear_cached_bw_session() {
   rm -f "$BW_SESSION_CACHE_FILE"
 }
 
+bw_sync_cache_is_fresh() {
+  [[ -f "$BW_SYNC_CACHE_FILE" ]] || return 1
+  [[ "$BW_SYNC_TTL_SECONDS" =~ '^[0-9]+$' ]] || return 1
+  [[ "$BW_SYNC_TTL_SECONDS" -gt 0 ]] || return 1
+
+  local now cache_mtime age
+  now="$(date +%s)"
+  if stat -f %m "$BW_SYNC_CACHE_FILE" >/dev/null 2>&1; then
+    cache_mtime="$(stat -f %m "$BW_SYNC_CACHE_FILE")"
+  else
+    cache_mtime="$(stat -c %Y "$BW_SYNC_CACHE_FILE" 2>/dev/null)" || return 1
+  fi
+
+  age=$((now - cache_mtime))
+  [[ "$age" -ge 0 && "$age" -lt "$BW_SYNC_TTL_SECONDS" ]]
+}
+
+mark_bw_sync_cache_fresh() {
+  local cache_dir
+  cache_dir="${BW_SYNC_CACHE_FILE:h}"
+  mkdir -p "$cache_dir"
+  : > "$BW_SYNC_CACHE_FILE"
+}
+
+refresh_bw_vault_data_if_needed() {
+  if [[ "$BW_SKIP_SYNC" == "1" ]]; then
+    echo "==> Skipping Bitwarden vault refresh (BW_SKIP_SYNC=1)"
+    return 0
+  fi
+
+  if [[ "$BW_FORCE_SYNC" != "1" ]] && bw_sync_cache_is_fresh; then
+    echo "==> Using recently refreshed Bitwarden vault data (BW_SYNC_TTL_SECONDS=${BW_SYNC_TTL_SECONDS})"
+    return 0
+  fi
+
+  echo "==> Refreshing Bitwarden vault data..."
+  run_bw_with_session sync >/dev/null
+  mark_bw_sync_cache_fresh
+}
+
 bw_output_indicates_session_issue() {
   local output="$1"
   [[ "$output" == *"Vault is locked"* ]] \
@@ -281,14 +327,14 @@ bw_output_indicates_session_issue() {
 }
 
 run_bw_with_session() {
-  local output status attempt
+  local output bw_command_status attempt
 
   for attempt in 1 2; do
     output="$(bw --nointeraction --session "$BW_SESSION" "$@" 2>&1)" && {
       printf '%s\n' "$output"
       return 0
     }
-    status=$?
+    bw_command_status=$?
 
     if [[ "$attempt" -eq 1 ]] && bw_output_indicates_session_issue "$output"; then
       echo "==> Bitwarden session became invalid; unlocking again..."
@@ -299,7 +345,7 @@ run_bw_with_session() {
     fi
 
     printf '%s\n' "$output" >&2
-    return "$status"
+    return "$bw_command_status"
   done
 
   return 1
@@ -574,11 +620,11 @@ resolve_project_name_noninteractive() {
 
 project_query_looks_like_project() {
   local query="$1"
-  local status
+  local resolve_status
 
   resolve_project_name_noninteractive "$query" >/dev/null 2>&1
-  status=$?
-  [[ "$status" -eq 0 || "$status" -eq 2 ]]
+  resolve_status=$?
+  [[ "$resolve_status" -eq 0 || "$resolve_status" -eq 2 ]]
 }
 
 notify_deploy_complete() {
@@ -618,8 +664,12 @@ tail_with_redeploy_controls() {
   local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
   full_redeploy_cmd+=("${tail_flags[@]}")
 
+  local -a bitwarden_sync_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
+  bitwarden_sync_redeploy_cmd+=("-b")
+  bitwarden_sync_redeploy_cmd+=("${tail_flags[@]}")
+
   echo "==> Starting log tail..."
-  echo "    Controls: r = quick redeploy, f = full redeploy"
+  echo "    Controls: r = quick redeploy, f = full redeploy, b = deploy with forced Bitwarden sync, Ctrl+C = stop."
   echo ""
 
   zsh "$tail_script" "${tail_args[@]}" < /dev/null &
@@ -642,6 +692,13 @@ tail_with_redeploy_controls() {
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
           exec "${full_redeploy_cmd[@]}"
+          ;;
+        b|B)
+          echo ""
+          echo "==> Full redeploy with forced Bitwarden sync requested. Restarting deployment..."
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          exec "${bitwarden_sync_redeploy_cmd[@]}"
           ;;
       esac
     fi
@@ -782,6 +839,9 @@ for arg in "$@"; do
     quick|--quick|-q)
       QUICK_MODE=1
       ;;
+    --force-bitwarden-sync|--force-bw-sync|-b)
+      BW_FORCE_SYNC=1
+      ;;
     tail|--tail|-t)
       TAIL_MODE=1
       ;;
@@ -887,12 +947,13 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
+  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
   echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
   echo "  Example: $0 top web ocl --quick" >&2
   echo "  Example: $0 ocl --quick top web" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  -b/--force-bitwarden-sync/--force-bw-sync: force a Bitwarden vault refresh before reading deployment secrets" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
   echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
   echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
@@ -1199,14 +1260,13 @@ if [[ "$QUICK_MODE" == "1" ]]; then
 elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   echo "==> Syncing Bitwarden-managed environment variables..."
   ensure_bw_session
-  echo "==> Refreshing Bitwarden vault data..."
-  run_bw_with_session sync >/dev/null
+  refresh_bw_vault_data_if_needed
 
   bw_items_json="$(run_bw_json_with_session list items --folderid "$BW_FOLDER_ID")"
   project_aliases_json="$(jq -c --arg name "$PROJECT_NAME" '
     [.[] | select(.name == $name) | .aliases // [] | .[]] | map(ascii_downcase)
   ' "$CONFIG_FILE")"
-  matching_item_ids="$(
+  matching_items_jsonl="$(
     printf '%s\n' "$bw_items_json" | jq -r \
       --arg project "$PROJECT_NAME" \
       --arg apps_field "$BW_APPS_FIELD_NAME" \
@@ -1215,7 +1275,7 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
       ($project | norm) as $project_norm
       | ([$project_norm] + $aliases) as $project_names
       | .[]?
-      | .id as $id
+      | . as $item
       | ((.fields // [] | map(select((.name // "" | norm) == ($apps_field | norm))) | .[0].value) // "") as $apps
       | ($apps | split("[,;\\s]+"; "x") | map(norm) | map(select(length > 0))) as $apps_tokens
       | select(
@@ -1225,7 +1285,18 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
             or ($token | contains($project_norm))
           )
         )
-      | $id
+      | {
+          id: ($item.id // ""),
+          name: ($item.name // ""),
+          value: (
+            ([$item.fields[]?
+              | select((.name // "" | ascii_downcase) != ($apps_field | ascii_downcase))
+              | .value
+              | select(. != null and . != "")
+            ][0]) // ($item.login.password // "")
+          )
+        }
+      | @json
     '
   )"
 
@@ -1239,17 +1310,11 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
 
   matched_secret_count=0
   typeset -a matched_env_var_names=()
-  while IFS= read -r item_id; do
-    [[ -z "$item_id" ]] && continue
-    item_json="$(run_bw_json_with_session get item "$item_id")"
+  while IFS= read -r item_json; do
+    [[ -z "$item_json" ]] && continue
+    item_id="$(printf '%s\n' "$item_json" | jq -r '.id // empty')"
     item_name="$(printf '%s\n' "$item_json" | jq -r '.name // empty')"
-    item_value="$(printf '%s\n' "$item_json" | jq -r --arg apps_field "$BW_APPS_FIELD_NAME" '
-      ([.fields[]?
-        | select((.name // "" | ascii_downcase) != ($apps_field | ascii_downcase))
-        | .value
-        | select(. != null and . != "")
-      ][0]) // (.login.password // "")
-    ')"
+    item_value="$(printf '%s\n' "$item_json" | jq -r '.value // empty')"
 
     if [[ -z "$item_name" || -z "$item_value" ]]; then
       echo "   Skipping Bitwarden item $item_id (missing name/value)"
@@ -1264,7 +1329,7 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
     printf 'export %s=%q\n' "$env_var_name" "$item_value" >> "$bw_env_file_local"
     matched_env_var_names+=("$env_var_name")
     matched_secret_count=$((matched_secret_count + 1))
-  done <<< "$matching_item_ids"
+  done <<< "$matching_items_jsonl"
 
   if [[ "$matched_secret_count" -eq 0 ]]; then
     echo "   No matching Bitwarden items found for project '$PROJECT_NAME'"

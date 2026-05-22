@@ -137,12 +137,12 @@
                 "error_log_file": "kidsplorers-web.error.log"
             }
         ],
-        "public_url": "https://kidsplorers.skynolimit.dev",
+        "public_url": "https://kidsplorers.com",
         "static_env": {
             "PORT": "3200",
             "HOSTNAME": "127.0.0.1",
-            "NEXT_PUBLIC_API_URL": "https://api.skynolimit.dev/kidsplorers",
-            "PUBLIC_URL": "https://kidsplorers.skynolimit.dev",
+            "NEXT_PUBLIC_API_URL": "https://api.kidsplorers.com",
+            "PUBLIC_URL": "https://kidsplorers.com",
             "INTERNAL_API_URL": "http://localhost:3100"
         }
     }

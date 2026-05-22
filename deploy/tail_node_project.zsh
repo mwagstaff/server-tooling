@@ -172,7 +172,7 @@ for remote_log_file in "${REMOTE_LOG_FILES[@]}"; do
 done
 echo "    Lines: $TAIL_LINES"
 echo "    Mode: $([[ "$ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
-echo "    Controls: r = quick redeploy, f = full redeploy, Ctrl+C = stop."
+echo "    Controls: r = quick redeploy, f = full redeploy, b = deploy with forced Bitwarden sync, Ctrl+C = stop."
 echo ""
 
 REMOTE_LOG_FILES_SSH="${(j: :)REMOTE_LOG_FILES}"
