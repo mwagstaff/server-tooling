@@ -8,6 +8,7 @@ set -euo pipefail
 # - Creates/updates launchd service for automatic startup
 # - Restarts service with new code
 # - Supports quick mode for code-only deploys (sync + restart only)
+# - Applies Bitwarden-managed credentials only when requested with bw/--bw
 
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
@@ -17,7 +18,7 @@ PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
 BW_APPS_FIELD_NAME="${BW_APPS_FIELD_NAME:-Apps}"
 BW_REMOTE_ENV_FILE_NAME="${BW_REMOTE_ENV_FILE_NAME:-.bw-secrets.env.sh}"
-BW_ENV_SYNC="${BW_ENV_SYNC:-1}"
+BW_ENV_SYNC="${BW_ENV_SYNC:-0}"
 BW_SESSION_CACHE_ENABLED="${BW_SESSION_CACHE_ENABLED:-1}"
 BW_SESSION_CACHE_FILE="${BW_SESSION_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-session}"
 BW_SYNC_TTL_SECONDS="${BW_SYNC_TTL_SECONDS:-900}"
@@ -665,11 +666,11 @@ tail_with_redeploy_controls() {
   full_redeploy_cmd+=("${tail_flags[@]}")
 
   local -a bitwarden_sync_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
-  bitwarden_sync_redeploy_cmd+=("-b")
+  bitwarden_sync_redeploy_cmd+=("--bw" "--force-bitwarden-sync")
   bitwarden_sync_redeploy_cmd+=("${tail_flags[@]}")
 
   echo "==> Starting log tail..."
-  echo "    Controls: r = quick redeploy, f = full redeploy, b = deploy with forced Bitwarden sync, Ctrl+C = stop."
+  echo "    Controls: r = quick redeploy, f = full redeploy, b = full redeploy with Bitwarden credentials, Ctrl+C = stop."
   echo ""
 
   zsh "$tail_script" "${tail_args[@]}" < /dev/null &
@@ -695,7 +696,7 @@ tail_with_redeploy_controls() {
           ;;
         b|B)
           echo ""
-          echo "==> Full redeploy with forced Bitwarden sync requested. Restarting deployment..."
+          echo "==> Full redeploy with Bitwarden credentials requested. Restarting deployment..."
           kill "$tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
           exec "${bitwarden_sync_redeploy_cmd[@]}"
@@ -839,7 +840,11 @@ for arg in "$@"; do
     quick|--quick|-q)
       QUICK_MODE=1
       ;;
+    bw|--bw|--bitwarden)
+      BW_ENV_SYNC=1
+      ;;
     --force-bitwarden-sync|--force-bw-sync|-b)
+      BW_ENV_SYNC=1
       BW_FORCE_SYNC=1
       ;;
     tail|--tail|-t)
@@ -947,13 +952,14 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
+  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
   echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
   echo "  Example: $0 top web ocl --quick" >&2
   echo "  Example: $0 ocl --quick top web" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
-  echo "  -b/--force-bitwarden-sync/--force-bw-sync: force a Bitwarden vault refresh before reading deployment secrets" >&2
+  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
+  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
   echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
   echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
@@ -2006,7 +2012,7 @@ else
         done
       fi
 
-      if [[ -z "${GRAFANA_PASSWORD:-}" ]]; then
+      if [[ -z "${GRAFANA_PASSWORD:-}" && "$BW_ENV_SYNC" == "1" ]]; then
         ensure_bw_session
         grafana_bw_item_name="${GRAFANA_BW_ITEM_NAME:-GRAFANA_LOGIN}"
         grafana_bw_item_json="$(run_bw_with_session list items --search "$grafana_bw_item_name" 2>/dev/null \
@@ -2018,6 +2024,9 @@ else
         else
           echo "   Warning: GRAFANA_PASSWORD not set and Bitwarden item '$grafana_bw_item_name' not found or has no password" >&2
         fi
+      fi
+      if [[ -z "${GRAFANA_PASSWORD:-}" && "$BW_ENV_SYNC" != "1" ]]; then
+        echo "   Skipping GRAFANA_PASSWORD Bitwarden lookup; pass bw/--bw to enable Bitwarden credentials."
       fi
 
       GRAFANA_IMPORT_URL="${GRAFANA_URL:-}"
