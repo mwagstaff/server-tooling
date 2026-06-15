@@ -6,6 +6,7 @@ SCRIPT_NAME="${0:t}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
 PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 TAIL_LINES="${TAIL_LINES:-100}"
+TAIL_SHOW_CONTROLS="${TAIL_SHOW_CONTROLS:-1}"
 ERRORS_ONLY=0
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -80,6 +81,11 @@ get_project_log_files() {
       end
     end
   ' "$CONFIG_FILE"
+}
+
+get_project_remote_dir() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .remote_dir // empty' "$CONFIG_FILE"
 }
 
 typeset -a POSITIONAL_ARGS=()
@@ -160,7 +166,12 @@ if ! project_exists "$PROJECT_NAME"; then
   exit 1
 fi
 
-REMOTE_DIR="~/dev/${PROJECT_NAME}"
+CONFIGURED_REMOTE_DIR="$(get_project_remote_dir "$PROJECT_NAME")"
+if [[ -n "$CONFIGURED_REMOTE_DIR" ]]; then
+  REMOTE_DIR="$CONFIGURED_REMOTE_DIR"
+else
+  REMOTE_DIR="~/dev/${PROJECT_NAME}"
+fi
 REMOTE_LOG_FILES=("${(@f)$(get_project_log_files "$PROJECT_NAME" "$ERRORS_ONLY")}")
 
 echo "==> Tailing project logs"
@@ -172,7 +183,9 @@ for remote_log_file in "${REMOTE_LOG_FILES[@]}"; do
 done
 echo "    Lines: $TAIL_LINES"
 echo "    Mode: $([[ "$ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
-echo "    Controls: r = quick redeploy, f = full redeploy, b = deploy with forced Bitwarden sync, Ctrl+C = stop."
+if [[ "$TAIL_SHOW_CONTROLS" == "1" ]]; then
+  echo "    Controls: r = quick redeploy, f = full redeploy, b = deploy with forced Bitwarden sync, Ctrl+C = stop."
+fi
 echo ""
 
 REMOTE_LOG_FILES_SSH="${(j: :)REMOTE_LOG_FILES}"

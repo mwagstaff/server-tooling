@@ -110,7 +110,7 @@
         "service_description": "kidsplorers API Service",
         "static_env": {
             "ADMIN_EMAILS": "mike.wagstaff@gmail.com",
-            "CORS_ORIGINS": "http://localhost:3200,https://kidsplorers.com"
+            "CORS_ORIGINS": "http://localhost:3200,https://kidsplorers.com,https://www.kidsplorers.com"
         }
     },
     {

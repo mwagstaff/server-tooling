@@ -28,6 +28,7 @@ BW_SKIP_SYNC="${BW_SKIP_SYNC:-0}"
 QUICK_MODE=0
 TAIL_MODE=0
 TAIL_ERRORS_ONLY=0
+DISABLE_MODE=0
 
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -136,6 +137,13 @@ get_project_legacy_service_labels() {
       ($project.legacy_service_labels // [])
       + ((($project.services // []) | map(.legacy_service_labels // []) | add) // [])
     )[]
+  ' "$CONFIG_FILE"
+}
+
+get_project_and_alias_names() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) | ([.name] + (.aliases // []))[]
   ' "$CONFIG_FILE"
 }
 
@@ -673,7 +681,7 @@ tail_with_redeploy_controls() {
   echo "    Controls: r = quick redeploy, f = full redeploy, b = full redeploy with Bitwarden credentials, Ctrl+C = stop."
   echo ""
 
-  zsh "$tail_script" "${tail_args[@]}" < /dev/null &
+  TAIL_SHOW_CONTROLS=0 zsh "$tail_script" "${tail_args[@]}" < /dev/null &
   local tail_pid=$!
   local key=""
 
@@ -833,10 +841,309 @@ ensure_bw_session() {
   cache_bw_session
 }
 
+disable_remote_deployment() {
+  local host="$1"
+  local remote_dir="$2"
+  shift 2
+  local -a service_labels=("$@")
+
+  ssh -o ConnectTimeout=10 "$host" "bash -s" -- "$remote_dir" "${service_labels[@]}" <<'REMOTE_DISABLE_SCRIPT'
+    set -euo pipefail
+    REMOTE_DIR="$1"
+    shift
+    SERVICE_LABELS=("$@")
+
+    case "$REMOTE_DIR" in
+      "~")
+        REMOTE_DIR_EXPANDED="$HOME"
+        ;;
+      "~/"*)
+        REMOTE_DIR_EXPANDED="$HOME/${REMOTE_DIR#~/}"
+        ;;
+      *)
+        REMOTE_DIR_EXPANDED="$REMOTE_DIR"
+        ;;
+    esac
+
+    stop_remaining_node_processes() {
+      if ! command -v ps >/dev/null 2>&1; then
+        echo 'Warning: ps not available; skipping process fallback check.' >&2
+        return 0
+      fi
+
+      local pids remaining
+      pids="$(ps -eo pid=,comm=,args= | awk -v dir="$REMOTE_DIR_EXPANDED/" '$2 == "node" && index($0, dir) { print $1 }' || true)"
+      if [[ -z "$pids" ]]; then
+        echo "No remaining Node processes found under $REMOTE_DIR_EXPANDED."
+        return 0
+      fi
+
+      echo "Found remaining Node process IDs under $REMOTE_DIR_EXPANDED:"
+      echo "$pids"
+      kill $pids 2>/dev/null || true
+      sleep 2
+
+      remaining="$(ps -eo pid=,comm=,args= | awk -v dir="$REMOTE_DIR_EXPANDED/" '$2 == "node" && index($0, dir) { print $1 }' || true)"
+      if [[ -n "$remaining" ]]; then
+        echo 'Processes still running after SIGTERM; sending SIGKILL...'
+        echo "$remaining"
+        kill -9 $remaining 2>/dev/null || true
+        sleep 1
+      fi
+
+      remaining="$(ps -eo pid=,comm=,args= | awk -v dir="$REMOTE_DIR_EXPANDED/" '$2 == "node" && index($0, dir) { print $1 }' || true)"
+      if [[ -n "$remaining" ]]; then
+        echo 'Error: matching Node processes are still running:' >&2
+        echo "$remaining" >&2
+        return 1
+      fi
+
+      echo "No remaining Node processes found under $REMOTE_DIR_EXPANDED."
+    }
+
+    if command -v launchctl >/dev/null 2>&1; then
+      UID_NUM="$(id -u)"
+      echo 'Detected launchd (macOS).'
+
+      for SERVICE_LABEL in "${SERVICE_LABELS[@]}"; do
+        [[ -n "$SERVICE_LABEL" ]] || continue
+        echo "Disabling and stopping launchd service: $SERVICE_LABEL"
+
+        domain_seen=0
+        for DOMAIN in "gui/$UID_NUM" "user/$UID_NUM"; do
+          if ! launchctl print "$DOMAIN" >/dev/null 2>&1; then
+            continue
+          fi
+          domain_seen=1
+          launchctl disable "$DOMAIN/$SERVICE_LABEL" || true
+          launchctl bootout "$DOMAIN/$SERVICE_LABEL" 2>/dev/null || true
+        done
+
+        if [[ "$domain_seen" -eq 0 ]]; then
+          echo "Warning: no usable launchd domain found while handling $SERVICE_LABEL" >&2
+        fi
+
+        still_loaded=0
+        for DOMAIN in "gui/$UID_NUM" "user/$UID_NUM"; do
+          if launchctl print "$DOMAIN/$SERVICE_LABEL" >/dev/null 2>&1; then
+            echo "Service still loaded in $DOMAIN: $SERVICE_LABEL" >&2
+            still_loaded=1
+          fi
+        done
+
+        if [[ "$still_loaded" -eq 1 ]]; then
+          exit 1
+        fi
+      done
+
+      echo 'Deployment services disabled via launchd.'
+      stop_remaining_node_processes
+    elif command -v systemctl >/dev/null 2>&1; then
+      echo 'Detected systemd (Linux).'
+      systemctl --user daemon-reload || true
+
+      for SERVICE_LABEL in "${SERVICE_LABELS[@]}"; do
+        [[ -n "$SERVICE_LABEL" ]] || continue
+        SERVICE_UNIT="${SERVICE_LABEL}.service"
+        echo "Disabling and stopping systemd service: $SERVICE_UNIT"
+        systemctl --user disable "$SERVICE_UNIT" >/dev/null 2>&1 || true
+        systemctl --user stop --no-block "$SERVICE_UNIT" >/dev/null 2>&1 || true
+
+        for _ in $(seq 1 20); do
+          state="$(systemctl --user is-active "$SERVICE_UNIT" 2>/dev/null || true)"
+          if [[ "$state" != 'active' && "$state" != 'activating' ]]; then
+            break
+          fi
+          sleep 1
+        done
+
+        final_state="$(systemctl --user is-active "$SERVICE_UNIT" 2>/dev/null || true)"
+        if [[ "$final_state" == 'active' || "$final_state" == 'activating' ]]; then
+          echo "Service state is still '$final_state'; sending SIGTERM to $SERVICE_UNIT..."
+          systemctl --user kill --kill-who=all --signal=SIGTERM "$SERVICE_UNIT" >/dev/null 2>&1 || true
+          sleep 2
+          final_state="$(systemctl --user is-active "$SERVICE_UNIT" 2>/dev/null || true)"
+        fi
+
+        if [[ "$final_state" == 'active' || "$final_state" == 'activating' ]]; then
+          echo "Service state is still '$final_state'; sending SIGKILL to $SERVICE_UNIT..."
+          systemctl --user kill --kill-who=all --signal=SIGKILL "$SERVICE_UNIT" >/dev/null 2>&1 || true
+          systemctl --user stop --no-block "$SERVICE_UNIT" >/dev/null 2>&1 || true
+          sleep 1
+          final_state="$(systemctl --user is-active "$SERVICE_UNIT" 2>/dev/null || true)"
+        fi
+
+        enabled_state="$(systemctl --user is-enabled "$SERVICE_UNIT" 2>/dev/null || true)"
+        echo "Final state for $SERVICE_UNIT: active=${final_state:-unknown}, enabled=${enabled_state:-unknown}"
+
+        if [[ "$final_state" == 'active' || "$final_state" == 'activating' ]]; then
+          systemctl --user status "$SERVICE_UNIT" --no-pager || true
+          exit 1
+        fi
+      done
+
+      echo 'Deployment services disabled via systemd.'
+      stop_remaining_node_processes
+    else
+      echo 'Error: Neither launchctl nor systemctl is available on this host.' >&2
+      exit 1
+    fi
+REMOTE_DISABLE_SCRIPT
+}
+
+prefix_parallel_output() {
+  local project_name="$1"
+  local line
+
+  while IFS= read -r line; do
+    printf '[%s] %s\n' "$project_name" "$line"
+  done
+}
+
+resolve_project_args() {
+  local -a project_queries=("$@")
+  local project_query resolved_project resolve_status
+
+  if (( ${#project_queries[@]} < 2 )); then
+    return 1
+  fi
+
+  for project_query in "${project_queries[@]}"; do
+    if resolved_project="$(resolve_project_name_noninteractive "$project_query")"; then
+      printf '%s\n' "$resolved_project"
+    else
+      return "$?"
+    fi
+  done
+}
+
+tail_parallel_deploy_logs() {
+  local host="$1"
+  shift
+  local -a project_names=("$@")
+  local -a tail_pids=()
+  local -a tail_args=()
+  local project_name pid tail_status failed_count
+  local tail_script="$SCRIPT_DIR/tail_node_project.zsh"
+
+  if [[ ! -f "$tail_script" ]]; then
+    echo "Error: Tail script not found: $tail_script" >&2
+    exit 1
+  fi
+
+  echo "==> Starting parallel log tails..."
+  echo "    Ctrl+C = stop all tails."
+  echo ""
+
+  cleanup_parallel_tails() {
+    local tail_pid
+    for tail_pid in "${tail_pids[@]}"; do
+      kill "$tail_pid" >/dev/null 2>&1 || true
+    done
+    for tail_pid in "${tail_pids[@]}"; do
+      wait "$tail_pid" 2>/dev/null || true
+    done
+  }
+  trap cleanup_parallel_tails INT TERM EXIT
+
+  for project_name in "${project_names[@]}"; do
+    tail_args=("$project_name" "$host")
+    if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
+      tail_args+=("--errors-only")
+    fi
+
+    (
+      TAIL_SHOW_CONTROLS=0 zsh "$tail_script" "${tail_args[@]}" < /dev/null
+    ) > >(prefix_parallel_output "$project_name") 2> >(prefix_parallel_output "$project_name" >&2) &
+    pid="$!"
+    tail_pids+=("$pid")
+  done
+
+  failed_count=0
+  for pid in "${tail_pids[@]}"; do
+    if wait "$pid"; then
+      :
+    else
+      tail_status="$?"
+      if [[ "$tail_status" -ne 130 && "$tail_status" -ne 143 ]]; then
+        failed_count=$((failed_count + 1))
+      fi
+    fi
+  done
+
+  trap - INT TERM EXIT
+  if (( failed_count > 0 )); then
+    echo "Error: $failed_count parallel log tail(s) exited with errors." >&2
+    exit 1
+  fi
+}
+
+run_parallel_deployments() {
+  local host="$1"
+  shift
+  local -a project_names=("$@")
+  local -a child_switch_args=()
+  local -a child_pids=()
+  local -a child_projects=()
+  local project_name pid deploy_status failed_count
+
+  if [[ "$QUICK_MODE" == "1" ]]; then
+    child_switch_args+=("--quick")
+  fi
+  if [[ "$DISABLE_MODE" == "1" ]]; then
+    child_switch_args+=("--disable")
+  fi
+  if [[ "$BW_FORCE_SYNC" == "1" ]]; then
+    child_switch_args+=("--force-bitwarden-sync")
+  elif [[ "$BW_ENV_SYNC" == "1" ]]; then
+    child_switch_args+=("--bw")
+  fi
+
+  echo "==> Deploying ${#project_names[@]} projects in parallel to $host:"
+  printf '    - %s\n' "${project_names[@]}"
+  echo ""
+
+  for project_name in "${project_names[@]}"; do
+    (
+      "$SCRIPT_PATH" "$project_name" "$host" "${child_switch_args[@]}"
+    ) > >(prefix_parallel_output "$project_name") 2> >(prefix_parallel_output "$project_name" >&2) &
+    pid="$!"
+    child_pids+=("$pid")
+    child_projects+=("$project_name")
+  done
+
+  failed_count=0
+  for ((idx = 1; idx <= ${#child_pids[@]}; idx++)); do
+    pid="${child_pids[$idx]}"
+    project_name="${child_projects[$idx]}"
+    if wait "$pid"; then
+      echo "==> Parallel deploy finished: $project_name"
+    else
+      deploy_status="$?"
+      echo "❌ Parallel deploy failed for $project_name (exit $deploy_status)" >&2
+      failed_count=$((failed_count + 1))
+    fi
+  done
+
+  if (( failed_count > 0 )); then
+    echo "❌ $failed_count parallel deploy(s) failed." >&2
+    exit 1
+  fi
+
+  echo "✅ Parallel deploy complete."
+  if [[ "$TAIL_MODE" == "1" ]]; then
+    tail_parallel_deploy_logs "$host" "${project_names[@]}"
+  fi
+  exit 0
+}
+
 # Parse switches before positional args.
 typeset -a POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
+    disable|--disable|--disable-deployment|-d)
+      DISABLE_MODE=1
+      ;;
     quick|--quick|-q)
       QUICK_MODE=1
       ;;
@@ -866,6 +1173,49 @@ set -- "${POSITIONAL_ARGS[@]}"
 
 if [[ "$TAIL_ERRORS_ONLY" == "1" && "$TAIL_MODE" == "0" ]]; then
   TAIL_MODE=1
+fi
+
+if [[ $# -ge 3 ]]; then
+  # Multi-project mode supports both PROJECT PROJECT... HOST and HOST PROJECT PROJECT...
+  # forms. Each project must resolve independently so existing multi-word single-project
+  # queries continue to flow through the single-project parser below.
+  HOST_FIRST_CANDIDATE="${argv[1]}"
+  HOST_LAST_CANDIDATE="${argv[$#]}"
+  HOST_FIRST_PROJECTS=("${(@)argv[2,$#]}")
+  HOST_LAST_PROJECTS=("${(@)argv[1,$(( $# - 1 ))]}")
+
+  HOST_FIRST_MULTI_STATUS=1
+  HOST_LAST_MULTI_STATUS=1
+  HOST_FIRST_PROJECT_NAMES=()
+  HOST_LAST_PROJECT_NAMES=()
+
+  if HOST_FIRST_PROJECT_NAMES=("${(@f)$(resolve_project_args "${HOST_FIRST_PROJECTS[@]}")}"); then
+    HOST_FIRST_MULTI_STATUS=0
+  else
+    HOST_FIRST_MULTI_STATUS=$?
+  fi
+
+  if HOST_LAST_PROJECT_NAMES=("${(@f)$(resolve_project_args "${HOST_LAST_PROJECTS[@]}")}"); then
+    HOST_LAST_MULTI_STATUS=0
+  else
+    HOST_LAST_MULTI_STATUS=$?
+  fi
+
+  if [[ "$HOST_FIRST_MULTI_STATUS" -eq 0 && "$HOST_LAST_MULTI_STATUS" -ne 0 ]]; then
+    run_parallel_deployments "$HOST_FIRST_CANDIDATE" "${HOST_FIRST_PROJECT_NAMES[@]}"
+  elif [[ "$HOST_LAST_MULTI_STATUS" -eq 0 && "$HOST_FIRST_MULTI_STATUS" -ne 0 ]]; then
+    run_parallel_deployments "$HOST_LAST_CANDIDATE" "${HOST_LAST_PROJECT_NAMES[@]}"
+  elif [[ "$HOST_FIRST_MULTI_STATUS" -eq 0 && "$HOST_LAST_MULTI_STATUS" -eq 0 ]]; then
+    if ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+      run_parallel_deployments "$HOST_FIRST_CANDIDATE" "${HOST_FIRST_PROJECT_NAMES[@]}"
+    elif project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && ! project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+      run_parallel_deployments "$HOST_LAST_CANDIDATE" "${HOST_LAST_PROJECT_NAMES[@]}"
+    else
+      echo "Error: Could not determine which positional argument is the host for parallel deploy." >&2
+      echo "Tried both '$HOST_FIRST_CANDIDATE' and '$HOST_LAST_CANDIDATE' as the deployment target." >&2
+      exit 1
+    fi
+  fi
 fi
 
 # Interactive mode - no positional parameters provided
@@ -952,12 +1302,14 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
+  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
   echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
   echo "  Example: $0 top web ocl --quick" >&2
   echo "  Example: $0 ocl --quick top web" >&2
+  echo "  Parallel example: $0 kidsplorers kidsplorers-web ocl --quick" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
   echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
   echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
@@ -1075,6 +1427,21 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   exit 1
 fi
 
+PROJECT_AND_ALIAS_NAMES=("${(@f)$(get_project_and_alias_names "$PROJECT_NAME")}")
+if [[ ${#PROJECT_AND_ALIAS_NAMES[@]} -eq 0 ]]; then
+  PROJECT_AND_ALIAS_NAMES=("$PROJECT_NAME")
+fi
+typeset -U PROJECT_AND_ALIAS_NAMES
+
+DISABLE_SERVICE_LABELS=()
+for name in "${PROJECT_AND_ALIAS_NAMES[@]}"; do
+  DISABLE_SERVICE_LABELS+=("com.${name}.api")
+done
+DISABLE_SERVICE_LABELS+=("${SERVICE_LABELS[@]}")
+DISABLE_SERVICE_LABELS+=("${LEGACY_SERVICE_LABELS[@]}")
+DISABLE_SERVICE_LABELS=("${(@)DISABLE_SERVICE_LABELS:#}")
+typeset -U DISABLE_SERVICE_LABELS
+
 # Expand tilde in path if present
 LOCAL_DIR="${LOCAL_DIR/#\~/$HOME}"
 PROJECT_IS_VITE=0
@@ -1095,7 +1462,10 @@ echo "    Remote host: $HOST"
 echo "    Remote path: $REMOTE_DIR"
 echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
-if [[ ${#SERVICE_LABELS[@]} -gt 1 ]]; then
+if [[ "$DISABLE_MODE" == "1" ]]; then
+  echo "    Services to disable:"
+  printf '      - %s\n' "${DISABLE_SERVICE_LABELS[@]}"
+elif [[ ${#SERVICE_LABELS[@]} -gt 1 ]]; then
   echo "    Managed services:"
   for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
     echo "      - ${SERVICE_LABELS[$idx]} (${SERVICE_NAMES[$idx]})"
@@ -1105,12 +1475,20 @@ if [[ ${#LEGACY_SERVICE_LABELS[@]} -gt 0 ]]; then
   echo "    Legacy service labels to remove:"
   printf '      - %s\n' "${LEGACY_SERVICE_LABELS[@]}"
 fi
-echo "    Deploy mode: $([[ "$QUICK_MODE" == "1" ]] && echo "quick" || echo "full")"
+echo "    Deploy mode: $([[ "$DISABLE_MODE" == "1" ]] && echo "disable" || ([[ "$QUICK_MODE" == "1" ]] && echo "quick" || echo "full"))"
 echo "    Tail logs after deploy: $([[ "$TAIL_MODE" == "1" ]] && echo "yes" || echo "no")"
 if [[ "$TAIL_MODE" == "1" ]]; then
   echo "    Tail mode: $([[ "$TAIL_ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
 fi
 echo ""
+
+if [[ "$DISABLE_MODE" == "1" ]]; then
+  echo "==> Disabling deployment services on $HOST..."
+  disable_remote_deployment "$HOST" "$REMOTE_DIR" "${DISABLE_SERVICE_LABELS[@]}"
+  echo ""
+  echo "✅ Deployment disabled for $PROJECT_NAME on $HOST."
+  exit 0
+fi
 
 if [[ ! -d "$LOCAL_DIR" ]]; then
   echo "Local dir not found: $LOCAL_DIR" >&2
