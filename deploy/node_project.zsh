@@ -636,6 +636,57 @@ project_query_looks_like_project() {
   [[ "$resolve_status" -eq 0 || "$resolve_status" -eq 2 ]]
 }
 
+project_query_has_wildcard() {
+  local query="$1"
+
+  case "$query" in
+    (*'*'*|*'?'*|*'['*) return 0 ;;
+    (*) return 1 ;;
+  esac
+}
+
+expand_project_wildcard_query() {
+  local query="$1"
+  local normalized_query="${(L)query}"
+  local project_line canonical candidate
+  local -a project_names matched_projects
+
+  while IFS= read -r project_line; do
+    project_names=("${(ps:\t:)project_line}")
+    canonical="${project_names[1]}"
+    for candidate in "${project_names[@]}"; do
+      if [[ "${(L)candidate}" == ${~normalized_query} ]]; then
+        matched_projects+=("$canonical")
+        break
+      fi
+    done
+  done < <(jq -r '(.[] | ([.name] + (.aliases // [])) | @tsv)' "$CONFIG_FILE")
+
+  matched_projects=("${(@)matched_projects:#}")
+  typeset -U matched_projects
+  if (( ${#matched_projects[@]} == 0 )); then
+    return 1
+  fi
+
+  printf '%s\n' "${matched_projects[@]}"
+}
+
+expand_positional_project_wildcards() {
+  local arg
+  local -a expanded_args wildcard_matches
+
+  for arg in "$@"; do
+    wildcard_matches=()
+    if project_query_has_wildcard "$arg" && wildcard_matches=("${(@f)$(expand_project_wildcard_query "$arg")}"); then
+      expanded_args+=("${wildcard_matches[@]}")
+    else
+      expanded_args+=("$arg")
+    fi
+  done
+
+  printf '%s\n' "${expanded_args[@]}"
+}
+
 notify_deploy_complete() {
   local project_name="$1"
   local host="$2"
@@ -1170,6 +1221,10 @@ for arg in "$@"; do
   esac
 done
 set -- "${POSITIONAL_ARGS[@]}"
+if [[ $# -gt 0 ]]; then
+  POSITIONAL_ARGS=("${(@f)$(expand_positional_project_wildcards "$@")}")
+  set -- "${POSITIONAL_ARGS[@]}"
+fi
 
 if [[ "$TAIL_ERRORS_ONLY" == "1" && "$TAIL_MODE" == "0" ]]; then
   TAIL_MODE=1
@@ -1308,6 +1363,7 @@ else
   echo "  Example: $0 top web ocl --quick" >&2
   echo "  Example: $0 ocl --quick top web" >&2
   echo "  Parallel example: $0 kidsplorers kidsplorers-web ocl --quick" >&2
+  echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
   echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
   echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
   echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
