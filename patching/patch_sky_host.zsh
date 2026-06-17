@@ -233,6 +233,23 @@ run_in_dir() {
   fi
 }
 
+install_performance_diagnostics() {
+  print_section "Performance Diagnostics Packages"
+  run_cmd apt-get install -y sysstat strace lsof psmisc procps
+
+  local kernel_tools
+  kernel_tools="linux-tools-$(uname -r)"
+
+  if apt-cache show "${kernel_tools}" >/dev/null 2>&1; then
+    run_cmd apt-get install -y linux-tools-common "${kernel_tools}"
+  elif apt-cache show linux-tools-generic >/dev/null 2>&1; then
+    run_cmd apt-get install -y linux-tools-common linux-tools-generic
+  else
+    echo "Unable to find a matching perf package (${kernel_tools} or linux-tools-generic)."
+    echo "Install perf manually after checking the host's enabled apt repositories."
+  fi
+}
+
 expand_remote_path() {
   local path="$1"
   case "${path}" in
@@ -613,6 +630,8 @@ run_cmd apt-get install -y \
   auditd \
   apt-transport-https \
   ca-certificates
+
+install_performance_diagnostics
 
 print_section "Unattended Security Updates"
 write_root_file /etc/apt/apt.conf.d/20auto-upgrades 0644 root root <<'EOF'

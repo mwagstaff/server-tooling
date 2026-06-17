@@ -1594,6 +1594,8 @@ rsync -az --delete \
   --exclude 'npm-debug.log' \
   --exclude 'yarn.lock' \
   --exclude '.env' \
+  --include '.env.local' \
+  --exclude '.static-config*.env.sh' \
   --exclude "$BW_REMOTE_ENV_FILE_NAME" \
   --exclude '.bw-secrets*.env.sh' \
   --exclude '.start-with-bw-env.sh' \
@@ -1625,8 +1627,9 @@ ssh "$HOST" "
 STATIC_ENV_CONTENT="$(get_project_static_env "$PROJECT_NAME")"
 if [[ -n "$STATIC_ENV_CONTENT" ]]; then
   echo "==> Writing static (non-sensitive) environment config..."
+  STATIC_CONFIG_FILE_NAME=".static-config-${PROJECT_NAME}.env.sh"
   printf '#!/usr/bin/env bash\n%s\n' "$STATIC_ENV_CONTENT" | \
-    ssh "$HOST" "cat > ${REMOTE_DIR}/.static-config.env.sh && chmod 600 ${REMOTE_DIR}/.static-config.env.sh"
+    ssh "$HOST" "cat > ${REMOTE_DIR}/${STATIC_CONFIG_FILE_NAME}.tmp && mv ${REMOTE_DIR}/${STATIC_CONFIG_FILE_NAME}.tmp ${REMOTE_DIR}/${STATIC_CONFIG_FILE_NAME} && chmod 600 ${REMOTE_DIR}/${STATIC_CONFIG_FILE_NAME}"
 fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
@@ -1872,7 +1875,7 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
-    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config.env.sh\"
+    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
@@ -2013,7 +2016,7 @@ else
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
-    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config.env.sh\"
+    STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
