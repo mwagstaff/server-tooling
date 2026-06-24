@@ -66,6 +66,14 @@
                 "metrics_port": 3015,
                 "log_file": "top-scores-audit.log",
                 "error_log_file": "top-scores-audit.error.log"
+            },
+            {
+                "name": "bsd",
+                "service_label": "com.top-scores.bsd",
+                "service_description": "top-scores BSD Evaluation Service",
+                "entry_file": "bsd_poller.js",
+                "log_file": "top-scores-bsd.log",
+                "error_log_file": "top-scores-bsd.error.log"
             }
         ]
     },

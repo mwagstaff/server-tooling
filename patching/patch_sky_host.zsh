@@ -629,7 +629,8 @@ run_cmd apt-get install -y \
   rkhunter \
   auditd \
   apt-transport-https \
-  ca-certificates
+  ca-certificates \
+  jq
 
 install_performance_diagnostics
 
