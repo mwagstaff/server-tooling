@@ -15,6 +15,13 @@ MONGO_VERSION="${MONGO_VERSION:-7}"
 MONGO_PORT="${MONGO_PORT:-27017}"
 MONGO_DATA_DIR="/var/lib/mongo-data"
 MONGO_CONTAINER="mongo-kidsplorers"
+# WiredTiger cache cap (GB). MongoDB defaults to ~50% of host RAM, which on a
+# small shared box lets Mongo balloon until the kernel OOM-kills it. Cap it so
+# Mongo leaves headroom for the other co-tenant services.
+MONGO_CACHE_SIZE_GB="${MONGO_CACHE_SIZE_GB:-1}"
+# Set RECREATE=1 to force a stop/rm/run (e.g. to pick up a new image tag).
+# Default 0: an existing container is restarted in place only when config changes.
+RECREATE="${RECREATE:-0}"
 
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new)
 
@@ -39,28 +46,25 @@ log "Ensuring Docker starts on boot"
 ssh "${SSH_OPTS[@]}" "${HOST}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
 
 log "Setting up MongoDB container"
-ssh "${SSH_OPTS[@]}" "${HOST}" bash -s -- "${MONGO_VERSION}" "${MONGO_PORT}" "${MONGO_DATA_DIR}" "${MONGO_CONTAINER}" <<'REMOTE'
+ssh "${SSH_OPTS[@]}" "${HOST}" bash -s -- "${MONGO_VERSION}" "${MONGO_PORT}" "${MONGO_DATA_DIR}" "${MONGO_CONTAINER}" "${MONGO_CACHE_SIZE_GB}" "${RECREATE}" <<'REMOTE'
 set -euo pipefail
 
 MONGO_VERSION="${1}"
 MONGO_PORT="${2}"
 MONGO_DATA_DIR="${3}"
 MONGO_CONTAINER="${4}"
+MONGO_CACHE_SIZE_GB="${5}"
+RECREATE="${6}"
 
-# Create data and config directories
-sudo mkdir -p "${MONGO_DATA_DIR}"
-sudo chown -R 999:999 "${MONGO_DATA_DIR}"   # MongoDB user UID in official image
-
-# Stop and remove existing container if present
-if sudo docker ps -a --format '{{.Names}}' | grep -q "^${MONGO_CONTAINER}$"; then
-  echo "Stopping existing container ${MONGO_CONTAINER}..."
-  sudo docker stop "${MONGO_CONTAINER}" >/dev/null 2>&1 || true
-  sudo docker rm "${MONGO_CONTAINER}" >/dev/null 2>&1 || true
-fi
-
-# Write mongod config
 MONGO_CONF="${MONGO_DATA_DIR}/mongod.conf"
-sudo tee "${MONGO_CONF}" > /dev/null <<CONF
+
+# Ensure data directory exists.
+sudo mkdir -p "${MONGO_DATA_DIR}"
+
+# Build the desired config in a temp file so we can compare it against what's
+# already on disk and only act when something actually changed.
+DESIRED_CONF="$(mktemp)"
+cat > "${DESIRED_CONF}" <<CONF
 # network
 net:
   port: ${MONGO_PORT}
@@ -69,6 +73,9 @@ net:
 # storage
 storage:
   dbPath: /data/db
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: ${MONGO_CACHE_SIZE_GB}   # cap cache to leave host RAM headroom
 
 # process
 processManagement:
@@ -79,17 +86,57 @@ replication:
   replSetName: "rs0"
 CONF
 
-sudo chown 999:999 "${MONGO_CONF}"
+# Write the config only if it differs (idempotent), tracking whether it changed.
+CONFIG_CHANGED=1
+if sudo test -f "${MONGO_CONF}" && sudo cmp -s "${DESIRED_CONF}" "${MONGO_CONF}"; then
+  CONFIG_CHANGED=0
+  echo "mongod.conf already up to date"
+else
+  sudo cp "${DESIRED_CONF}" "${MONGO_CONF}"
+  sudo chown 999:999 "${MONGO_CONF}"   # MongoDB user UID in official image
+  echo "mongod.conf written (cacheSizeGB=${MONGO_CACHE_SIZE_GB})"
+fi
+rm -f "${DESIRED_CONF}"
 
-echo "Starting MongoDB container..."
-sudo docker run -d \
-  --name "${MONGO_CONTAINER}" \
-  --restart unless-stopped \
-  --network host \
-  -v "${MONGO_DATA_DIR}:/data/db" \
-  -v "${MONGO_CONF}:/etc/mongod.conf:ro" \
-  mongo:"${MONGO_VERSION}" \
-  mongod --config /etc/mongod.conf
+# Determine current container state.
+CONTAINER_EXISTS=0
+CONTAINER_RUNNING=0
+if sudo docker ps -a --format '{{.Names}}' | grep -q "^${MONGO_CONTAINER}$"; then
+  CONTAINER_EXISTS=1
+  if sudo docker ps --format '{{.Names}}' | grep -q "^${MONGO_CONTAINER}$"; then
+    CONTAINER_RUNNING=1
+  fi
+fi
+
+# Force a full recreate when requested (e.g. to pick up a new image tag).
+if [ "${RECREATE}" = "1" ] && [ "${CONTAINER_EXISTS}" -eq 1 ]; then
+  echo "RECREATE=1 — removing existing container ${MONGO_CONTAINER}..."
+  sudo docker stop "${MONGO_CONTAINER}" >/dev/null 2>&1 || true
+  sudo docker rm "${MONGO_CONTAINER}" >/dev/null 2>&1 || true
+  CONTAINER_EXISTS=0
+  CONTAINER_RUNNING=0
+fi
+
+if [ "${CONTAINER_EXISTS}" -eq 0 ]; then
+  echo "Creating MongoDB container..."
+  sudo chown -R 999:999 "${MONGO_DATA_DIR}"   # fresh data dir: ensure ownership
+  sudo docker run -d \
+    --name "${MONGO_CONTAINER}" \
+    --restart unless-stopped \
+    --network host \
+    -v "${MONGO_DATA_DIR}:/data/db" \
+    -v "${MONGO_CONF}:/etc/mongod.conf:ro" \
+    mongo:"${MONGO_VERSION}" \
+    mongod --config /etc/mongod.conf
+elif [ "${CONFIG_CHANGED}" -eq 1 ]; then
+  echo "Config changed — restarting container to apply (bind-mounted config)..."
+  sudo docker restart "${MONGO_CONTAINER}" >/dev/null
+elif [ "${CONTAINER_RUNNING}" -eq 0 ]; then
+  echo "Container stopped — starting..."
+  sudo docker start "${MONGO_CONTAINER}" >/dev/null
+else
+  echo "Container already running with current config — no restart needed"
+fi
 
 # Wait for MongoDB to accept connections
 echo "Waiting for MongoDB to be ready..."
@@ -143,6 +190,13 @@ echo "Replica set status:"
 sudo docker exec "${MONGO_CONTAINER}" mongosh --quiet --eval 'rs.status().ok' 2>/dev/null || true
 
 echo ""
+echo "WiredTiger cache cap:"
+sudo docker exec "${MONGO_CONTAINER}" mongosh --quiet --eval '
+  const gb = db.serverStatus().wiredTiger.cache["maximum bytes configured"] / (1024*1024*1024);
+  print("  " + gb.toFixed(2) + " GB");
+' 2>/dev/null || true
+
+echo ""
 echo "Ping:"
 if sudo docker exec "${MONGO_CONTAINER}" mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q "1"; then
   printf "  ✅ MongoDB is responding\n"
@@ -161,8 +215,14 @@ echo "  - Container : ${MONGO_CONTAINER}"
 echo "  - Image     : mongo:${MONGO_VERSION}"
 echo "  - Port      : ${MONGO_PORT} (localhost only)"
 echo "  - Data dir  : ${MONGO_DATA_DIR}"
+echo "  - Cache cap : ${MONGO_CACHE_SIZE_GB} GB (WiredTiger)"
 echo "  - Replica set: rs0 (single node — enables transactions)"
 echo "  - Restart   : unless-stopped (survives reboots)"
+echo ""
+echo "♻️  Re-running this script is safe: it updates mongod.conf and restarts"
+echo "    only when the config changed. Override the cache cap with"
+echo "    MONGO_CACHE_SIZE_GB=2 ./install-mongo.sh, or force a full recreate"
+echo "    (e.g. for an image bump) with RECREATE=1 ./install-mongo.sh"
 echo ""
 echo "🔧 Management commands:"
 echo "  Shell   :  ssh ${HOST} 'sudo docker exec -it ${MONGO_CONTAINER} mongosh'"
