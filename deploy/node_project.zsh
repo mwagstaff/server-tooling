@@ -94,6 +94,14 @@ get_project_bw_remote_env_file_name() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .bw_remote_env_file_name // empty' "$CONFIG_FILE"
 }
 
+get_project_sync_env_local() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '
+    .[] | select(.name == $name) |
+    if has("sync_env_local") then .sync_env_local else true end
+  ' "$CONFIG_FILE"
+}
+
 project_package_has_script() {
   local project_dir="$1"
   local script_name="$2"
@@ -634,6 +642,52 @@ project_query_looks_like_project() {
   resolve_project_name_noninteractive "$query" >/dev/null 2>&1
   resolve_status=$?
   [[ "$resolve_status" -eq 0 || "$resolve_status" -eq 2 ]]
+}
+
+# True if $1 is an exact project name/alias match (as opposed to only
+# matching via fuzzy substring containment). Used to break PROJECT/HOST
+# ambiguity when a project's name, alias, or path happens to contain a real
+# host name as a substring (e.g. a project named "sky-no-limit-web" fuzzy-
+# matches the bare host query "sky", making both positional args look like
+# a project no matter which order they're given in).
+project_query_is_exact_match() {
+  local input_name="$1"
+  local normalized_input
+  local exact_match
+
+  [[ -n "$input_name" ]] || return 1
+  normalized_input="${(L)input_name}"
+  exact_match="$(jq -r --arg q "$normalized_input" '
+    ([.[] | select(
+      (.name | ascii_downcase) == $q
+      or (((.aliases // []) | map(ascii_downcase) | index($q)) != null)
+    ) | .name][0]) // empty
+  ' "$CONFIG_FILE")"
+  [[ -n "$exact_match" ]]
+}
+
+candidate_is_configured_ssh_host() {
+  local candidate="$1"
+  local ssh_config="${SSH_CONFIG_FILE:-$HOME/.ssh/config}"
+  local host_pattern
+
+  [[ -n "$candidate" && -f "$ssh_config" ]] || return 1
+
+  while IFS= read -r host_pattern; do
+    [[ -n "$host_pattern" ]] || continue
+    [[ "$host_pattern" == "!"* ]] && continue
+    if [[ "$candidate" == ${~host_pattern} ]]; then
+      return 0
+    fi
+  done < <(awk '
+    tolower($1) == "host" {
+      for (i = 2; i <= NF; i++) {
+        print $i
+      }
+    }
+  ' "$ssh_config")
+
+  return 1
 }
 
 project_query_has_wildcard() {
@@ -1261,7 +1315,16 @@ if [[ $# -ge 3 ]]; then
   elif [[ "$HOST_LAST_MULTI_STATUS" -eq 0 && "$HOST_FIRST_MULTI_STATUS" -ne 0 ]]; then
     run_parallel_deployments "$HOST_LAST_CANDIDATE" "${HOST_LAST_PROJECT_NAMES[@]}"
   elif [[ "$HOST_FIRST_MULTI_STATUS" -eq 0 && "$HOST_LAST_MULTI_STATUS" -eq 0 ]]; then
-    if ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+    HOST_FIRST_CANDIDATE_IS_SSH_HOST=0
+    HOST_LAST_CANDIDATE_IS_SSH_HOST=0
+    candidate_is_configured_ssh_host "$HOST_FIRST_CANDIDATE" && HOST_FIRST_CANDIDATE_IS_SSH_HOST=1
+    candidate_is_configured_ssh_host "$HOST_LAST_CANDIDATE" && HOST_LAST_CANDIDATE_IS_SSH_HOST=1
+
+    if [[ "$HOST_FIRST_CANDIDATE_IS_SSH_HOST" -eq 1 && "$HOST_LAST_CANDIDATE_IS_SSH_HOST" -eq 0 ]]; then
+      run_parallel_deployments "$HOST_FIRST_CANDIDATE" "${HOST_FIRST_PROJECT_NAMES[@]}"
+    elif [[ "$HOST_LAST_CANDIDATE_IS_SSH_HOST" -eq 1 && "$HOST_FIRST_CANDIDATE_IS_SSH_HOST" -eq 0 ]]; then
+      run_parallel_deployments "$HOST_LAST_CANDIDATE" "${HOST_LAST_PROJECT_NAMES[@]}"
+    elif ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
       run_parallel_deployments "$HOST_FIRST_CANDIDATE" "${HOST_FIRST_PROJECT_NAMES[@]}"
     elif project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && ! project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
       run_parallel_deployments "$HOST_LAST_CANDIDATE" "${HOST_LAST_PROJECT_NAMES[@]}"
@@ -1322,7 +1385,18 @@ elif [[ $# -ge 2 ]]; then
     HOST_LAST_STATUS=$?
   fi
 
-  if [[ "$HOST_FIRST_STATUS" -eq 0 && "$HOST_LAST_STATUS" -ne 0 ]]; then
+  HOST_FIRST_CANDIDATE_IS_SSH_HOST=0
+  HOST_LAST_CANDIDATE_IS_SSH_HOST=0
+  candidate_is_configured_ssh_host "$HOST_FIRST_CANDIDATE" && HOST_FIRST_CANDIDATE_IS_SSH_HOST=1
+  candidate_is_configured_ssh_host "$HOST_LAST_CANDIDATE" && HOST_LAST_CANDIDATE_IS_SSH_HOST=1
+
+  if [[ "$HOST_FIRST_CANDIDATE_IS_SSH_HOST" -eq 1 && "$HOST_LAST_CANDIDATE_IS_SSH_HOST" -eq 0 ]]; then
+    PROJECT_NAME="$HOST_FIRST_QUERY"
+    HOST="$HOST_FIRST_CANDIDATE"
+  elif [[ "$HOST_LAST_CANDIDATE_IS_SSH_HOST" -eq 1 && "$HOST_FIRST_CANDIDATE_IS_SSH_HOST" -eq 0 ]]; then
+    PROJECT_NAME="$HOST_LAST_QUERY"
+    HOST="$HOST_LAST_CANDIDATE"
+  elif [[ "$HOST_FIRST_STATUS" -eq 0 && "$HOST_LAST_STATUS" -ne 0 ]]; then
     PROJECT_NAME="$HOST_FIRST_QUERY"
     HOST="$HOST_FIRST_CANDIDATE"
   elif [[ "$HOST_LAST_STATUS" -eq 0 && "$HOST_FIRST_STATUS" -ne 0 ]]; then
@@ -1335,7 +1409,20 @@ elif [[ $# -ge 2 ]]; then
     PROJECT_NAME="$HOST_LAST_QUERY"
     HOST="$HOST_LAST_CANDIDATE"
   elif [[ "$HOST_FIRST_STATUS" -eq 0 && "$HOST_LAST_STATUS" -eq 0 ]]; then
-    if ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
+    HOST_FIRST_QUERY_IS_EXACT=0
+    HOST_LAST_QUERY_IS_EXACT=0
+    project_query_is_exact_match "$HOST_FIRST_QUERY" && HOST_FIRST_QUERY_IS_EXACT=1
+    project_query_is_exact_match "$HOST_LAST_QUERY" && HOST_LAST_QUERY_IS_EXACT=1
+
+    if [[ "$HOST_FIRST_QUERY_IS_EXACT" -eq 1 && "$HOST_LAST_QUERY_IS_EXACT" -eq 0 ]]; then
+      # Only the "first arg is host" interpretation used an exact project
+      # match; prefer it over the other side's incidental fuzzy match.
+      PROJECT_NAME="$HOST_FIRST_QUERY"
+      HOST="$HOST_FIRST_CANDIDATE"
+    elif [[ "$HOST_LAST_QUERY_IS_EXACT" -eq 1 && "$HOST_FIRST_QUERY_IS_EXACT" -eq 0 ]]; then
+      PROJECT_NAME="$HOST_LAST_QUERY"
+      HOST="$HOST_LAST_CANDIDATE"
+    elif ! project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
       PROJECT_NAME="$HOST_FIRST_QUERY"
       HOST="$HOST_FIRST_CANDIDATE"
     elif project_query_looks_like_project "$HOST_FIRST_CANDIDATE" && ! project_query_looks_like_project "$HOST_LAST_CANDIDATE"; then
@@ -1390,6 +1477,7 @@ SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
 LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
 SERVICES_JSON="$(get_project_services_json "$PROJECT_NAME")"
 CONFIGURED_BW_REMOTE_ENV_FILE_NAME="$(get_project_bw_remote_env_file_name "$PROJECT_NAME")"
+SYNC_ENV_LOCAL="$(get_project_sync_env_local "$PROJECT_NAME")"
 if [[ -n "$CONFIGURED_BW_REMOTE_ENV_FILE_NAME" ]]; then
   BW_REMOTE_ENV_FILE_NAME="$CONFIGURED_BW_REMOTE_ENV_FILE_NAME"
 fi
@@ -1478,6 +1566,7 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
   echo "  - startup_port: app HTTP port used for post-deploy /healthcheck (optional; defaults to metrics_port)" >&2
   echo "  - metrics_port: app metrics port for observability integration" >&2
+  echo "  - sync_env_local: optional boolean; false prevents .env.local from being copied (defaults to true)" >&2
   echo "" >&2
   list_projects >&2
   exit 1
@@ -1518,6 +1607,7 @@ echo "    Remote host: $HOST"
 echo "    Remote path: $REMOTE_DIR"
 echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
+echo "    Sync .env.local: $SYNC_ENV_LOCAL"
 if [[ "$DISABLE_MODE" == "1" ]]; then
   echo "    Services to disable:"
   printf '      - %s\n' "${DISABLE_SERVICE_LABELS[@]}"
@@ -1587,6 +1677,11 @@ echo "==> Syncing files to ${HOST}:${REMOTE_DIR} ..."
 # - --delete makes remote mirror local (be careful!)
 # - Exclude node_modules, .git, logs, etc.
 # - If you keep a production .env on the server, exclude it so it isn't overwritten.
+RSYNC_ENV_LOCAL_RULE=(--include '.env.local')
+if [[ "$SYNC_ENV_LOCAL" != "true" ]]; then
+  RSYNC_ENV_LOCAL_RULE=(--exclude '.env.local')
+fi
+
 rsync -az --delete \
   --exclude 'node_modules' \
   --exclude '.git' \
@@ -1594,7 +1689,7 @@ rsync -az --delete \
   --exclude 'npm-debug.log' \
   --exclude 'yarn.lock' \
   --exclude '.env' \
-  --include '.env.local' \
+  "${RSYNC_ENV_LOCAL_RULE[@]}" \
   --exclude '.static-config*.env.sh' \
   --exclude "$BW_REMOTE_ENV_FILE_NAME" \
   --exclude '.bw-secrets*.env.sh' \

@@ -168,6 +168,20 @@ sudo docker exec "${MONGO_CONTAINER}" mongosh --quiet --eval '
 echo "MongoDB installation complete!"
 REMOTE
 
+log "Installing MongoDB database tools (mongodump/mongorestore) on host"
+ssh "${SSH_OPTS[@]}" "${HOST}" bash -s -- <<'TOOLS'
+set -euo pipefail
+
+if command -v mongodump >/dev/null 2>&1; then
+  echo "mongodump already installed ($(mongodump --version | head -1))"
+else
+  echo "Installing mongodb-database-tools..."
+  sudo apt-get update -qq
+  sudo apt-get install -y mongodb-database-tools
+  echo "mongodump installed ($(mongodump --version | head -1))"
+fi
+TOOLS
+
 log "Verification"
 ssh "${SSH_OPTS[@]}" "${HOST}" bash -s -- "${MONGO_CONTAINER}" <<'VERIFY'
 set -euo pipefail
@@ -204,6 +218,15 @@ else
   printf "  ❌ MongoDB is not responding\n"
   exit 1
 fi
+
+echo ""
+echo "Host mongodump:"
+if command -v mongodump >/dev/null 2>&1; then
+  printf "  ✅ %s\n" "$(mongodump --version | head -1)"
+else
+  printf "  ❌ mongodump not found on host\n"
+  exit 1
+fi
 VERIFY
 
 log "Done!"
@@ -230,8 +253,9 @@ echo "  Logs    :  ssh ${HOST} 'sudo docker logs -f ${MONGO_CONTAINER}'"
 echo "  Stop    :  ssh ${HOST} 'sudo docker stop ${MONGO_CONTAINER}'"
 echo "  Start   :  ssh ${HOST} 'sudo docker start ${MONGO_CONTAINER}'"
 echo ""
-echo "💾 Backups — add to cron on ${HOST}:"
-echo "  0 3 * * * sudo docker exec ${MONGO_CONTAINER} mongodump --archive --gzip --db kidsplorers | gzip > /backups/kidsplorers/\$(date +\\%Y\\%m\\%d).gz"
+echo "💾 Backups — mongodump is installed on the host and can reach Mongo directly"
+echo "    on 127.0.0.1:${MONGO_PORT} (no docker exec needed). Add to cron on ${HOST}:"
+echo "  0 3 * * * mongodump --uri mongodb://127.0.0.1:${MONGO_PORT}/kidsplorers --archive --gzip > /backups/kidsplorers/\$(date +\\%Y\\%m\\%d).archive.gz"
 echo ""
 echo "📥 Next step — run the seed:"
 echo "  ssh ${HOST} 'cd ~/dev/kidsplorers && MONGODB_URI=mongodb://localhost:${MONGO_PORT}/kidsplorers npm run seed -w services/api'"

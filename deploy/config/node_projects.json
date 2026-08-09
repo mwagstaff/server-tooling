@@ -6,14 +6,19 @@
         "metrics_port": 4000
     },
     {
-        "name": "boris-bikes-api",
+        "name": "bikespot-london",
         "aliases": [
+            "boris",
+            "boris-bikes-api",
             "my-boris-bikes",
             "my-boris-bikes-api"
         ],
-        "path": "/Users/mwagstaff/dev/my-boris-bikes/my-boris-bikes-api",
+        "path": "/Users/mwagstaff/dev/bikespot-london/bikespot-london-api",
+        "remote_dir": "~/dev/boris-bikes-api",
         "start_command": "npm start",
-        "metrics_port": 3010
+        "metrics_port": 3010,
+        "service_label": "com.boris-bikes-api.api",
+        "service_description": "BikeSpot London API Service"
     },
     {
         "name": "top-scores",
@@ -26,6 +31,10 @@
         "metrics_port": 3011,
         "service_label": "com.top-scores.api",
         "service_description": "top-scores API Service",
+        "static_env": {
+            "GOAL_GUESSER_ENABLED": "true",
+            "GOAL_GUESSER_EMAIL_FROM": "goal-guesser@skynolimit.dev"
+        },
         "services": [
             {
                 "name": "scraper",
@@ -72,6 +81,7 @@
                 "service_label": "com.top-scores.bsd",
                 "service_description": "top-scores BSD Evaluation Service",
                 "entry_file": "bsd_poller.js",
+                "metrics_port": 3016,
                 "log_file": "top-scores-bsd.log",
                 "error_log_file": "top-scores-bsd.error.log"
             }
@@ -90,6 +100,45 @@
         "startup_port": 3020,
         "metrics_port": 3020,
         "public_url": "https://top-scores.skynolimit.dev"
+    },
+    {
+        "name": "goal-guesser",
+        "aliases": [
+            "goal-guesser-web"
+        ],
+        "path": "/Users/mwagstaff/dev/goal-guesser/web",
+        "remote_dir": "~/dev/goal-guesser-web",
+        "sync_env_local": false,
+        "start_command": "npm start",
+        "build_command": "npm run build",
+        "service_label": "com.goal-guesser.website",
+        "service_description": "Goal Guesser website",
+        "startup_port": 3035,
+        "metrics_port": 3035,
+        "public_url": "https://goal-guesser.skynolimit.dev",
+        "static_env": {
+            "PORT": "3035",
+            "TOP_SCORES_API_BASE_URL": "https://api.skynolimit.dev/top-scores/api/v1",
+            "GOAL_GUESSER_PUBLIC_ORIGIN": "https://goal-guesser.skynolimit.dev"
+        }
+    },
+    {
+        "name": "sky-no-limit-web",
+        "aliases": [
+            "sky-no-limit",
+            "skynolimit"
+        ],
+        "path": "/Users/mwagstaff/dev/sky-no-limit/web",
+        "start_command": "npm start",
+        "build_command": "npm run build",
+        "service_label": "com.sky-no-limit.website",
+        "service_description": "Sky No Limit website",
+        "startup_port": 3030,
+        "metrics_port": 3030,
+        "public_url": "https://skynolimit.dev",
+        "static_env": {
+            "PORT": "3030"
+        }
     },
     {
         "name": "train-track-api",
