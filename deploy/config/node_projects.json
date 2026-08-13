@@ -9,6 +9,7 @@
         "name": "bikespot-london",
         "aliases": [
             "boris",
+            "boris-bikes",
             "boris-bikes-api",
             "my-boris-bikes",
             "my-boris-bikes-api"
@@ -33,7 +34,10 @@
         "service_description": "top-scores API Service",
         "static_env": {
             "GOAL_GUESSER_ENABLED": "true",
-            "GOAL_GUESSER_EMAIL_FROM": "goal-guesser@skynolimit.dev"
+            "GOAL_GUESSER_EMAIL_FROM": "goal-guesser@skynolimit.dev",
+            "GOAL_GUESSER_ADMIN_EMAILS": "mike.wagstaff@gmail.com",
+            "GOAL_GUESSER_PUBLIC_ORIGIN": "https://goal-guesser.skynolimit.dev",
+            "CLOUDFLARE_R2_BUCKET_GOAL_GUESSERS": "goal-guessers"
         },
         "services": [
             {

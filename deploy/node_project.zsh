@@ -1870,7 +1870,10 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   done <<< "$matching_items_jsonl"
 
   if [[ "$matched_secret_count" -eq 0 ]]; then
-    echo "   No matching Bitwarden items found for project '$PROJECT_NAME'"
+    echo "Error: No matching Bitwarden items found for project '$PROJECT_NAME'." >&2
+    echo "The existing remote secrets file was left unchanged." >&2
+    echo "If Bitwarden was recently updated, rerun with --force-bitwarden-sync." >&2
+    exit 1
   else
     echo "   Prepared $matched_secret_count Bitwarden env var(s) for '$PROJECT_NAME'"
     echo "   Environment variable names:"
