@@ -152,6 +152,26 @@
         "metrics_port": 3012
     },
     {
+        "name": "train-loading-service",
+        "aliases": [
+            "train-loading",
+            "train-track-loading"
+        ],
+        "path": "/Users/mwagstaff/dev/train-track-uk/api/train-loading-service",
+        "remote_dir": "~/dev/train-loading-service",
+        "start_command": "npm start",
+        "startup_port": 3017,
+        "metrics_port": 3017,
+        "healthcheck_path": "/health/ready",
+        "service_label": "com.train-loading-service.api",
+        "service_description": "TrainTrack live carriage loading service",
+        "static_env": {
+            "PORT": "3017",
+            "TZ": "Europe/London",
+            "TRAIN_LOADING_TTL_SECONDS": "86400"
+        }
+    },
+    {
         "name": "bromley-bins",
         "path": "/home/mwagstaff/dev/server-tooling/bromley-bins",
         "start_command": "npm start",

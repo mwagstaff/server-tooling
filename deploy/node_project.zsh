@@ -71,6 +71,11 @@ get_project_startup_port() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .startup_port // .metrics_port // 3010' "$CONFIG_FILE"
 }
 
+get_project_healthcheck_path() {
+  local project_name="$1"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .healthcheck_path // "/healthcheck"' "$CONFIG_FILE"
+}
+
 get_project_build_command() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
@@ -1471,6 +1476,7 @@ fi
 LOCAL_DIR=$(get_project_path "$PROJECT_NAME")
 METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
+HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
 SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
 SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
@@ -1488,6 +1494,11 @@ fi
 
 if [[ -z "$SERVICE_DESCRIPTION" ]]; then
   SERVICE_DESCRIPTION="${PROJECT_NAME} API Service"
+fi
+
+if [[ "$HEALTHCHECK_PATH" != /* ]]; then
+  echo "Error: healthcheck_path must begin with '/': $HEALTHCHECK_PATH" >&2
+  exit 1
 fi
 
 LEGACY_SERVICE_LABELS=("${(@)LEGACY_SERVICE_LABELS:#}")
@@ -1564,7 +1575,8 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - service_label: optional service identifier for launchd/systemd" >&2
   echo "  - service_description: optional service description for launchd/systemd" >&2
   echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
-  echo "  - startup_port: app HTTP port used for post-deploy /healthcheck (optional; defaults to metrics_port)" >&2
+  echo "  - startup_port: app HTTP port used for the post-deploy healthcheck (optional; defaults to metrics_port)" >&2
+  echo "  - healthcheck_path: optional health endpoint path (defaults to /healthcheck)" >&2
   echo "  - metrics_port: app metrics port for observability integration" >&2
   echo "  - sync_env_local: optional boolean; false prevents .env.local from being copied (defaults to true)" >&2
   echo "" >&2
@@ -1607,6 +1619,7 @@ echo "    Remote host: $HOST"
 echo "    Remote path: $REMOTE_DIR"
 echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
+echo "    Healthcheck path: $HEALTHCHECK_PATH"
 echo "    Sync .env.local: $SYNC_ENV_LOCAL"
 if [[ "$DISABLE_MODE" == "1" ]]; then
   echo "    Services to disable:"
@@ -2405,7 +2418,7 @@ else
       continue
     fi
 
-    HEALTHCHECK_URL="http://localhost:${current_startup_port}/healthcheck"
+    HEALTHCHECK_URL="http://localhost:${current_startup_port}${HEALTHCHECK_PATH}"
     HEALTHCHECK_CMD="curl -sS --max-time 10 ${HEALTHCHECK_URL}"
     echo "   ${current_service_label} (${current_service_name}):"
     echo "   ssh ${HOST} '${HEALTHCHECK_CMD}'"
@@ -2414,7 +2427,7 @@ else
     healthcheck_last_output=""
     for attempt in {1..10}; do
       if healthcheck_last_output="$(ssh "$HOST" "$HEALTHCHECK_CMD" 2>&1)"; then
-        if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|\"ok\"[[:space:]]*:[[:space:]]*true'; then
+        if echo "$healthcheck_last_output" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|"ok"[[:space:]]*:[[:space:]]*true|"ready"[[:space:]]*:[[:space:]]*true'; then
           healthcheck_ok=1
           break
         fi
@@ -2436,8 +2449,103 @@ else
 fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
-  echo "==> Quick mode enabled; skipping Grafana dashboard import."
+  echo "==> Quick mode enabled; skipping Prometheus and Grafana configuration."
 else
+  PROM_SCRAPE_CONFIG_SCRIPT="$SCRIPT_DIR/../monitoring/configure-prometheus-scrape.sh"
+  PROMETHEUS_PROJECT_NAME="${GRAFANA_PROJECT_NAME:-$PROJECT_NAME}"
+  PROMETHEUS_PROJECT_SLUG="${GRAFANA_PROJECT_SLUG:-$(sanitize_grafana_slug "$PROMETHEUS_PROJECT_NAME")}"
+  PROMETHEUS_SCRAPE_JOB_NAME="${GRAFANA_PROM_SCRAPE_JOB_NAME:-$PROMETHEUS_PROJECT_SLUG}"
+  MONITORING_CONFIGURED=0
+
+  AUTO_PROM_METRICS_PORTS=()
+  for current_metrics_port in "${SERVICE_METRICS_PORTS[@]}"; do
+    if [[ "$current_metrics_port" == "__NONE__" || -z "$current_metrics_port" ]]; then
+      continue
+    fi
+    AUTO_PROM_METRICS_PORTS+=("$current_metrics_port")
+  done
+  if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -eq 0 && -n "${METRICS_PORT:-}" ]]; then
+    AUTO_PROM_METRICS_PORTS=("$METRICS_PORT")
+  fi
+  typeset -U AUTO_PROM_METRICS_PORTS
+
+  if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -gt 0 ]]; then
+    if [[ ! -f "$PROM_SCRAPE_CONFIG_SCRIPT" ]]; then
+      echo "Error: Prometheus scrape configurator not found: $PROM_SCRAPE_CONFIG_SCRIPT" >&2
+      exit 1
+    fi
+
+    REMOTE_HOME="$(ssh "$HOST" "printf %s \"\$HOME\"")"
+    AUTO_PROM_CONFIG_FILE="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range .Mounts}}{{if eq .Destination \"/etc/prometheus/prometheus.yml\"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true"
+    )"
+    if [[ -z "$AUTO_PROM_CONFIG_FILE" ]]; then
+      AUTO_PROM_CONFIG_FILE="${REMOTE_HOME}/monitoring/prometheus.yml"
+    fi
+
+    AUTO_PROM_HOST_IP="$(
+      ssh "$HOST" "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if (\$i==\"src\") {print \$(i+1); exit}}' || true"
+    )"
+    if [[ -z "$AUTO_PROM_HOST_IP" ]]; then
+      AUTO_PROM_HOST_IP="$(
+        ssh "$HOST" "hostname -I 2>/dev/null | awk '{print \$1}' || true"
+      )"
+    fi
+
+    AUTO_PROM_GW="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
+    )"
+
+    if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
+      AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_HOST_IP"
+    elif [[ -n "$AUTO_PROM_GW" ]]; then
+      AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_GW"
+    else
+      AUTO_PROM_SCRAPE_HOST="host.docker.internal"
+    fi
+
+    AUTO_PROM_SCRAPE_TARGETS_ARR=()
+    for current_metrics_port in "${AUTO_PROM_METRICS_PORTS[@]}"; do
+      AUTO_PROM_SCRAPE_TARGETS_ARR+=("${AUTO_PROM_SCRAPE_HOST}:${current_metrics_port}")
+    done
+    AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_SCRAPE_TARGETS_ARR[1]}"
+    AUTO_PROM_SCRAPE_TARGETS="${(j:,:)AUTO_PROM_SCRAPE_TARGETS_ARR}"
+
+    echo "==> Configuring Prometheus scrape target..."
+    echo "   Prometheus config: ${AUTO_PROM_CONFIG_FILE}"
+    echo "   Prometheus job: ${PROMETHEUS_SCRAPE_JOB_NAME}"
+    echo "   Host IP candidate: ${AUTO_PROM_HOST_IP:-<none>}"
+    echo "   Docker GW fallback: ${AUTO_PROM_GW:-<none>}"
+    echo "   Prometheus scrape targets: ${AUTO_PROM_SCRAPE_TARGETS}"
+
+    AUTO_PROM_NET_NAME="$(
+      ssh "$HOST" "sudo docker inspect prometheus --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
+    )"
+    AUTO_PROM_SUBNET=""
+    if [[ -n "$AUTO_PROM_NET_NAME" ]]; then
+      AUTO_PROM_SUBNET="$(
+        ssh "$HOST" "sudo docker network inspect \"$AUTO_PROM_NET_NAME\" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true"
+      )"
+    fi
+    if [[ -n "$AUTO_PROM_SUBNET" ]]; then
+      for AUTO_PROM_SCRAPE_PORT in "${AUTO_PROM_METRICS_PORTS[@]}"; do
+        echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
+        ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
+      done
+    fi
+
+    PROM_CONFIG_HOST="$HOST" \
+    PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
+    PROM_RELOAD_URL="${PROM_RELOAD_URL:-http://localhost:9090/-/reload}" \
+    PROM_SCRAPE_JOB_NAME="$PROMETHEUS_SCRAPE_JOB_NAME" \
+    PROM_SCRAPE_TARGETS="${PROM_SCRAPE_TARGETS:-${AUTO_PROM_SCRAPE_TARGETS}}" \
+    PROM_SCRAPE_METRICS_PATH="${PROM_SCRAPE_METRICS_PATH:-/metrics}" \
+      bash "$PROM_SCRAPE_CONFIG_SCRIPT"
+    MONITORING_CONFIGURED=1
+  else
+    echo "==> No metrics port configured; skipping Prometheus scrape target."
+  fi
+
   # Check for and run Grafana dashboard import script if it exists
   PROJECT_DASHBOARD_DIR="${GRAFANA_DASHBOARD_DIR:-$LOCAL_DIR/observability/grafana/dashboards}"
   LOCAL_DASHBOARD_SCRIPT="$LOCAL_DIR/observability/grafana/import-dashboards.sh"
@@ -2474,79 +2582,6 @@ else
       echo "   Grafana project: ${GRAFANA_PROJECT_NAME}"
       echo "   Grafana folder: ${GRAFANA_FOLDER_TITLE} (uid=${GRAFANA_FOLDER_UID})"
       echo "   Grafana datasource: ${GRAFANA_PROM_DS_NAME} (uid=${GRAFANA_PROM_DS_UID})"
-      REMOTE_HOME="$(ssh "$HOST" "printf %s \"\$HOME\"")"
-
-      # Prefer the actual mounted Prometheus config file path from the running container.
-      AUTO_PROM_CONFIG_FILE="$(
-        ssh "$HOST" "sudo docker inspect prometheus --format '{{range .Mounts}}{{if eq .Destination \"/etc/prometheus/prometheus.yml\"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true"
-      )"
-      if [[ -z "$AUTO_PROM_CONFIG_FILE" ]]; then
-        AUTO_PROM_CONFIG_FILE="${REMOTE_HOME}/monitoring/prometheus.yml"
-      fi
-
-      # Prefer host primary IPv4 for scraping host services from containers.
-      AUTO_PROM_HOST_IP="$(
-        ssh "$HOST" "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if (\$i==\"src\") {print \$(i+1); exit}}' || true"
-      )"
-      if [[ -z "$AUTO_PROM_HOST_IP" ]]; then
-        AUTO_PROM_HOST_IP="$(
-          ssh "$HOST" "hostname -I 2>/dev/null | awk '{print \$1}' || true"
-        )"
-      fi
-
-      # Also detect Docker gateway as a fallback.
-      AUTO_PROM_GW="$(
-        ssh "$HOST" "sudo docker inspect prometheus --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
-      )"
-
-      AUTO_PROM_METRICS_PORTS=()
-      for current_metrics_port in "${SERVICE_METRICS_PORTS[@]}"; do
-        if [[ "$current_metrics_port" == "__NONE__" || -z "$current_metrics_port" ]]; then
-          continue
-        fi
-        AUTO_PROM_METRICS_PORTS+=("$current_metrics_port")
-      done
-      if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -eq 0 && -n "${METRICS_PORT:-}" ]]; then
-        AUTO_PROM_METRICS_PORTS=("$METRICS_PORT")
-      fi
-      typeset -U AUTO_PROM_METRICS_PORTS
-
-      if [[ -n "$AUTO_PROM_HOST_IP" ]]; then
-        AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_HOST_IP"
-      elif [[ -n "$AUTO_PROM_GW" ]]; then
-        AUTO_PROM_SCRAPE_HOST="$AUTO_PROM_GW"
-      else
-        AUTO_PROM_SCRAPE_HOST="host.docker.internal"
-      fi
-
-      AUTO_PROM_SCRAPE_TARGETS_ARR=()
-      for current_metrics_port in "${AUTO_PROM_METRICS_PORTS[@]}"; do
-        AUTO_PROM_SCRAPE_TARGETS_ARR+=("${AUTO_PROM_SCRAPE_HOST}:${current_metrics_port}")
-      done
-      AUTO_PROM_SCRAPE_TARGET="${AUTO_PROM_SCRAPE_TARGETS_ARR[1]}"
-      AUTO_PROM_SCRAPE_TARGETS="${(j:,:)AUTO_PROM_SCRAPE_TARGETS_ARR}"
-
-      echo "   Prometheus config: ${AUTO_PROM_CONFIG_FILE}"
-      echo "   Host IP candidate: ${AUTO_PROM_HOST_IP:-<none>}"
-      echo "   Docker GW fallback: ${AUTO_PROM_GW:-<none>}"
-      echo "   Prometheus scrape targets: ${AUTO_PROM_SCRAPE_TARGETS}"
-
-      AUTO_PROM_NET_NAME="$(
-        ssh "$HOST" "sudo docker inspect prometheus --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' 2>/dev/null | awk '{print \$1}' || true"
-      )"
-      AUTO_PROM_SUBNET=""
-      if [[ -n "$AUTO_PROM_NET_NAME" ]]; then
-        AUTO_PROM_SUBNET="$(
-          ssh "$HOST" "sudo docker network inspect \"$AUTO_PROM_NET_NAME\" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true"
-        )"
-      fi
-      if [[ -n "$AUTO_PROM_SUBNET" ]]; then
-        for AUTO_PROM_SCRAPE_PORT in "${AUTO_PROM_METRICS_PORTS[@]}"; do
-          echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
-          ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
-        done
-      fi
-
       if [[ -z "${GRAFANA_PASSWORD:-}" && "$BW_ENV_SYNC" == "1" ]]; then
         ensure_bw_session
         grafana_bw_item_name="${GRAFANA_BW_ITEM_NAME:-GRAFANA_LOGIN}"
@@ -2614,6 +2649,7 @@ else
       PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
       PROM_SCRAPE_TARGETS="${PROM_SCRAPE_TARGETS:-${AUTO_PROM_SCRAPE_TARGETS}}" \
       PROM_SCRAPE_TARGET="${PROM_SCRAPE_TARGET:-${AUTO_PROM_SCRAPE_TARGET}}" \
+      SKIP_PROM_SCRAPE_CONFIG="$MONITORING_CONFIGURED" \
       GRAFANA_URL="$GRAFANA_IMPORT_URL" \
       GRAFANA_HOST_HEADER="$GRAFANA_IMPORT_HOST_HEADER" \
       GRAFANA_FORWARDED_PROTO="${GRAFANA_FORWARDED_PROTO:-https}" \

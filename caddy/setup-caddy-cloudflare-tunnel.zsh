@@ -147,6 +147,16 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
     }
   }
 
+  # TrainTrack live carriage loading service. Keep this before /train-track*
+  # because that broader matcher also matches /train-track-loading.
+  handle_path /train-track-loading* {
+    reverse_proxy http://127.0.0.1:3017 {
+      header_up Host 127.0.0.1
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+    }
+  }
+
   handle_path /train-track* {
     reverse_proxy http://127.0.0.1:3012 {
       header_up Host 127.0.0.1

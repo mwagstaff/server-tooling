@@ -220,304 +220,22 @@ ensure_prometheus_datasource() {
   echo "Created Prometheus data source \"$PROM_DS_NAME\" -> $ds_url (id=$created_id, uid=$PROM_DS_UID)"
 }
 
-upsert_prometheus_scrape_config_file() {
-  local config_file="$1"
-  local begin_marker end_marker block tmp_file target_yaml target
+ensure_prometheus_scrape_config() {
+  local configure_script
 
-  IFS=',' read -r -a targets <<< "$PROM_SCRAPE_TARGETS"
-  target_yaml=""
-  for target in "${targets[@]}"; do
-    target="$(printf '%s' "$target" | xargs)"
-    [[ -n "$target" ]] || continue
-    target_yaml="${target_yaml}        - '${target}'"$'\n'
-  done
-  if [[ -z "$target_yaml" ]]; then
-    echo "Error: no Prometheus scrape targets configured" >&2
+  configure_script="${PROM_SCRAPE_CONFIG_SCRIPT:-$SCRIPT_DIR/configure-prometheus-scrape.sh}"
+  if [[ ! -f "$configure_script" ]]; then
+    echo "Prometheus scrape configurator not found: $configure_script" >&2
     exit 1
   fi
 
-  begin_marker="# BEGIN ${PROM_SCRAPE_JOB_NAME} managed scrape config"
-  end_marker="# END ${PROM_SCRAPE_JOB_NAME} managed scrape config"
-
-  block="$(cat <<EOF
-${begin_marker}
-  - job_name: '${PROM_SCRAPE_JOB_NAME}'
-    metrics_path: '${PROM_SCRAPE_METRICS_PATH}'
-    static_configs:
-      - targets:
-${target_yaml%$'\n'}
-${end_marker}
-EOF
-)"
-
-  mkdir -p "$(dirname "$config_file")"
-  if [[ ! -f "$config_file" ]]; then
-    cat > "$config_file" <<'EOF'
-global:
-  scrape_interval: 15s
-scrape_configs:
-EOF
-  fi
-
-  tmp_file="$(mktemp)"
-  awk -v begin="$begin_marker" -v end="$end_marker" -v block="$block" '
-    BEGIN {
-      in_block = 0
-      saw_scrape = 0
-      inserted = 0
-    }
-    {
-      if ($0 == begin) {
-        in_block = 1
-        next
-      }
-      if (in_block && $0 == end) {
-        in_block = 0
-        next
-      }
-      if (in_block) {
-        next
-      }
-
-      if ($0 ~ /^scrape_configs:[[:space:]]*$/) {
-        saw_scrape = 1
-        print
-        next
-      }
-
-      if (saw_scrape && !inserted && $0 ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
-        print block
-        inserted = 1
-        saw_scrape = 0
-      }
-
-      print
-    }
-    END {
-      if (saw_scrape && !inserted) {
-        print block
-        inserted = 1
-      }
-      if (!inserted) {
-        print ""
-        print "scrape_configs:"
-        print block
-      }
-    }
-  ' "$config_file" > "$tmp_file"
-
-  cat "$tmp_file" > "$config_file"
-  rm -f "$tmp_file"
-
-  echo "Upserted Prometheus scrape job \"$PROM_SCRAPE_JOB_NAME\" in $config_file"
-}
-
-reload_prometheus() {
-  local reload_url="$1"
-  local config_file="$2"
-  local monitoring_dir compose_file http_code
-
-  monitoring_dir="$(dirname "$config_file")"
-  compose_file="$monitoring_dir/docker-compose.yml"
-
-  restart_prometheus_container() {
-    if [[ ! -f "$compose_file" ]]; then
-      return 1
-    fi
-
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-      docker compose -f "$compose_file" restart prometheus >/dev/null 2>&1 && return 0
-    fi
-    if command -v docker-compose >/dev/null 2>&1; then
-      docker-compose -f "$compose_file" restart prometheus >/dev/null 2>&1 && return 0
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-      if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        sudo docker compose -f "$compose_file" restart prometheus >/dev/null 2>&1 && return 0
-      fi
-      if command -v docker-compose >/dev/null 2>&1; then
-        sudo docker-compose -f "$compose_file" restart prometheus >/dev/null 2>&1 && return 0
-      fi
-    fi
-
-    return 1
-  }
-
-  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$reload_url" || true)"
-  if [[ "$http_code" == "200" ]]; then
-    echo "Reloaded Prometheus config via $reload_url"
-    return
-  fi
-
-  if [[ "$http_code" == "403" ]]; then
-    echo "Prometheus reload endpoint returned 403 (likely --web.enable-lifecycle not enabled); restarting container instead..."
-    if restart_prometheus_container; then
-      echo "Restarted Prometheus container to apply config"
-      return
-    fi
-  fi
-
-  echo "Warning: failed to reload Prometheus via $reload_url. Restart Prometheus manually if needed." >&2
-}
-
-ensure_prometheus_scrape_config() {
-  if [[ -n "$PROM_CONFIG_HOST" ]]; then
-    echo "Upserting Prometheus scrape config on host $PROM_CONFIG_HOST ..."
-    ssh "$PROM_CONFIG_HOST" bash -s -- \
-      "$PROM_CONFIG_FILE" \
-      "$PROM_SCRAPE_JOB_NAME" \
-      "$PROM_SCRAPE_METRICS_PATH" \
-      "$PROM_SCRAPE_TARGETS" \
-      "$PROM_RELOAD_URL" <<'EOF'
-set -euo pipefail
-
-config_file="$1"
-job_name="$2"
-metrics_path="$3"
-targets_csv="$4"
-reload_url="$5"
-
-IFS=',' read -r -a targets <<< "$targets_csv"
-target_yaml=""
-for target in "${targets[@]}"; do
-  target="$(printf '%s' "$target" | xargs)"
-  [[ -n "$target" ]] || continue
-  target_yaml="${target_yaml}        - '${target}'"$'\n'
-done
-
-if [[ -z "$target_yaml" ]]; then
-  echo "Error: no Prometheus scrape targets configured" >&2
-  exit 1
-fi
-
-if [[ "$config_file" == "~" ]]; then
-  config_file="$HOME"
-elif [[ "$config_file" == "~/"* ]]; then
-  config_file="$HOME/${config_file#~/}"
-fi
-
-mounted_config_file="$(
-  sudo docker inspect prometheus --format '{{range .Mounts}}{{if eq .Destination "/etc/prometheus/prometheus.yml"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true
-)"
-if [[ -n "$mounted_config_file" ]]; then
-  config_file="$mounted_config_file"
-fi
-
-begin_marker="# BEGIN ${job_name} managed scrape config"
-end_marker="# END ${job_name} managed scrape config"
-
-block="$(cat <<BLOCK
-${begin_marker}
-  - job_name: '${job_name}'
-    metrics_path: '${metrics_path}'
-    static_configs:
-      - targets:
-${target_yaml%$'\n'}
-${end_marker}
-BLOCK
-)"
-
-if [[ ! -f "$config_file" ]]; then
-  mkdir -p "$(dirname "$config_file")"
-  cat > "$config_file" <<'CFG'
-global:
-  scrape_interval: 15s
-scrape_configs:
-CFG
-fi
-
-tmp_file="$(mktemp)"
-awk -v begin="$begin_marker" -v end="$end_marker" -v block="$block" '
-  BEGIN {
-    in_block = 0
-    saw_scrape = 0
-    inserted = 0
-  }
-  {
-    if ($0 == begin) {
-      in_block = 1
-      next
-    }
-    if (in_block && $0 == end) {
-      in_block = 0
-      next
-    }
-    if (in_block) {
-      next
-    }
-
-    if ($0 ~ /^scrape_configs:[[:space:]]*$/) {
-      saw_scrape = 1
-      print
-      next
-    }
-
-    if (saw_scrape && !inserted && $0 ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
-      print block
-      inserted = 1
-      saw_scrape = 0
-    }
-
-    print
-  }
-  END {
-    if (saw_scrape && !inserted) {
-      print block
-      inserted = 1
-    }
-    if (!inserted) {
-      print ""
-      print "scrape_configs:"
-      print block
-    }
-  }
-' "$config_file" > "$tmp_file"
-
-cat "$tmp_file" > "$config_file"
-rm -f "$tmp_file"
-
-echo "Upserted Prometheus scrape job \"$job_name\" in $config_file"
-
-http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$reload_url" || true)"
-if [[ "$http_code" == "200" ]]; then
-  echo "Reloaded Prometheus config via $reload_url"
-elif [[ "$http_code" == "403" ]]; then
-  monitoring_dir="$(dirname "$config_file")"
-  compose_file="$monitoring_dir/docker-compose.yml"
-  echo "Prometheus reload endpoint returned 403 (likely --web.enable-lifecycle not enabled); restarting container instead..."
-  if [[ -f "$compose_file" ]]; then
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-      if docker compose -f "$compose_file" restart prometheus >/dev/null 2>&1; then
-        echo "Restarted Prometheus container to apply config"
-        exit 0
-      fi
-      if command -v sudo >/dev/null 2>&1 && sudo docker compose -f "$compose_file" restart prometheus >/dev/null 2>&1; then
-        echo "Restarted Prometheus container to apply config"
-        exit 0
-      fi
-    fi
-    if command -v docker-compose >/dev/null 2>&1; then
-      if docker-compose -f "$compose_file" restart prometheus >/dev/null 2>&1; then
-        echo "Restarted Prometheus container to apply config"
-        exit 0
-      fi
-      if command -v sudo >/dev/null 2>&1 && sudo docker-compose -f "$compose_file" restart prometheus >/dev/null 2>&1; then
-        echo "Restarted Prometheus container to apply config"
-        exit 0
-      fi
-    fi
-  fi
-  echo "Warning: reload was forbidden and automatic restart failed. Restart Prometheus manually if needed." >&2
-else
-  echo "Warning: failed to reload Prometheus via $reload_url. Restart Prometheus manually if needed." >&2
-fi
-EOF
-    return
-  fi
-
-  PROM_CONFIG_FILE="$(expand_tilde_path "$PROM_CONFIG_FILE")"
-  upsert_prometheus_scrape_config_file "$PROM_CONFIG_FILE"
-  reload_prometheus "$PROM_RELOAD_URL" "$PROM_CONFIG_FILE"
+  PROM_CONFIG_HOST="$PROM_CONFIG_HOST" \
+  PROM_CONFIG_FILE="$PROM_CONFIG_FILE" \
+  PROM_RELOAD_URL="$PROM_RELOAD_URL" \
+  PROM_SCRAPE_JOB_NAME="$PROM_SCRAPE_JOB_NAME" \
+  PROM_SCRAPE_TARGETS="$PROM_SCRAPE_TARGETS" \
+  PROM_SCRAPE_METRICS_PATH="$PROM_SCRAPE_METRICS_PATH" \
+    bash "$configure_script"
 }
 
 ensure_folder() {
@@ -761,7 +479,9 @@ if [[ ${#files[@]} -eq 0 ]]; then
 fi
 
 ensure_folder
-ensure_prometheus_scrape_config
+if [[ "${SKIP_PROM_SCRAPE_CONFIG:-0}" != "1" ]]; then
+  ensure_prometheus_scrape_config
+fi
 ensure_prometheus_datasource
 
 for f in "${files[@]}"; do
