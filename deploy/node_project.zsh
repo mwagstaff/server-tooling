@@ -7,7 +7,7 @@ set -euo pipefail
 # - Installs dependencies on server
 # - Creates/updates launchd service for automatic startup
 # - Restarts service with new code
-# - Supports quick mode for code-only deploys (sync + restart only)
+# - Supports quick mode for code deploys with conditional dependency installation
 # - Applies Bitwarden-managed credentials only when requested with bw/--bw
 
 # ---- Config ----
@@ -1456,7 +1456,7 @@ else
   echo "  Example: $0 ocl --quick top web" >&2
   echo "  Parallel example: $0 kidsplorers kidsplorers-web ocl --quick" >&2
   echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
-  echo "  --quick/-q/quick: sync files and restart service only (skip deps, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip Bitwarden, healthcheck, Grafana)" >&2
   echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
   echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
   echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
@@ -1741,22 +1741,29 @@ if [[ -n "$STATIC_ENV_CONTENT" ]]; then
 fi
 
 if [[ "$QUICK_MODE" == "1" ]]; then
-  echo "==> Quick mode enabled; skipping standard dependency install."
+  echo "==> Quick mode: reconciling dependencies incrementally..."
+  if [[ "$PROJECT_IS_PNPM" == "1" ]]; then
+    if [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
+      run_remote_pnpm_install --prefer-offline
+    else
+      run_remote_pnpm_install --prod --prefer-offline
+    fi
+  elif [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      npm install --prefer-offline --no-audit --no-fund"
+  else
+    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      cd $REMOTE_DIR && \
+      npm install --omit=dev --prefer-offline --no-audit --no-fund"
+  fi
+
   if [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
     echo "==> Quick mode: rebuilding Vite assets on server..."
     ssh "$HOST" "
       set -e
       export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
       cd $REMOTE_DIR
-
-      if ! npm ls vite >/dev/null 2>&1; then
-        echo 'Installing Vite build dependencies for quick deploy...'
-        if [[ -f package-lock.json ]]; then
-          npm ci
-        else
-          npm install
-        fi
-      fi
 
       if [[ '$PROJECT_HAS_PREPARE_ASSETS' == '1' && '$PROJECT_BUILD_RUNS_PREPARE_ASSETS' != '1' ]]; then
         npm run prepare-assets
