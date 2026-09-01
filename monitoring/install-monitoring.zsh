@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-TARGET_HOST="${1:-${TARGET_HOST:-ocl}}"
+TARGET_HOST="${1:-${TARGET_HOST:-sky}}"
 # Note: tilde expansion doesn't work in variable assignments passed to remote shell
 # Use explicit \$HOME (escaped so it evaluates on remote) or absolute path
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/monitoring}"

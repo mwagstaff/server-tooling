@@ -13,12 +13,12 @@ set -euo pipefail
 #   ./monitoring/harden_server.sh [HOST_ALIAS] [OPTIONS]
 #
 # Examples:
-#   ./monitoring/harden_server.sh ocl
-#   ./monitoring/harden_server.sh ocl --dry-run
-#   ./monitoring/harden_server.sh ocl --apply-firewall-hardening --allow-ports 22,80,443
-#   ./monitoring/harden_server.sh ocl --apply-firewall-hardening --force-netfilter-replace
+#   ./monitoring/harden_server.sh sky
+#   ./monitoring/harden_server.sh sky --dry-run
+#   ./monitoring/harden_server.sh sky --apply-firewall-hardening --allow-ports 22,80,443
+#   ./monitoring/harden_server.sh sky --apply-firewall-hardening --force-netfilter-replace
 
-TARGET_HOST="${TARGET_HOST:-ocl}"
+TARGET_HOST="${TARGET_HOST:-sky}"
 ALLOW_TCP_PORTS="${ALLOW_TCP_PORTS:-22,80,443}"
 DRY_RUN=0
 INSTALL_DOCKER_SCOUT=0

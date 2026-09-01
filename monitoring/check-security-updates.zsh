@@ -10,7 +10,7 @@ set -euo pipefail
 #   ./monitoring/check-security-updates.zsh
 #   TARGET_HOST=prod-oci ./monitoring/check-security-updates.zsh
 
-TARGET_HOST="${1:-${TARGET_HOST:-ocl}}"
+TARGET_HOST="${1:-${TARGET_HOST:-sky}}"
 
 echo "==> Running update + security audit on: ${TARGET_HOST}"
 echo

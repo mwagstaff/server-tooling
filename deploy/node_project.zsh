@@ -8,6 +8,8 @@ set -euo pipefail
 # - Creates/updates launchd service for automatic startup
 # - Restarts service with new code
 # - Supports quick mode for code deploys with conditional dependency installation
+# - Supports asset-only deploys without syncing or restarting the application
+# - Can reuse an explicitly pre-published asset bundle during asset-only deploys
 # - Applies Bitwarden-managed credentials only when requested with bw/--bw
 
 # ---- Config ----
@@ -26,9 +28,12 @@ BW_SYNC_CACHE_FILE="${BW_SYNC_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server
 BW_FORCE_SYNC="${BW_FORCE_SYNC:-0}"
 BW_SKIP_SYNC="${BW_SKIP_SYNC:-0}"
 QUICK_MODE=0
+OPTIMIZE_IMAGES=0
 TAIL_MODE=0
 TAIL_ERRORS_ONLY=0
 DISABLE_MODE=0
+ASSETS_ONLY_MODE=0
+SKIP_ASSET_PREPARE=0
 
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -79,6 +84,11 @@ get_project_healthcheck_path() {
 get_project_build_command() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
+}
+
+get_project_asset_bundle() {
+  local project_name="$1"
+  jq -c --arg name "$project_name" '.[] | select(.name == $name) | .asset_bundle // empty' "$CONFIG_FILE"
 }
 
 get_project_remote_dir() {
@@ -1200,8 +1210,17 @@ run_parallel_deployments() {
   if [[ "$QUICK_MODE" == "1" ]]; then
     child_switch_args+=("--quick")
   fi
+  if [[ "$OPTIMIZE_IMAGES" == "1" ]]; then
+    child_switch_args+=("--optimize-images")
+  fi
   if [[ "$DISABLE_MODE" == "1" ]]; then
     child_switch_args+=("--disable")
+  fi
+  if [[ "$ASSETS_ONLY_MODE" == "1" ]]; then
+    child_switch_args+=("--assets-only")
+  fi
+  if [[ "$SKIP_ASSET_PREPARE" == "1" ]]; then
+    child_switch_args+=("--skip-asset-prepare")
   fi
   if [[ "$BW_FORCE_SYNC" == "1" ]]; then
     child_switch_args+=("--force-bitwarden-sync")
@@ -1257,6 +1276,15 @@ for arg in "$@"; do
     quick|--quick|-q)
       QUICK_MODE=1
       ;;
+    --optimize-images|--optimise-images)
+      OPTIMIZE_IMAGES=1
+      ;;
+    assets|--assets-only|--static-assets|-a)
+      ASSETS_ONLY_MODE=1
+      ;;
+    --skip-asset-prepare)
+      SKIP_ASSET_PREPARE=1
+      ;;
     bw|--bw|--bitwarden)
       BW_ENV_SYNC=1
       ;;
@@ -1287,6 +1315,21 @@ fi
 
 if [[ "$TAIL_ERRORS_ONLY" == "1" && "$TAIL_MODE" == "0" ]]; then
   TAIL_MODE=1
+fi
+
+if [[ "$ASSETS_ONLY_MODE" == "1" && (
+  "$QUICK_MODE" == "1"
+  || "$DISABLE_MODE" == "1"
+  || "$BW_ENV_SYNC" == "1"
+  || "$TAIL_MODE" == "1"
+) ]]; then
+  echo "Error: --assets-only cannot be combined with quick, disable, Bitwarden, or tail options." >&2
+  exit 1
+fi
+
+if [[ "$SKIP_ASSET_PREPARE" == "1" && "$ASSETS_ONLY_MODE" != "1" ]]; then
+  echo "Error: --skip-asset-prepare can only be used with --assets-only." >&2
+  exit 1
 fi
 
 if [[ $# -ge 3 ]]; then
@@ -1361,10 +1404,10 @@ if [[ $# -eq 0 ]]; then
   fi
 
   echo ""
-  read "?Enter target hostname [default: ocl]: " HOST
+  read "?Enter target hostname [default: sky]: " HOST
 
   if [[ -z "$HOST" ]]; then
-    HOST="ocl"
+    HOST="sky"
   fi
 elif [[ $# -ge 2 ]]; then
   # Support both PROJECT... HOST and HOST PROJECT... forms.
@@ -1449,14 +1492,17 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--quick|-q|quick] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
+  echo "Usage: $0 [PROJECT_QUERY... HOST] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
   echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
-  echo "  Example: $0 top web ocl --quick" >&2
-  echo "  Example: $0 ocl --quick top web" >&2
-  echo "  Parallel example: $0 kidsplorers kidsplorers-web ocl --quick" >&2
+  echo "  Example: $0 top web sky --quick" >&2
+  echo "  Example: $0 sky --quick top web" >&2
+  echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
   echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
-  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys" >&2
+  echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
+  echo "  --skip-asset-prepare: with --assets-only, reuse a bundle produced by a successful standalone publisher run" >&2
   echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
   echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
   echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
@@ -1611,6 +1657,18 @@ if [[ -n "$CONFIGURED_REMOTE_DIR" ]]; then
 else
   REMOTE_DIR="~/dev/${PROJECT_NAME}"
 fi
+ASSET_BUNDLE_JSON="$(get_project_asset_bundle "$PROJECT_NAME")"
+ASSET_BUNDLE_LOCAL_DIR=""
+ASSET_BUNDLE_REMOTE_DIR=""
+ASSET_BUNDLE_CATALOG="catalog.json"
+ASSET_BUNDLE_PREPARE_COMMAND=""
+if [[ -n "$ASSET_BUNDLE_JSON" ]]; then
+  ASSET_BUNDLE_LOCAL_DIR="$(printf '%s' "$ASSET_BUNDLE_JSON" | jq -r '.local_path // empty')"
+  ASSET_BUNDLE_REMOTE_DIR="$(printf '%s' "$ASSET_BUNDLE_JSON" | jq -r '.remote_path // empty')"
+  ASSET_BUNDLE_CATALOG="$(printf '%s' "$ASSET_BUNDLE_JSON" | jq -r '.catalog // "catalog.json"')"
+  ASSET_BUNDLE_PREPARE_COMMAND="$(printf '%s' "$ASSET_BUNDLE_JSON" | jq -r '.prepare_command // empty')"
+  ASSET_BUNDLE_LOCAL_DIR="${ASSET_BUNDLE_LOCAL_DIR/#\~/$HOME}"
+fi
 LEGACY_SERVICE_LABELS_SSH="${(j: :)${(q)LEGACY_SERVICE_LABELS}}"
 
 echo "==> Deploying project: $PROJECT_NAME"
@@ -1621,6 +1679,9 @@ echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
 echo "    Healthcheck path: $HEALTHCHECK_PATH"
 echo "    Sync .env.local: $SYNC_ENV_LOCAL"
+if [[ -n "$ASSET_BUNDLE_JSON" ]]; then
+  echo "    Asset bundle: $ASSET_BUNDLE_LOCAL_DIR -> $ASSET_BUNDLE_REMOTE_DIR"
+fi
 if [[ "$DISABLE_MODE" == "1" ]]; then
   echo "    Services to disable:"
   printf '      - %s\n' "${DISABLE_SERVICE_LABELS[@]}"
@@ -1634,7 +1695,15 @@ if [[ ${#LEGACY_SERVICE_LABELS[@]} -gt 0 ]]; then
   echo "    Legacy service labels to remove:"
   printf '      - %s\n' "${LEGACY_SERVICE_LABELS[@]}"
 fi
-echo "    Deploy mode: $([[ "$DISABLE_MODE" == "1" ]] && echo "disable" || ([[ "$QUICK_MODE" == "1" ]] && echo "quick" || echo "full"))"
+if [[ "$ASSETS_ONLY_MODE" == "1" ]]; then
+  if [[ "$SKIP_ASSET_PREPARE" == "1" ]]; then
+    echo "    Deploy mode: prepared static assets only (no optimisation or application restart)"
+  else
+    echo "    Deploy mode: static assets only (no application restart)"
+  fi
+else
+  echo "    Deploy mode: $([[ "$DISABLE_MODE" == "1" ]] && echo "disable" || ([[ "$QUICK_MODE" == "1" ]] && echo "quick" || echo "full"))"
+fi
 echo "    Tail logs after deploy: $([[ "$TAIL_MODE" == "1" ]] && echo "yes" || echo "no")"
 if [[ "$TAIL_MODE" == "1" ]]; then
   echo "    Tail mode: $([[ "$TAIL_ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
@@ -1651,6 +1720,11 @@ fi
 
 if [[ ! -d "$LOCAL_DIR" ]]; then
   echo "Local dir not found: $LOCAL_DIR" >&2
+  exit 1
+fi
+
+if [[ "$ASSETS_ONLY_MODE" == "1" && -z "$ASSET_BUNDLE_JSON" ]]; then
+  echo "Error: --assets-only requires an asset_bundle configuration for $PROJECT_NAME" >&2
   exit 1
 fi
 
@@ -1671,6 +1745,20 @@ if project_build_runs_prepare_assets "$LOCAL_DIR"; then
   PROJECT_BUILD_RUNS_PREPARE_ASSETS=1
 fi
 
+if [[ -n "$ASSET_BUNDLE_PREPARE_COMMAND" ]]; then
+  if [[ "$QUICK_MODE" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
+    echo "==> Quick mode enabled; skipping persistent asset image optimisation."
+  elif [[ "$SKIP_ASSET_PREPARE" == "1" ]]; then
+    echo "==> Reusing the previously prepared persistent asset bundle..."
+  else
+    echo "==> Preparing persistent asset bundle..."
+    (
+      cd "$LOCAL_DIR"
+      zsh -lc "$ASSET_BUNDLE_PREPARE_COMMAND"
+    )
+  fi
+fi
+
 echo "==> Checking if rsync is installed on remote host..."
 if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "command -v rsync >/dev/null 2>&1"; then
   echo "❌ Error: rsync is not installed on $HOST" >&2
@@ -1682,42 +1770,114 @@ if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "command -v rsync >/dev/n
   exit 1
 fi
 
-echo "==> Ensuring remote directory exists..."
-ssh "$HOST" "mkdir -p $REMOTE_DIR"
+if [[ "$ASSETS_ONLY_MODE" == "0" ]]; then
+  echo "==> Ensuring remote directory exists..."
+  ssh "$HOST" "mkdir -p $REMOTE_DIR"
 
-echo "==> Syncing files to ${HOST}:${REMOTE_DIR} ..."
-# Notes:
-# - --delete makes remote mirror local (be careful!)
-# - Exclude node_modules, .git, logs, etc.
-# - If you keep a production .env on the server, exclude it so it isn't overwritten.
-RSYNC_ENV_LOCAL_RULE=(--include '.env.local')
-if [[ "$SYNC_ENV_LOCAL" != "true" ]]; then
-  RSYNC_ENV_LOCAL_RULE=(--exclude '.env.local')
+  echo "==> Syncing files to ${HOST}:${REMOTE_DIR} ..."
+  # Notes:
+  # - --delete makes remote mirror local (be careful!)
+  # - Exclude node_modules, .git, logs, etc.
+  # - If you keep a production .env on the server, exclude it so it isn't overwritten.
+  RSYNC_ENV_LOCAL_RULE=(--include '.env.local')
+  if [[ "$SYNC_ENV_LOCAL" != "true" ]]; then
+    RSYNC_ENV_LOCAL_RULE=(--exclude '.env.local')
+  fi
+
+  rsync -az --delete \
+    --exclude 'node_modules' \
+    --exclude '.git' \
+    --exclude '.DS_Store' \
+    --exclude 'npm-debug.log' \
+    --exclude 'yarn.lock' \
+    --exclude '.env' \
+    "${RSYNC_ENV_LOCAL_RULE[@]}" \
+    --exclude '.static-config*.env.sh' \
+    --exclude "$BW_REMOTE_ENV_FILE_NAME" \
+    --exclude '.bw-secrets*.env.sh' \
+    --exclude '.start-with-bw-env.sh' \
+    --exclude '.start-with-bw-env-*.sh' \
+    --exclude '.claude' \
+    --exclude 'certs' \
+    --exclude 'coverage' \
+    --exclude 'dist' \
+    --exclude '*_local_only*' \
+    --exclude '.next' \
+    --exclude '.turbo' \
+    --exclude '*.local' \
+    "$LOCAL_DIR/" \
+    "${HOST}:${REMOTE_DIR}/"
 fi
 
-rsync -az --delete \
-  --exclude 'node_modules' \
-  --exclude '.git' \
-  --exclude '.DS_Store' \
-  --exclude 'npm-debug.log' \
-  --exclude 'yarn.lock' \
-  --exclude '.env' \
-  "${RSYNC_ENV_LOCAL_RULE[@]}" \
-  --exclude '.static-config*.env.sh' \
-  --exclude "$BW_REMOTE_ENV_FILE_NAME" \
-  --exclude '.bw-secrets*.env.sh' \
-  --exclude '.start-with-bw-env.sh' \
-  --exclude '.start-with-bw-env-*.sh' \
-  --exclude '.claude' \
-  --exclude 'certs' \
-  --exclude 'coverage' \
-  --exclude 'dist' \
-  --exclude '*_local_only*' \
-  --exclude '.next' \
-  --exclude '.turbo' \
-  --exclude '*.local' \
-  "$LOCAL_DIR/" \
-  "${HOST}:${REMOTE_DIR}/"
+if [[ -n "$ASSET_BUNDLE_JSON" ]]; then
+  if [[ -z "$ASSET_BUNDLE_LOCAL_DIR" || -z "$ASSET_BUNDLE_REMOTE_DIR" ]]; then
+    echo "Error: asset_bundle requires local_path and remote_path for $PROJECT_NAME" >&2
+    exit 1
+  fi
+  if [[ ! -d "$ASSET_BUNDLE_LOCAL_DIR/assets" || ! -f "$ASSET_BUNDLE_LOCAL_DIR/$ASSET_BUNDLE_CATALOG" ]]; then
+    echo "Error: publish the asset bundle before deploying: $ASSET_BUNDLE_LOCAL_DIR" >&2
+    exit 1
+  fi
+
+  echo "==> Syncing persistent asset bundle..."
+  ssh "$HOST" "mkdir -p '$ASSET_BUNDLE_REMOTE_DIR/assets'"
+  rsync -az \
+    "$ASSET_BUNDLE_LOCAL_DIR/assets/" \
+    "${HOST}:${ASSET_BUNDLE_REMOTE_DIR}/assets/"
+  rsync -az \
+    "$ASSET_BUNDLE_LOCAL_DIR/$ASSET_BUNDLE_CATALOG" \
+    "${HOST}:${ASSET_BUNDLE_REMOTE_DIR}/.${ASSET_BUNDLE_CATALOG}.tmp"
+
+  echo "==> Validating and activating persistent asset catalogue..."
+  ssh "$HOST" "bash -s" -- \
+    "$ASSET_BUNDLE_REMOTE_DIR" \
+    "$ASSET_BUNDLE_CATALOG" <<'REMOTE_ASSET_SCRIPT'
+set -euo pipefail
+asset_root="$1"
+catalog_name="$2"
+temporary_catalog="$asset_root/.$catalog_name.tmp"
+
+command -v jq >/dev/null 2>&1 || {
+  echo "Error: jq is required to validate the asset catalogue" >&2
+  exit 1
+}
+command -v sha256sum >/dev/null 2>&1 || {
+  echo "Error: sha256sum is required to validate the asset catalogue" >&2
+  exit 1
+}
+
+jq -e '
+  .schema_version == 1
+  and (.catalog_version | test("^[a-f0-9]{64}$"))
+  and (.assets | type == "array")
+  and all(.assets[];
+    (.sha256 | test("^[a-f0-9]{64}$"))
+    and .asset_path == ("assets/" + .sha256 + ".webp")
+  )
+' "$temporary_catalog" >/dev/null
+
+while IFS=$'\t' read -r relative_path expected_hash; do
+  asset_file="$asset_root/$relative_path"
+  [[ -f "$asset_file" ]] || {
+    echo "Error: missing published asset $relative_path" >&2
+    exit 1
+  }
+  actual_hash="$(sha256sum "$asset_file" | awk '{print $1}')"
+  [[ "$actual_hash" == "$expected_hash" ]] || {
+    echo "Error: hash mismatch for published asset $relative_path" >&2
+    exit 1
+  }
+done < <(jq -r '.assets[] | [.asset_path, .sha256] | @tsv' "$temporary_catalog")
+
+mv "$temporary_catalog" "$asset_root/$catalog_name"
+REMOTE_ASSET_SCRIPT
+fi
+
+if [[ "$ASSETS_ONLY_MODE" == "1" ]]; then
+  echo "✅ Static asset deploy complete. Application services were not restarted."
+  notify_deploy_complete "$PROJECT_NAME" "$HOST"
+  exit 0
+fi
 
 echo "==> Ensuring app certs symlink exists..."
 ssh "$HOST" "

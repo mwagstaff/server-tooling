@@ -12,10 +12,10 @@ usage() {
 Usage: ${SCRIPT_NAME} HOST [install|verify|login]
 
 Examples:
-  ${SCRIPT_NAME} ocl
-  ${SCRIPT_NAME} ocl install
-  ${SCRIPT_NAME} ocl verify
-  ${SCRIPT_NAME} ocl login
+  ${SCRIPT_NAME} sky
+  ${SCRIPT_NAME} sky install
+  ${SCRIPT_NAME} sky verify
+  ${SCRIPT_NAME} sky login
 
 Behavior:
   If no step is provided, the script runs: install + verify + login.

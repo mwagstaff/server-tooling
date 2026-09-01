@@ -28,7 +28,7 @@ fi
 usage() {
   echo "Usage: $SCRIPT_NAME [PROJECT_NAME [HOST]] [--lines N|-n N] [--errors-only|-e]" >&2
   echo "  If no parameters are provided, interactive mode is used." >&2
-  echo "  HOST defaults to 'ocl' when omitted." >&2
+  echo "  HOST defaults to 'sky' when omitted." >&2
 }
 
 list_projects() {
@@ -138,13 +138,13 @@ if [[ $# -eq 0 ]]; then
   fi
 
   echo ""
-  read "?Enter target hostname [default: ocl]: " HOST
+  read "?Enter target hostname [default: sky]: " HOST
   if [[ -z "$HOST" ]]; then
-    HOST="ocl"
+    HOST="sky"
   fi
 elif [[ $# -eq 1 ]]; then
   PROJECT_NAME="$1"
-  HOST="ocl"
+  HOST="sky"
 elif [[ $# -eq 2 ]]; then
   PROJECT_NAME="$1"
   HOST="$2"

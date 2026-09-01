@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Install Redis on a target host using Docker
 # Usage: ./install-redis.sh [HOST]
-#   HOST: Target hostname (default: ocl)
+#   HOST: Target hostname (default: sky)
 
-HOST="${1:-ocl}"
+HOST="${1:-sky}"
 REDIS_VERSION="${REDIS_VERSION:-7-alpine}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_DATA_DIR="/var/lib/redis-data"

@@ -30,6 +30,12 @@
         "start_command": "npm start",
         "startup_port": 3011,
         "metrics_port": 3011,
+        "asset_bundle": {
+            "local_path": "/Users/mwagstaff/dev/top-scores/tools/stadium-images/published",
+            "remote_path": "/home/mwagstaff/.local/share/top-scores/stadium-artwork",
+            "catalog": "catalog.json",
+            "prepare_command": "/Users/mwagstaff/dev/top-scores/tools/stadium-images/.venv/bin/stadium-images publish"
+        },
         "service_label": "com.top-scores.api",
         "service_description": "top-scores API Service",
         "static_env": {
@@ -37,7 +43,8 @@
             "GOAL_GUESSER_EMAIL_FROM": "goal-guesser@skynolimit.dev",
             "GOAL_GUESSER_ADMIN_EMAILS": "mike.wagstaff@gmail.com",
             "GOAL_GUESSER_PUBLIC_ORIGIN": "https://goal-guesser.skynolimit.dev",
-            "CLOUDFLARE_R2_BUCKET_GOAL_GUESSERS": "goal-guessers"
+            "CLOUDFLARE_R2_BUCKET_GOAL_GUESSERS": "goal-guessers",
+            "STADIUM_ARTWORK_ROOT": "/home/mwagstaff/.local/share/top-scores/stadium-artwork"
         },
         "services": [
             {
@@ -149,7 +156,16 @@
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
         "start_command": "npm start",
         "startup_port": 3012,
-        "metrics_port": 3012
+        "metrics_port": 3012,
+        "asset_bundle": {
+            "local_path": "/Users/mwagstaff/dev/train-track-uk/tools/railway-backgrounds/published",
+            "remote_path": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds",
+            "catalog": "catalog.json",
+            "prepare_command": "node /Users/mwagstaff/dev/train-track-uk/tools/railway-backgrounds/publish.mjs"
+        },
+        "static_env": {
+            "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds"
+        }
     },
     {
         "name": "train-loading-service",

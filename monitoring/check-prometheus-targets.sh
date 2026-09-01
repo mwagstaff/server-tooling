@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Check Prometheus scrape targets status
 # Usage: ./check-prometheus-targets.sh [HOST]
-#   HOST: Target hostname (default: DEPLOY_HOST env var, or "ocl")
+#   HOST: Target hostname (default: DEPLOY_HOST env var, or "sky")
 
-TARGET_HOST="${1:-${DEPLOY_HOST:-ocl}}"
+TARGET_HOST="${1:-${DEPLOY_HOST:-sky}}"
 PROM_URL="${PROM_URL:-http://localhost:9090}"
 
 echo "==> Checking Prometheus targets on: ${TARGET_HOST}"

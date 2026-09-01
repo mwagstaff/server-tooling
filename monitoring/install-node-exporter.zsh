@@ -4,7 +4,7 @@ set -euo pipefail
 # Install and configure node_exporter on a remote host
 # Exposes system metrics on port 9100
 
-TARGET_HOST="${1:-${TARGET_HOST:-ocl}}"
+TARGET_HOST="${1:-${TARGET_HOST:-sky}}"
 NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION:-1.7.0}"
 NODE_EXPORTER_PORT="${NODE_EXPORTER_PORT:-9100}"
 

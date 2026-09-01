@@ -17,7 +17,7 @@ set -euo pipefail
 #   --json-file PATH     Remote JSON status file path
 #   -h, --help           Show help
 
-TARGET_HOST="${TARGET_HOST:-ocl}"
+TARGET_HOST="${TARGET_HOST:-sky}"
 DRY_RUN=0
 AUTO_REBOOT=0
 SKIP_DOCKER=0
@@ -33,8 +33,8 @@ Usage:
   ./monitoring/apply-security-updates.zsh [HOST_ALIAS] [OPTIONS]
 
 Examples:
-  ./monitoring/apply-security-updates.zsh ocl
-  ./monitoring/apply-security-updates.zsh ocl --dry-run
+  ./monitoring/apply-security-updates.zsh sky
+  ./monitoring/apply-security-updates.zsh sky --dry-run
   ./monitoring/apply-security-updates.zsh prod --reboot --enable-ufw --install-fail2ban
 
 Options:

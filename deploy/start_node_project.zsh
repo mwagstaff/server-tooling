@@ -78,9 +78,9 @@ if [[ $# -eq 0 ]]; then
   fi
 
   echo ""
-  read "?Enter target hostname [default: ocl]: " HOST
+  read "?Enter target hostname [default: sky]: " HOST
   if [[ -z "$HOST" ]]; then
-    HOST="ocl"
+    HOST="sky"
   fi
 elif [[ $# -eq 2 ]]; then
   PROJECT_NAME="$1"
