@@ -168,6 +168,18 @@
         }
     },
     {
+        "name": "tube-track-api",
+        "path": "/Users/mwagstaff/dev/tube-track-uk/api/tube-track-api",
+        "start_command": "npm start",
+        "startup_port": 3018,
+        "metrics_port": 3018,
+        "healthcheck_path": "/healthcheck",
+        "static_env": {
+            "PORT": "3018",
+            "NODE_OPTIONS": "--max-old-space-size=192"
+        }
+    },
+    {
         "name": "train-loading-service",
         "aliases": [
             "train-loading",

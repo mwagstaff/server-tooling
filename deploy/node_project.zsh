@@ -1789,6 +1789,7 @@ if [[ "$ASSETS_ONLY_MODE" == "0" ]]; then
     --exclude '.git' \
     --exclude '.DS_Store' \
     --exclude 'npm-debug.log' \
+    --exclude '*.log' \
     --exclude 'yarn.lock' \
     --exclude '.env' \
     "${RSYNC_ENV_LOCAL_RULE[@]}" \
@@ -1831,11 +1832,13 @@ if [[ -n "$ASSET_BUNDLE_JSON" ]]; then
   echo "==> Validating and activating persistent asset catalogue..."
   ssh "$HOST" "bash -s" -- \
     "$ASSET_BUNDLE_REMOTE_DIR" \
-    "$ASSET_BUNDLE_CATALOG" <<'REMOTE_ASSET_SCRIPT'
+    "$ASSET_BUNDLE_CATALOG" "$REMOTE_DIR" <<'REMOTE_ASSET_SCRIPT'
 set -euo pipefail
 asset_root="$1"
 catalog_name="$2"
 temporary_catalog="$asset_root/.$catalog_name.tmp"
+application_dir="$3"
+application_dir="${application_dir/#\~/$HOME}"
 
 command -v jq >/dev/null 2>&1 || {
   echo "Error: jq is required to validate the asset catalogue" >&2
@@ -1852,9 +1855,25 @@ jq -e '
   and (.assets | type == "array")
   and all(.assets[];
     (.sha256 | test("^[a-f0-9]{64}$"))
-    and .asset_path == ("assets/" + .sha256 + ".webp")
+    and (.asset_path | test("^assets/([a-z0-9][a-z0-9-]*/)?[a-f0-9]{64}\\.webp$"))
+    and ((.asset_path | split("/") | last) == (.sha256 + ".webp"))
   )
 ' "$temporary_catalog" >/dev/null
+
+# Check the deployed reader before activating a new folder layout. This module
+# is safe to load independently; it does not start the application server.
+if [[ -f "$application_dir/stadium_artwork.js" ]]; then
+  node - "$application_dir/stadium_artwork.js" "$temporary_catalog" "$asset_root" <<'VALIDATE_ARTWORK'
+const fs = require("fs");
+const [modulePath, catalogPath, root] = process.argv.slice(2);
+try {
+  require(modulePath).validateCatalog(JSON.parse(fs.readFileSync(catalogPath, "utf8")), root);
+} catch (error) {
+  console.error("Artwork catalogue is incompatible with the deployed API. Deploy the updated API first:", error.message);
+  process.exit(1);
+}
+VALIDATE_ARTWORK
+fi
 
 while IFS=$'\t' read -r relative_path expected_hash; do
   asset_file="$asset_root/$relative_path"

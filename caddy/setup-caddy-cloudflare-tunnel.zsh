@@ -165,6 +165,14 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
     }
   }
 
+  handle_path /tube-track* {
+    reverse_proxy http://127.0.0.1:3018 {
+      header_up Host 127.0.0.1
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+    }
+  }
+
   handle_path /bromley-bins* {
     reverse_proxy http://127.0.0.1:3013 {
       header_up Host 127.0.0.1
@@ -194,6 +202,9 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   }
 }
 CADDY
+
+echo "==> Validating Caddy configuration..."
+sudo caddy validate --config "${CADDYFILE}"
 
 echo "==> Enabling + restarting Caddy..."
 sudo systemctl enable --now caddy
