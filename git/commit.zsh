@@ -7,6 +7,7 @@ typeset -r DEFAULT_ROOT=${0:A:h:h:h}
 integer -r MAX_DIFF_BYTES=120000
 typeset root=${COMMIT_ROOT:-$DEFAULT_ROOT}
 typeset codex_model=${AI_COMMIT_MODEL:-}
+typeset jobs=${GIT_TOOL_JOBS:-4}
 typeset dry_run=false
 typeset test_messages=false
 
@@ -20,6 +21,7 @@ usage() {
   print "  --test-messages  Generate and display messages without committing or pushing."
   print
   print "Set AI_COMMIT_MODEL to override the model from your Codex configuration."
+  print "Set GIT_TOOL_JOBS to control parallel workers (default: 4)."
 }
 
 for argument in "$@"; do
@@ -39,6 +41,14 @@ fi
 if [[ ! -d $root ]]; then
   print -u2 "Directory does not exist: $root"
   exit 1
+fi
+
+case $jobs in
+  ""|*[!0-9]*) print -u2 "GIT_TOOL_JOBS must be a positive integer"; exit 2 ;;
+esac
+if (( jobs < 1 )); then
+  print -u2 "GIT_TOOL_JOBS must be a positive integer"
+  exit 2
 fi
 
 is_github_url() {
@@ -333,130 +343,249 @@ preview_commit_message() {
   return $result
 }
 
-typeset -a repositories
-while IFS= read -r -d '' marker; do
-  repositories+=("${marker:h}")
-done < <(
-  find "$root" \
-    \( -type d \( -name node_modules -o -name vendor -o -name .venv -o -name .cache \) -prune \) -o \
+run_directory=$(mktemp -d "${TMPDIR:-/tmp}/commit-zsh-run.XXXXXX") || exit 1
+trap 'rm -rf -- "$run_directory"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+discover_repositories() {
+  if [[ -e $1/.git ]]; then
+    print -rn -- "$1/.git"$'\0'
+    return
+  fi
+  find "$1" \
+    \( -type d \( \
+      -name node_modules -o -name vendor -o -name .venv -o -name .cache -o \
+      -name .build -o -name Pods -o -name DerivedData \
+    \) -prune \) -o \
     \( -name .git -print0 -prune \)
-)
+}
+
+flush_discovery_batch() {
+  local batch_index discovery_file marker
+
+  for (( batch_index = 1; batch_index <= ${#discovery_pids}; batch_index++ )); do
+    wait "${discovery_pids[$batch_index]}" 2>/dev/null || true
+  done
+  for discovery_file in $discovery_outputs; do
+    while IFS= read -r -d '' marker; do
+      repositories+=("${marker:h}")
+    done < "$discovery_file"
+  done
+  discovery_pids=()
+  discovery_outputs=()
+}
+
+typeset -a repositories top_directories discovery_pids discovery_outputs
+[[ -e $root/.git ]] && repositories+=("$root")
+while IFS= read -r -d '' top_directory; do
+  top_directories+=("$top_directory")
+done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0)
+
+integer discovery_index=0
+for top_directory in $top_directories; do
+  (( discovery_index++ ))
+  discovery_file="$run_directory/discovery-$discovery_index"
+  discover_repositories "$top_directory" > "$discovery_file" 2>/dev/null &
+  discovery_pids+=($!)
+  discovery_outputs+=("$discovery_file")
+  (( ${#discovery_pids} >= jobs )) && flush_discovery_batch
+done
+(( ${#discovery_pids} > 0 )) && flush_discovery_batch
 repositories=("${(@o)repositories}")
+typeset -a independent_repositories
+for candidate_repo in $repositories; do
+  nested_repository=false
+  for parent_repo in $independent_repositories; do
+    if [[ $candidate_repo == "$parent_repo/"* ]]; then
+      nested_repository=true
+      break
+    fi
+  done
+  [[ $nested_repository == false ]] && independent_repositories+=("$candidate_repo")
+done
+repositories=("${independent_repositories[@]}")
 
-integer committed=0 pushed=0 skipped=0 failed=0
+save_worker_result() {
+  print -r -- "$2 $3 $4 $5" > "$1"
+}
 
-for repo in $repositories; do
+process_repository() {
+  local repo=$1 result_file=$2 branch head_before tree_before commit_oid
+  local commit_subject commit_body commit_message message_source message_error
+  integer repo_committed=0 repo_pushed=0 repo_skipped=0 repo_failed=0
+
   print
   print -- "==> ${repo#$root/}"
 
   if ! cd "$repo"; then
     print -u2 "    Could not enter repository"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if operation_in_progress; then
     print -u2 "    Skipped: a merge, rebase, cherry-pick, or revert is in progress"
-    (( skipped++ ))
-    continue
+    (( repo_skipped++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
   if [[ -n $(git ls-files --unmerged) ]]; then
     print -u2 "    Skipped: resolve unmerged files first"
-    (( skipped++ ))
-    continue
+    (( repo_skipped++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
   if [[ -z $branch ]]; then
     print -u2 "    Skipped: HEAD is detached"
-    (( skipped++ ))
-    continue
+    (( repo_skipped++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if [[ -z $(git status --porcelain=v1) ]]; then
     print "    Working tree is clean"
-    continue
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if ! select_github_remote; then
     print "    Skipped: no GitHub push remote"
-    (( skipped++ ))
-    continue
+    (( repo_skipped++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if $test_messages; then
     if ! preview_commit_message; then
       print -u2 "    Failed to prepare a message preview"
-      (( failed++ ))
+      (( repo_failed++ ))
     fi
-    continue
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if $dry_run; then
     print "    Would commit all working-tree changes"
     print "    Would push $branch to $selected_remote"
-    continue
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if ! git add -A; then
     print -u2 "    Failed to stage changes"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if git diff --cached --quiet; then
     print "    No committable changes after staging"
-    continue
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   head_before=$(current_head_oid)
   if ! tree_before=$(git write-tree); then
     print -u2 "    Failed to snapshot staged changes"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
-  typeset commit_subject commit_body commit_message message_source message_error
   generate_commit_message
   if [[ $(git symbolic-ref --quiet --short HEAD 2>/dev/null) != $branch ||
         $(current_head_oid) != $head_before ||
         $(git write-tree) != $tree_before ]]; then
     print -u2 "    Repository changed while generating the message; skipped"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
   [[ -n $message_error ]] && print "    Codex unavailable: $message_error"
   print "    Committing: $commit_subject [$message_source]"
   if print -r -- "$commit_message" | git commit -F -; then
-    (( committed++ ))
+    (( repo_committed++ ))
   else
     print -u2 "    Commit failed"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   commit_oid=$(git rev-parse HEAD)
   if [[ $(git symbolic-ref --quiet --short HEAD 2>/dev/null) != $branch ||
         $(git rev-parse "${commit_oid}^{tree}") != $tree_before ]]; then
     print -u2 "    Commit differs from the preview; review local commit $commit_oid before pushing"
-    (( failed++ ))
-    continue
+    (( repo_failed++ ))
+    save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+    return
   fi
 
   if [[ -n $selected_upstream ]]; then
     if git push "$selected_remote" "HEAD:$selected_upstream"; then
-      (( pushed++ ))
+      (( repo_pushed++ ))
     else
       print -u2 "    Push failed"
-      (( failed++ ))
+      (( repo_failed++ ))
     fi
   elif git push --set-upstream "$selected_remote" "$branch"; then
-    (( pushed++ ))
+    (( repo_pushed++ ))
   else
     print -u2 "    Push failed"
-    (( failed++ ))
+    (( repo_failed++ ))
   fi
+
+  save_worker_result "$result_file" $repo_committed $repo_pushed $repo_skipped $repo_failed
+}
+
+flush_batch() {
+  local batch_index output_file result_file
+  local repo_committed repo_pushed repo_skipped repo_failed
+
+  for (( batch_index = 1; batch_index <= ${#batch_pids}; batch_index++ )); do
+    wait "${batch_pids[$batch_index]}" 2>/dev/null || true
+  done
+  for (( batch_index = 1; batch_index <= ${#batch_outputs}; batch_index++ )); do
+    output_file=${batch_outputs[$batch_index]}
+    result_file=${batch_results[$batch_index]}
+    [[ -s $output_file ]] && cat "$output_file"
+    if [[ -s $result_file ]]; then
+      read -r repo_committed repo_pushed repo_skipped repo_failed < "$result_file"
+      (( committed += repo_committed ))
+      (( pushed += repo_pushed ))
+      (( skipped += repo_skipped ))
+      (( failed += repo_failed ))
+    else
+      (( failed++ ))
+    fi
+  done
+  batch_pids=()
+  batch_outputs=()
+  batch_results=()
+}
+
+if ! $dry_run; then
+  check_codex_available || true
+fi
+
+integer committed=0 pushed=0 skipped=0 failed=0 repository_index=0
+typeset -a batch_pids batch_outputs batch_results
+
+for repo in $repositories; do
+  (( repository_index++ ))
+  output_file="$run_directory/$repository_index.out"
+  result_file="$run_directory/$repository_index.result"
+  process_repository "$repo" "$result_file" > "$output_file" 2>&1 &
+  batch_pids+=($!)
+  batch_outputs+=("$output_file")
+  batch_results+=("$result_file")
+  (( ${#batch_pids} >= jobs )) && flush_batch
 done
+(( ${#batch_pids} > 0 )) && flush_batch
 
 print
 if $dry_run; then
