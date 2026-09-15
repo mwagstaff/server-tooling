@@ -86,6 +86,14 @@ get_project_build_command() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
 }
 
+get_project_node_binary() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .node_binary // empty' "$CONFIG_FILE"
+}
+
+get_project_rsync_excludes() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | (.rsync_excludes // [])[]' "$CONFIG_FILE"
+}
+
 get_project_asset_bundle() {
   local project_name="$1"
   jq -c --arg name "$project_name" '.[] | select(.name == $name) | .asset_bundle // empty' "$CONFIG_FILE"
@@ -845,13 +853,12 @@ tail_with_redeploy_controls() {
 run_remote_pnpm_install() {
   local -a install_args=("$@")
 
-  ssh "$HOST" "bash -s" -- "$REMOTE_DIR" "${install_args[@]}" <<'REMOTE_SCRIPT'
+  ssh "$HOST" "bash -s" -- "$REMOTE_DIR" "$REMOTE_NODE_PATH" "${install_args[@]}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-
 remote_dir="$1"
-shift
+export PATH="$2"
+shift 2
 
 case "$remote_dir" in
   "~")
@@ -1524,6 +1531,28 @@ METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
 HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
+NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME")
+REMOTE_NODE_PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+if [[ -n "$NODE_BINARY" ]]; then
+  # Restrict the interpolated remote path to literal path characters. Naming
+  # the executable node ensures npm/pnpm shebangs use this runtime via PATH too.
+  if [[ ! "$NODE_BINARY" =~ '^/[A-Za-z0-9_./-]+/node$' || "$NODE_BINARY" == *'/../'* || "$NODE_BINARY" == *'/./'* ]]; then
+    echo "Error: node_binary must be an absolute path ending in /node, without spaces or shell syntax" >&2
+    exit 1
+  fi
+  REMOTE_NODE_PATH="${NODE_BINARY:h}:$REMOTE_NODE_PATH"
+fi
+if ! jq -e --arg name "$PROJECT_NAME" '
+  .[] | select(.name == $name) | (.rsync_excludes // []) |
+  type == "array" and all(.[]; type == "string" and length > 0 and (explode | all(. >= 32 and . != 127)))
+' "$CONFIG_FILE" >/dev/null; then
+  echo "Error: rsync_excludes must be an array of non-empty patterns without control characters" >&2
+  exit 1
+fi
+RSYNC_PROJECT_RULES=()
+for project_exclude in "${(@f)$(get_project_rsync_excludes "$PROJECT_NAME")}"; do
+  [[ -n "$project_exclude" ]] && RSYNC_PROJECT_RULES+=(--exclude "$project_exclude")
+done
 SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
 SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
 LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
@@ -1618,6 +1647,8 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - path: absolute local path to the project directory" >&2
   echo "  - start_command: startup command (for documentation; script auto-detects server.js/server.mjs/index.js/index.mjs)" >&2
   echo "  - build_command: optional build command to run on the remote host before restart" >&2
+  echo "  - node_binary: optional absolute remote executable path ending in /node" >&2
+  echo "  - rsync_excludes: optional array of additional application-sync exclude patterns" >&2
   echo "  - service_label: optional service identifier for launchd/systemd" >&2
   echo "  - service_description: optional service description for launchd/systemd" >&2
   echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
@@ -1728,6 +1759,16 @@ if [[ "$ASSETS_ONLY_MODE" == "1" && -z "$ASSET_BUNDLE_JSON" ]]; then
   exit 1
 fi
 
+if [[ -n "$NODE_BINARY" && "$ASSETS_ONLY_MODE" == "0" ]]; then
+  # Fail before asset preparation, rsync, environment writes or service changes.
+  echo "==> Checking pinned Node runtime on $HOST..."
+  if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "test -x '$NODE_BINARY' && '$NODE_BINARY' -p 'process.versions.node'"; then
+    echo "Error: configured node_binary is unavailable on $HOST: $NODE_BINARY" >&2
+    exit 1
+  fi
+fi
+
 if project_uses_vite "$LOCAL_DIR"; then
   PROJECT_IS_VITE=1
 fi
@@ -1806,6 +1847,7 @@ if [[ "$ASSETS_ONLY_MODE" == "0" ]]; then
     --exclude '.next' \
     --exclude '.turbo' \
     --exclude '*.local' \
+    "${RSYNC_PROJECT_RULES[@]}" \
     "$LOCAL_DIR/" \
     "${HOST}:${REMOTE_DIR}/"
 fi
@@ -1928,11 +1970,11 @@ if [[ "$QUICK_MODE" == "1" ]]; then
       run_remote_pnpm_install --prod --prefer-offline
     fi
   elif [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       npm install --prefer-offline --no-audit --no-fund"
   else
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       npm install --omit=dev --prefer-offline --no-audit --no-fund"
   fi
@@ -1941,7 +1983,7 @@ if [[ "$QUICK_MODE" == "1" ]]; then
     echo "==> Quick mode: rebuilding Vite assets on server..."
     ssh "$HOST" "
       set -e
-      export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+      export PATH='$REMOTE_NODE_PATH'
       cd $REMOTE_DIR
 
       if [[ '$PROJECT_HAS_PREPARE_ASSETS' == '1' && '$PROJECT_BUILD_RUNS_PREPARE_ASSETS' != '1' ]]; then
@@ -1960,7 +2002,7 @@ else
       run_remote_pnpm_install --prod
     fi
   elif [[ -n "$BUILD_COMMAND" ]]; then
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       if [[ -f package-lock.json ]]; then
         npm ci
@@ -1968,7 +2010,7 @@ else
         npm install
       fi"
   else
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       if [[ -f package-lock.json ]]; then
         npm ci --omit=dev
@@ -1979,13 +2021,13 @@ else
 
   if [[ -n "$BUILD_COMMAND" ]]; then
     echo "==> Running build command on server..."
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       $BUILD_COMMAND"
 
     if [[ "$PROJECT_IS_PNPM" != "1" ]]; then
       echo "==> Pruning dev dependencies on server..."
-      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
         cd $REMOTE_DIR && \
         npm prune --omit=dev"
     fi
@@ -2173,6 +2215,10 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
+    NODE_EXECUTABLE='$NODE_BINARY'
+    if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
+      NODE_EXECUTABLE=\$(command -v node)
+    fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
@@ -2228,7 +2274,7 @@ if [[ -f \"\$BW_ENV_FILE\" ]]; then
   source \"\$BW_ENV_FILE\"
 fi
 
-exec \"\$(command -v node)\" \"\$entry_file\"
+exec \"\$NODE_EXECUTABLE\" \"\$entry_file\"
 EOF_START_WRAPPER
       chmod 700 \"\$start_wrapper\"
       printf '%s\n' \"\$start_wrapper\"
@@ -2314,6 +2360,10 @@ else
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
+    NODE_EXECUTABLE='$NODE_BINARY'
+    if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
+      NODE_EXECUTABLE=\$(command -v node)
+    fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
@@ -2371,7 +2421,7 @@ if [[ -f \"\$BW_ENV_FILE\" ]]; then
   source \"\$BW_ENV_FILE\"
 fi
 
-exec \"\$(command -v node)\" \"\$entry_file\"
+exec \"\$NODE_EXECUTABLE\" \"\$entry_file\"
 EOF_START_WRAPPER
       chmod 700 \"\$start_wrapper\"
       printf '%s\n' \"\$start_wrapper\"

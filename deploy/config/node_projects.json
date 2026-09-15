@@ -154,6 +154,11 @@
     {
         "name": "train-track-api",
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
+        "node_binary": "/home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node",
+        "rsync_excludes": [
+            "/resources/timetable_full/",
+            "/var/planner/"
+        ],
         "start_command": "npm start",
         "startup_port": 3012,
         "metrics_port": 3012,
@@ -164,7 +169,8 @@
             "prepare_command": "node /Users/mwagstaff/dev/train-track-uk/tools/railway-backgrounds/publish.mjs"
         },
         "static_env": {
-            "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds"
+            "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds",
+            "PLANNER_DATA_DIR": "/home/mwagstaff/.local/share/train-track-api/planner"
         }
     },
     {
