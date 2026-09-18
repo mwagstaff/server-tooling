@@ -11,6 +11,7 @@ set -euo pipefail
 # - Supports asset-only deploys without syncing or restarting the application
 # - Can reuse an explicitly pre-published asset bundle during asset-only deploys
 # - Applies Bitwarden-managed credentials only when requested with bw/--bw
+# - A Bitwarden flag skips asset bundle preparation by default (override with --optimize-images)
 
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
@@ -1334,9 +1335,11 @@ if [[ "$ASSETS_ONLY_MODE" == "1" && (
   exit 1
 fi
 
-if [[ "$SKIP_ASSET_PREPARE" == "1" && "$ASSETS_ONLY_MODE" != "1" ]]; then
-  echo "Error: --skip-asset-prepare can only be used with --assets-only." >&2
-  exit 1
+# A Bitwarden flag implies skipping asset bundle preparation by default, since it's
+# most often used to push updated credentials without re-optimising unrelated assets.
+# --optimize-images overrides this and forces preparation to run anyway.
+if [[ "$BW_ENV_SYNC" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
+  SKIP_ASSET_PREPARE=1
 fi
 
 if [[ $# -ge 3 ]]; then
@@ -1507,12 +1510,12 @@ else
   echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
   echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
   echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
-  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys" >&2
+  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys or when a Bitwarden flag is set" >&2
   echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
-  echo "  --skip-asset-prepare: with --assets-only, reuse a bundle produced by a successful standalone publisher run" >&2
+  echo "  --skip-asset-prepare: skip asset bundle preparation/optimisation and reuse what's already local (implied by --assets-only reusing a standalone publisher run, or by a Bitwarden flag)" >&2
   echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
-  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
-  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
+  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials (also skips asset bundle preparation by default; override with --optimize-images)" >&2
+  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first (also skips asset bundle preparation by default; override with --optimize-images)" >&2
   echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
   echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
   echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
@@ -1787,10 +1790,20 @@ if project_build_runs_prepare_assets "$LOCAL_DIR"; then
 fi
 
 if [[ -n "$ASSET_BUNDLE_PREPARE_COMMAND" ]]; then
-  if [[ "$QUICK_MODE" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
+  if [[ "$OPTIMIZE_IMAGES" == "1" ]]; then
+    echo "==> Preparing persistent asset bundle..."
+    (
+      cd "$LOCAL_DIR"
+      zsh -lc "$ASSET_BUNDLE_PREPARE_COMMAND"
+    )
+  elif [[ "$QUICK_MODE" == "1" ]]; then
     echo "==> Quick mode enabled; skipping persistent asset image optimisation."
   elif [[ "$SKIP_ASSET_PREPARE" == "1" ]]; then
-    echo "==> Reusing the previously prepared persistent asset bundle..."
+    if [[ "$BW_ENV_SYNC" == "1" ]]; then
+      echo "==> Bitwarden flag enabled; skipping persistent asset image optimisation."
+    else
+      echo "==> Reusing the previously prepared persistent asset bundle..."
+    fi
   else
     echo "==> Preparing persistent asset bundle..."
     (
