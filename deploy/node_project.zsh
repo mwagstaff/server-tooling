@@ -12,6 +12,33 @@ set -euo pipefail
 # - Can reuse an explicitly pre-published asset bundle during asset-only deploys
 # - Applies Bitwarden-managed credentials only when requested with bw/--bw
 # - A Bitwarden flag skips asset bundle preparation by default (override with --optimize-images)
+# - Defaults to a quick deploy that tails stderr afterwards (equivalent to -q -e);
+#   override with --full / --no-tail
+# - Deploys to the project's default host when no host is given (see PROJECT_DEFAULT_HOSTS)
+
+# ---- Default deploy hosts (edit freely) ----
+# Host used when no target host is given on the command line, keyed by the
+# project name from config/node_projects.json. Projects not listed here fall
+# back to DEFAULT_DEPLOY_HOST.
+DEFAULT_DEPLOY_HOST="sky"
+typeset -A PROJECT_DEFAULT_HOSTS=(
+  healthcheck            sky
+  bikespot-london        sky
+  top-scores             sky
+  top-scores-web         sky
+  goal-guesser           sky
+  sky-no-limit-web       sky
+  train-track-api        sky
+  tube-track-api         sky
+  train-loading-service  sky
+  bromley-bins           sky
+  kidsplorers-api        sky
+  kidsplorers-web        sky
+)
+
+get_project_default_host() {
+  echo "${PROJECT_DEFAULT_HOSTS[$1]:-$DEFAULT_DEPLOY_HOST}"
+}
 
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
@@ -28,10 +55,10 @@ BW_SYNC_TTL_SECONDS="${BW_SYNC_TTL_SECONDS:-900}"
 BW_SYNC_CACHE_FILE="${BW_SYNC_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-last-sync}"
 BW_FORCE_SYNC="${BW_FORCE_SYNC:-0}"
 BW_SKIP_SYNC="${BW_SKIP_SYNC:-0}"
-QUICK_MODE=0
+QUICK_MODE=""       # resolved after switch parsing; defaults to quick unless overridden
 OPTIMIZE_IMAGES=0
-TAIL_MODE=0
-TAIL_ERRORS_ONLY=0
+TAIL_MODE=""        # resolved after switch parsing; defaults to tailing stderr only
+TAIL_ERRORS_ONLY=""
 DISABLE_MODE=0
 ASSETS_ONLY_MODE=0
 SKIP_ASSET_PREPARE=0
@@ -714,6 +741,14 @@ candidate_is_configured_ssh_host() {
   return 1
 }
 
+positional_args_include_ssh_host() {
+  local arg
+  for arg in "$@"; do
+    candidate_is_configured_ssh_host "$arg" && return 0
+  done
+  return 1
+}
+
 project_query_has_wildcard() {
   local query="$1"
 
@@ -800,6 +835,7 @@ tail_with_redeploy_controls() {
   redeploy_cmd+=("${tail_flags[@]}")
 
   local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
+  full_redeploy_cmd+=("--full")
   full_redeploy_cmd+=("${tail_flags[@]}")
 
   local -a bitwarden_sync_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
@@ -1217,7 +1253,11 @@ run_parallel_deployments() {
 
   if [[ "$QUICK_MODE" == "1" ]]; then
     child_switch_args+=("--quick")
+  else
+    child_switch_args+=("--full")
   fi
+  # Children never tail; the parent tails all projects together afterwards.
+  child_switch_args+=("--no-tail")
   if [[ "$OPTIMIZE_IMAGES" == "1" ]]; then
     child_switch_args+=("--optimize-images")
   fi
@@ -1274,6 +1314,32 @@ run_parallel_deployments() {
   exit 0
 }
 
+usage() {
+  echo "Usage: $0 [PROJECT_QUERY... [HOST]] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--full|full|--no-quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only] [--no-tail]" >&2
+  echo "  If no parameters provided, interactive mode will be used" >&2
+  echo "  Manual mode supports either: [PROJECT_QUERY... [HOST]] or [HOST PROJECT_QUERY...]" >&2
+  echo "  Defaults: quick deploy tailing stderr afterwards (-q -e); HOST defaults to the project's entry in PROJECT_DEFAULT_HOSTS" >&2
+  echo "  Example: $0 train-track-api   (same as: $0 -q -e train-track-api $(get_project_default_host train-track-api))" >&2
+  echo "  Example: $0 top web sky --quick" >&2
+  echo "  Example: $0 sky --quick top web" >&2
+  echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
+  echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
+  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --full/full/--no-quick: run a full deploy instead of the default quick deploy (implied by Bitwarden, assets-only and disable modes)" >&2
+  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys or when a Bitwarden flag is set" >&2
+  echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
+  echo "  --skip-asset-prepare: skip asset bundle preparation/optimisation and reuse what's already local (implied by --assets-only reusing a standalone publisher run, or by a Bitwarden flag)" >&2
+  echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
+  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials (also skips asset bundle preparation by default; override with --optimize-images)" >&2
+  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first (also skips asset bundle preparation by default; override with --optimize-images)" >&2
+  echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
+  echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
+  echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
+  echo "  --no-tail: do not tail remote logs after deploy" >&2
+  echo "" >&2
+  list_projects >&2
+}
+
 # Parse switches before positional args.
 typeset -a POSITIONAL_ARGS=()
 for arg in "$@"; do
@@ -1283,6 +1349,16 @@ for arg in "$@"; do
       ;;
     quick|--quick|-q)
       QUICK_MODE=1
+      ;;
+    full|--full|--no-quick)
+      QUICK_MODE=0
+      ;;
+    --no-tail)
+      TAIL_MODE=0
+      ;;
+    help|--help|-h)
+      usage
+      exit 0
       ;;
     --optimize-images|--optimise-images)
       OPTIMIZE_IMAGES=1
@@ -1321,9 +1397,29 @@ if [[ $# -gt 0 ]]; then
   set -- "${POSITIONAL_ARGS[@]}"
 fi
 
-if [[ "$TAIL_ERRORS_ONLY" == "1" && "$TAIL_MODE" == "0" ]]; then
+# Default switches: quick deploy (-q) and tail stderr afterwards (-e) unless
+# overridden with --full / --no-tail, or the mode makes them meaningless.
+# Quick mode skips Bitwarden syncs, so a Bitwarden flag implies a full deploy.
+if [[ -z "$QUICK_MODE" ]]; then
+  if [[ "$BW_ENV_SYNC" == "1" || "$ASSETS_ONLY_MODE" == "1" || "$DISABLE_MODE" == "1" ]]; then
+    QUICK_MODE=0
+  else
+    QUICK_MODE=1
+  fi
+fi
+if [[ -z "$TAIL_MODE" && -z "$TAIL_ERRORS_ONLY" ]]; then
+  if [[ "$ASSETS_ONLY_MODE" == "1" || "$DISABLE_MODE" == "1" ]]; then
+    TAIL_MODE=0
+  else
+    TAIL_MODE=1
+    TAIL_ERRORS_ONLY=1
+  fi
+fi
+TAIL_ERRORS_ONLY="${TAIL_ERRORS_ONLY:-0}"
+if [[ "$TAIL_ERRORS_ONLY" == "1" && -z "$TAIL_MODE" ]]; then
   TAIL_MODE=1
 fi
+TAIL_MODE="${TAIL_MODE:-0}"
 
 if [[ "$ASSETS_ONLY_MODE" == "1" && (
   "$QUICK_MODE" == "1"
@@ -1340,6 +1436,20 @@ fi
 # --optimize-images overrides this and forces preparation to run anyway.
 if [[ "$BW_ENV_SYNC" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
   SKIP_ASSET_PREPARE=1
+fi
+
+# No host given: every positional argument names a project and none is a
+# configured SSH host, so deploy them all to their configured default host.
+if [[ $# -ge 2 ]] && ! positional_args_include_ssh_host "$@" \
+  && NO_HOST_PROJECT_NAMES=("${(@f)$(resolve_project_args "$@")}"); then
+  NO_HOST_TARGET="$(get_project_default_host "${NO_HOST_PROJECT_NAMES[1]}")"
+  for project_name in "${NO_HOST_PROJECT_NAMES[@]}"; do
+    if [[ "$(get_project_default_host "$project_name")" != "$NO_HOST_TARGET" ]]; then
+      echo "Error: These projects have different default hosts; pass the target host explicitly." >&2
+      exit 1
+    fi
+  done
+  run_parallel_deployments "$NO_HOST_TARGET" "${NO_HOST_PROJECT_NAMES[@]}"
 fi
 
 if [[ $# -ge 3 ]]; then
@@ -1413,12 +1523,12 @@ if [[ $# -eq 0 ]]; then
     PROJECT_NAME="$project_input"
   fi
 
-  echo ""
-  read "?Enter target hostname [default: sky]: " HOST
-
-  if [[ -z "$HOST" ]]; then
-    HOST="sky"
+  if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
+    exit 1
   fi
+
+  echo ""
+  read "?Enter target hostname [default: $(get_project_default_host "$PROJECT_NAME")]: " HOST
 elif [[ $# -ge 2 ]]; then
   # Support both PROJECT... HOST and HOST PROJECT... forms.
   HOST_FIRST_CANDIDATE="${argv[1]}"
@@ -1502,30 +1612,21 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
-  echo "  If no parameters provided, interactive mode will be used" >&2
-  echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
-  echo "  Example: $0 top web sky --quick" >&2
-  echo "  Example: $0 sky --quick top web" >&2
-  echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
-  echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
-  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
-  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys or when a Bitwarden flag is set" >&2
-  echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
-  echo "  --skip-asset-prepare: skip asset bundle preparation/optimisation and reuse what's already local (implied by --assets-only reusing a standalone publisher run, or by a Bitwarden flag)" >&2
-  echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
-  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials (also skips asset bundle preparation by default; override with --optimize-images)" >&2
-  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first (also skips asset bundle preparation by default; override with --optimize-images)" >&2
-  echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
-  echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
-  echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
-  echo "" >&2
-  list_projects >&2
-  exit 1
+  # Single project with no host: deploy to its configured default host.
+  if candidate_is_configured_ssh_host "$1" && ! project_query_is_exact_match "$1"; then
+    echo "Error: '$1' looks like a host; specify a project to deploy." >&2
+    usage
+    exit 1
+  fi
+  PROJECT_NAME="$1"
+  HOST=""
 fi
 
 if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
   exit 1
+fi
+if [[ -z "$HOST" ]]; then
+  HOST="$(get_project_default_host "$PROJECT_NAME")"
 fi
 
 # Get project configuration from config file

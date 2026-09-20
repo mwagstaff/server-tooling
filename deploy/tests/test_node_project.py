@@ -34,10 +34,14 @@ if name == "ssh":
         print('{"status":"ok"}')
 '''
 
+TAIL_STUB = r"""#!/usr/bin/env zsh
+python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write(json.dumps({"name": "tail", "args": sys.argv[1:], "stdin": ""}) + "\n")' "$@"
+"""
+
 
 class NodeProjectDeploymentTests(unittest.TestCase):
     def run_deploy(self, *, quick=False, pin=PIN, pnpm=False, build=False,
-                   excludes=None, missing=False):
+                   excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -46,6 +50,10 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         (deploy / "lib").mkdir()
         shutil.copyfile(DEPLOY / "node_project.zsh", deploy / "node_project.zsh")
         shutil.copyfile(DEPLOY / "lib/project_name_matcher.zsh", deploy / "lib/project_name_matcher.zsh")
+        # Stub the log tailer so post-deploy tailing is recorded instead of run.
+        tail = deploy / "tail_node_project.zsh"
+        tail.write_text(TAIL_STUB)
+        tail.chmod(0o755)
         project = root / "app"
         project.mkdir()
         package = {"name": "test-project", "scripts": {}}
@@ -78,9 +86,14 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    DEPLOY_TEST_LOG=str(log), SSH_CONFIG_FILE=str(ssh_config), BW_ENV_SYNC="0")
         if missing:
             env["DEPLOY_TEST_NODE_MISSING"] = "1"
-        command = ["zsh", str(deploy / "node_project.zsh"), "test-project", "test-host"]
-        if quick:
-            command.append("--quick")
+        command = ["zsh", str(deploy / "node_project.zsh")]
+        if project_arg:
+            command.append(project_arg)
+        if host:
+            command.append(host)
+        if switches is None:
+            switches = ["--quick" if quick else "--full", "--no-tail"]
+        command.extend(switches)
         result = subprocess.run(command, input="", text=True, capture_output=True, env=env, timeout=20)
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return result, calls
@@ -146,6 +159,38 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                 rsync = next(call for call in calls if call["name"] == "rsync")
                 self.assertNotIn("/var/planner/", rsync["args"])
                 self.assertIn(".static-config*.env.sh", rsync["args"])
+
+    def test_omitted_host_defaults_to_quick_deploy_with_error_tail(self):
+        result, calls = self.run_deploy(host=None, switches=[])
+        self.assert_success(result)
+        self.assertIn("Deploy mode: quick", result.stdout)
+        self.assertIn("Tail mode: errors only", result.stdout)
+        remote = [call for call in calls if call["name"] in ("ssh", "rsync")]
+        self.assertTrue(remote)
+        for call in remote:
+            self.assertTrue(any(arg == "sky" or arg.startswith("sky:") for arg in call["args"]), call)
+            self.assertFalse(any("test-host" in arg for arg in call["args"]), call)
+        tails = [call for call in calls if call["name"] == "tail"]
+        self.assertEqual([call["args"] for call in tails], [["test-project", "sky", "--errors-only"]])
+
+    def test_explicit_host_and_switches_override_defaults(self):
+        result, calls = self.run_deploy(switches=["--full", "--tail"])
+        self.assert_success(result)
+        self.assertIn("Deploy mode: full", result.stdout)
+        self.assertIn("Tail mode: stdout + stderr", result.stdout)
+        self.assertTrue(any("test-host" in call["args"] for call in calls if call["name"] == "ssh"))
+        tails = [call for call in calls if call["name"] == "tail"]
+        self.assertEqual([call["args"] for call in tails], [["test-project", "test-host"]])
+
+        result, calls = self.run_deploy(switches=["--no-tail"])
+        self.assert_success(result)
+        self.assertIn("Tail logs after deploy: no", result.stdout)
+        self.assertFalse([call for call in calls if call["name"] == "tail"])
+
+    def test_bare_host_without_project_is_rejected(self):
+        result, _ = self.run_deploy(project_arg=None, switches=[])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("looks like a host", result.stderr)
 
     def test_invalid_or_missing_pins_fail_before_any_deployment_mutation(self):
         for pin in ["relative/node", "/opt/node;touch-bad/node", "/opt/../node/bin/node", "/opt/node\n/bin/node"]:

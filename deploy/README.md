@@ -17,6 +17,12 @@ The path must be absolute, end in `/node`, and contain only letters, digits, und
 
 TrainTrack's validated timetable belongs in `/home/mwagstaff/.local/share/train-track-api/planner`, outside the synchronised application directory. Its `PLANNER_DATA_DIR` is saved in `static_env`, which regenerates the remote static configuration during subsequent deployments. Source timetable files and local development pointers are excluded from code deployments. Import/validation/activation are separate operations documented in the TrainTrack repository's journey-planner runbook.
 
+## Default hosts and switches
+
+`node_project.zsh` defaults to a quick deploy that tails stderr afterwards (`-q -e`); use `--full` / `--no-tail` to opt out. Bitwarden, assets-only and disable modes imply a full deploy.
+
+When no host is given, each project deploys to its entry in `PROJECT_DEFAULT_HOSTS` at the top of `node_project.zsh` (falling back to `DEFAULT_DEPLOY_HOST`). Edit that mapping to move a project to another host. So `./deploy/node_project.zsh train-track-api` is equivalent to `./deploy/node_project.zsh -q -e train-track-api sky`.
+
 ## Regression checks
 
 ```bash
