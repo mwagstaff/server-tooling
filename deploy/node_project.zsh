@@ -847,14 +847,18 @@ tail_with_redeploy_controls() {
   echo ""
 
   TAIL_SHOW_CONTROLS=0 zsh "$tail_script" "${tail_args[@]}" < /dev/null &
-  local tail_pid=$!
+  # Not local: the EXIT trap can run after this function's scope is gone.
+  TAIL_CHILD_PID=$!
+  local tail_pid=$TAIL_CHILD_PID
   local key=""
 
   # Background jobs ignore SIGINT, so Ctrl+C would otherwise orphan the tail
   # (and its ssh), which keeps writing remote log lines to the terminal.
   cleanup_tail() {
-    kill "$tail_pid" 2>/dev/null || true
-    wait "$tail_pid" 2>/dev/null || true
+    [[ -n "${TAIL_CHILD_PID:-}" ]] || return 0
+    kill "$TAIL_CHILD_PID" 2>/dev/null || true
+    wait "$TAIL_CHILD_PID" 2>/dev/null || true
+    TAIL_CHILD_PID=""
   }
   trap 'cleanup_tail; exit 130' INT
   trap 'cleanup_tail; exit 143' TERM
