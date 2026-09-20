@@ -190,7 +190,9 @@ echo ""
 
 REMOTE_LOG_FILES_SSH="${(j: :)REMOTE_LOG_FILES}"
 
-ssh -o ConnectTimeout=10 "$HOST" "
+# exec so this script's PID is the ssh process: killing the tailer stops the
+# remote tail instead of leaving ssh orphaned and still writing to the terminal.
+exec ssh -o ConnectTimeout=10 "$HOST" "
 set -eu
 
 REMOTE_DIR=\"$REMOTE_DIR\"

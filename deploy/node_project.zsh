@@ -850,6 +850,16 @@ tail_with_redeploy_controls() {
   local tail_pid=$!
   local key=""
 
+  # Background jobs ignore SIGINT, so Ctrl+C would otherwise orphan the tail
+  # (and its ssh), which keeps writing remote log lines to the terminal.
+  cleanup_tail() {
+    kill "$tail_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+  }
+  trap 'cleanup_tail; exit 130' INT
+  trap 'cleanup_tail; exit 143' TERM
+  trap cleanup_tail EXIT
+
   while kill -0 "$tail_pid" 2>/dev/null; do
     if read -r -k 1 -s -t 0.2 key; then
       case "$key" in
@@ -879,9 +889,11 @@ tail_with_redeploy_controls() {
   done
 
   if wait "$tail_pid"; then
+    trap - INT TERM EXIT
     return 0
   else
     local tail_status="$?"
+    trap - INT TERM EXIT
     echo "Error: log tail exited with status ${tail_status}" >&2
     return "$tail_status"
   fi
