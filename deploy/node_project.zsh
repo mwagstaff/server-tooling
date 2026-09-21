@@ -29,6 +29,8 @@ typeset -A PROJECT_DEFAULT_HOSTS=(
   goal-guesser           sky
   sky-no-limit-web       sky
   train-track-api        sky
+  train-track-planner    mini
+  train-track-planner-mvp mini
   tube-track-api         sky
   train-loading-service  sky
   bromley-bins           sky
@@ -95,7 +97,8 @@ get_project_path() {
 # Function to get project metrics port by name
 get_project_metrics_port() {
   local project_name="$1"
-  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .metrics_port // 3010' "$CONFIG_FILE"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) |
+    if .metrics_port == false then empty else .metrics_port // 3010 end' "$CONFIG_FILE"
 }
 
 # Function to get project startup port by name (falls back to metrics port)
@@ -116,6 +119,10 @@ get_project_build_command() {
 
 get_project_node_binary() {
   jq -r --arg name "$1" '.[] | select(.name == $name) | .node_binary // empty' "$CONFIG_FILE"
+}
+
+get_project_service_scope() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .service_scope // "user"' "$CONFIG_FILE"
 }
 
 get_project_rsync_excludes() {
@@ -1652,6 +1659,11 @@ STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
 HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
 NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME")
+SERVICE_SCOPE=$(get_project_service_scope "$PROJECT_NAME")
+if [[ "$SERVICE_SCOPE" != "user" && "$SERVICE_SCOPE" != "system" ]]; then
+  echo "Error: service_scope must be 'user' or 'system'" >&2
+  exit 1
+fi
 REMOTE_NODE_PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 if [[ -n "$NODE_BINARY" ]]; then
   # Restrict the interpolated remote path to literal path characters. Naming
@@ -2263,6 +2275,7 @@ SERVICE_SETUP_REQUIRED=0
 if [[ "$QUICK_MODE" == "1" ]]; then
   service_probe="$(ssh "$HOST" "
     set -e
+    SERVICE_SCOPE='$SERVICE_SCOPE'
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     current_found=1
@@ -2275,6 +2288,15 @@ if [[ "$QUICK_MODE" == "1" ]]; then
 
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       UID_NUM=\"\$(id -u)\"
+      if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+        current_found=1
+        for CURRENT_SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+          [[ -n \"\$CURRENT_SERVICE_LABEL\" ]] || continue
+          if ! launchctl print \"system/\$CURRENT_SERVICE_LABEL\" >/dev/null 2>&1; then current_found=0; fi
+        done
+        printf '%s %s\n' \"\$current_found\" \"\$legacy_found\"
+        exit 0
+      fi
       for DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
         if ! launchctl print \"\$DOMAIN\" >/dev/null 2>&1; then
           continue
@@ -2353,6 +2375,7 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
+    SERVICE_SCOPE='$SERVICE_SCOPE'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2421,7 +2444,9 @@ EOF_START_WRAPPER
         build_wrapper \"\$service_name\" \"\$entry_file\" >/dev/null
 
         DOMAIN=''
-        if launchctl print \"gui/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]] && launchctl print \"system/\$service_label\" >/dev/null 2>&1; then
+          DOMAIN='system'
+        elif launchctl print \"gui/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
           DOMAIN=\"gui/\$UID_NUM\"
         elif launchctl print \"user/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
           DOMAIN=\"user/\$UID_NUM\"
@@ -2432,7 +2457,14 @@ EOF_START_WRAPPER
           exit 1
         fi
         echo \"Using launchd domain for \$service_label: \$DOMAIN\"
-        launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+        if [[ \"\$DOMAIN\" == 'system' ]]; then
+          sudo -n launchctl kickstart -k \"\$DOMAIN/\$service_label\" || {
+            echo 'Error: restarting the system LaunchDaemon requires administrator authorization.' >&2
+            exit 1
+          }
+        else
+          launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+        fi
         sleep 1
         if ! launchctl print \"\$DOMAIN/\$service_label\" | grep -q 'state = running'; then
           echo \"Error: launchd service did not remain running: \$service_label\" >&2
@@ -2500,6 +2532,7 @@ else
     SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
     SERVICE_LOG_FILES=(${SERVICE_LOG_FILES_SSH})
     SERVICE_ERROR_LOG_FILES=(${SERVICE_ERROR_LOG_FILES_SSH})
+    SERVICE_SCOPE='$SERVICE_SCOPE'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2561,6 +2594,14 @@ EOF_START_WRAPPER
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       echo \"==> Using launchd (macOS)\"
       UID_NUM=\"\$(id -u)\"
+      USER_NAME=\"\$(id -un)\"
+      if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+        if ! sudo -n true >/dev/null 2>&1; then
+          echo 'Error: installing the system LaunchDaemon requires administrator authorization.' >&2
+          echo 'Run the deployment from an administrator-authorized session, or install the reviewed plist separately.' >&2
+          exit 1
+        fi
+      fi
       DOMAIN=''
       HAVE_GUI_DOMAIN=0
       HAVE_USER_DOMAIN=0
@@ -2570,22 +2611,27 @@ EOF_START_WRAPPER
       if launchctl print \"user/\$UID_NUM\" >/dev/null 2>&1; then
         HAVE_USER_DOMAIN=1
       fi
-      if [[ \"\$HAVE_GUI_DOMAIN\" -eq 0 && \"\$HAVE_USER_DOMAIN\" -eq 0 ]]; then
+      if [[ \"\$SERVICE_SCOPE\" != 'system' && \"\$HAVE_GUI_DOMAIN\" -eq 0 && \"\$HAVE_USER_DOMAIN\" -eq 0 ]]; then
         echo \"Error: Could not find a usable launchd domain for this user.\" >&2
         exit 1
       fi
       echo \"Detected launchd domains: gui/\$UID_NUM=\$HAVE_GUI_DOMAIN user/\$UID_NUM=\$HAVE_USER_DOMAIN\"
 
       # Create LaunchAgent directory if it doesn't exist
-      mkdir -p \"\$HOME/Library/LaunchAgents\"
+      if [[ \"\$SERVICE_SCOPE\" != 'system' ]]; then mkdir -p \"\$HOME/Library/LaunchAgents\"; fi
 
       for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
         [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
         [[ \"\$OLD_SERVICE_LABEL\" == \"${SERVICE_LABEL}\" ]] && continue
         echo \"Removing legacy launchd service: \$OLD_SERVICE_LABEL\"
-        launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
-        launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
-        rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          sudo -n launchctl bootout \"system/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          sudo -n rm -f \"/Library/LaunchDaemons/\${OLD_SERVICE_LABEL}.plist\"
+        else
+          launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+        fi
       done
 
       write_launchd_service() {
@@ -2595,6 +2641,12 @@ EOF_START_WRAPPER
         local service_error_log_file=\"\$4\"
         local start_wrapper=\"\$5\"
         local plist=\"\$HOME/Library/LaunchAgents/\${service_label}.plist\"
+        local log_file=\"\$service_log_file\"
+        local error_log_file=\"\$service_error_log_file\"
+        [[ \"\$log_file\" == /* ]] || log_file=\"\$REMOTE_DIR_EXPANDED/\$log_file\"
+        [[ \"\$error_log_file\" == /* ]] || error_log_file=\"\$REMOTE_DIR_EXPANDED/\$error_log_file\"
+        mkdir -p \"\${log_file:h}\" \"\${error_log_file:h}\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then plist=\"\$REMOTE_DIR_EXPANDED/.\${service_label}.plist\"; fi
         cat > \"\$plist\" << 'EOF_PLIST'
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -2609,10 +2661,14 @@ EOF_START_WRAPPER
   </array>
   <key>WorkingDirectory</key>
   <string>REMOTE_DIR_PLACEHOLDER</string>
+  USER_NAME_KEY_PLACEHOLDER
+  USER_NAME_VALUE_PLACEHOLDER
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>LOG_FILE_PLACEHOLDER</string>
   <key>StandardErrorPath</key>
@@ -2628,8 +2684,14 @@ EOF_PLIST
         sed -i '' \"s|REMOTE_DIR_PLACEHOLDER|\$REMOTE_DIR_EXPANDED|g\" \"\$plist\"
         sed -i '' \"s|START_WRAPPER_PLACEHOLDER|\$start_wrapper|g\" \"\$plist\"
         sed -i '' \"s|SERVICE_LABEL_PLACEHOLDER|\$service_label|g\" \"\$plist\"
-        sed -i '' \"s|LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_log_file|g\" \"\$plist\"
-        sed -i '' \"s|ERROR_LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_error_log_file|g\" \"\$plist\"
+        sed -i '' \"s|ERROR_LOG_FILE_PLACEHOLDER|\$error_log_file|g\" \"\$plist\"
+        sed -i '' \"s|LOG_FILE_PLACEHOLDER|\$log_file|g\" \"\$plist\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          sed -i '' 's|  USER_NAME_KEY_PLACEHOLDER|  <key>UserName</key>|' \"\$plist\"
+          sed -i '' \"s|  USER_NAME_VALUE_PLACEHOLDER|  <string>\$USER_NAME</string>|\" \"\$plist\"
+        else
+          sed -i '' '/USER_NAME_KEY_PLACEHOLDER/d; /USER_NAME_VALUE_PLACEHOLDER/d' \"\$plist\"
+        fi
         if command -v plutil >/dev/null 2>&1; then
           if ! plutil -lint \"\$plist\" >/dev/null 2>&1; then
             echo \"Error: launchd plist is invalid: \$plist\" >&2
@@ -2644,8 +2706,23 @@ EOF_PLIST
         local service_label=\"\$1\"
         local plist=\"\$2\"
         local bootstrap_ok=0
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          local installed=\"/Library/LaunchDaemons/\${service_label}.plist\"
+          sudo -n launchctl bootout \"system/\$service_label\" 2>/dev/null || true
+          sudo -n install -o root -g wheel -m 644 \"\$plist\" \"\$installed\"
+          sudo -n launchctl bootstrap system \"\$installed\"
+          sudo -n launchctl enable \"system/\$service_label\" || true
+          sudo -n launchctl kickstart -k \"system/\$service_label\"
+          if ! launchctl print \"system/\$service_label\" >/dev/null 2>&1; then
+            echo \"Error: system LaunchDaemon did not load: \$service_label\" >&2
+            exit 1
+          fi
+          DOMAIN='system'
+          return
+        fi
         launchctl bootout \"gui/\$UID_NUM/\$service_label\" 2>/dev/null || true
         launchctl bootout \"user/\$UID_NUM/\$service_label\" 2>/dev/null || true
+        sleep 1
         for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
           if ! launchctl print \"\$TRY_DOMAIN\" >/dev/null 2>&1; then
             continue
@@ -2668,6 +2745,22 @@ EOF_PLIST
             break
           fi
         done
+        if [[ \"\$bootstrap_ok\" -ne 1 ]]; then
+          for attempt in 1 2 3; do
+            if launchctl load -w \"\$plist\" >/dev/null 2>&1; then
+              for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
+                if launchctl print \"\$TRY_DOMAIN/\$service_label\" >/dev/null 2>&1; then
+                  bootstrap_ok=1
+                  DOMAIN=\"\$TRY_DOMAIN\"
+                  echo \"Loaded \$service_label using launchctl's user-agent compatibility path in \$DOMAIN\"
+                  break
+                fi
+              done
+            fi
+            [[ \"\$bootstrap_ok\" -eq 1 ]] && break
+            sleep 1
+          done
+        fi
         if [[ \"\$bootstrap_ok\" -ne 1 ]]; then
           echo \"Error: launchd service did not load: \$service_label\" >&2
           echo \"Plist: \$plist\" >&2

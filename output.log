@@ -1,0 +1,1217 @@
+==> Installing verified Node 24.21.0 runtime on mini
+runtime=v24.21.0 sqlite=available
+==> Ensuring a host-local MVP service token exists
+token=existing
+==> Deploying the isolated planner MVP to mini
+==> Deploying project: train-track-planner-mvp
+    Local path: /Users/mwagstaff/dev/train-track-uk/api/train-track-api
+    Remote host: mini
+    Remote path: /Users/mwagstaff/dev/train-track-planner-mvp
+    Service label: com.train-track-planner.mvp
+    Service description: TrainTrack Journey Planner MVP
+    Healthcheck path: /healthcheck
+    Sync .env.local: false
+    Deploy mode: full
+    Tail logs after deploy: no
+
+==> Checking pinned Node runtime on mini...
+24.21.0
+==> Checking if rsync is installed on remote host...
+==> Ensuring remote directory exists...
+==> Syncing files to mini:/Users/mwagstaff/dev/train-track-planner-mvp ...
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library/Logs/train-track-planner-mvp: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library/Logs: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_: not empty, cannot delete
+==> Ensuring app certs symlink exists...
+==> Writing static (non-sensitive) environment config...
+==> Installing deps on server...
+
+added 137 packages, and audited 138 packages in 1s
+
+25 packages are looking for funding
+  run `npm fund` for details
+
+3 moderate severity vulnerabilities
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+==> Skipping Bitwarden env sync (BW_ENV_SYNC=0)
+==> Setting up and restarting services...
+==> Ensuring port 3014 is free before restart...
+Found existing listener(s) on port 3014: 34443
+  UID   PID  PPID   C STIME   TTY           TIME CMD
+  501 34443     1   0  9:35a.m. ??         0:15.83 /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node /Users/mwagstaff/dev/train-track-planner-mvp/planner-server.js
+Port 3014 is clear.
+==> Using launchd (macOS)
+Detected launchd domains: gui/501=1 user/501=1
+Attempting launchd bootstrap for com.train-track-planner.mvp in domain: gui/501
+Services loaded in launchd domain: gui/501
+Services restarted via launchd
+==> Verifying service healthchecks...
+   com.train-track-planner.mvp (api):
+   ssh mini 'curl -sS --max-time 10 http://localhost:3014/healthcheck'
+✅ Healthcheck OK for api at http://localhost:3014/healthcheck
+   Response: {"status":"ok"}
+==> No metrics port configured; skipping Prometheus scrape target.
+==> Grafana dashboard directory not found (/dev/null), skipping...
+✅ Deploy complete.
+==> Copying validated snapshot e9a2be699c4a to mini
+==> Validating and activating the Mini-local pointer
+{
+  "valid": true,
+  "version": "e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
+  "checkedAt": "2026-09-21T08:36:48.262Z",
+  "errors": [],
+  "warnings": [
+    "Some records are excluded or have missing passenger mappings; inspect diagnostics",
+    "Conflicting dated schedule variants are excluded; inspect representative-date diagnostics"
+  ],
+  "counts": {
+    "stations": 2650,
+    "stationDefinitions": 3299,
+    "schedules": 461177,
+    "supportedSchedules": 379141,
+    "associations": 5634,
+    "fixedLinks": 4209,
+    "interchanges": 35,
+    "calls": 7277547,
+    "passengerCalls": 4079619,
+    "changesEnRoute": 91623,
+    "routingCalls": 4079619,
+    "routingCallBytes": 159683865
+  },
+  "diagnostics": {
+    "counts": {
+      "UNSUPPORTED_MODE": 7707,
+      "HOLIDAY_CALENDAR_NOT_CONFIGURED": 1675,
+      "UNMAPPED_PASSENGER_CALLS": 6067,
+      "INSUFFICIENT_PASSENGER_CALLS": 94,
+      "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 5383
+    },
+    "examples": [
+      {
+        "code": "UNSUPPORTED_MODE",
+        "uid": "C02271",
+        "variantId": "MCA:26787"
+      },
+      {
+        "code": "UNSUPPORTED_MODE",
+        "uid": "C02275",
+        "variantId": "MCA:26791"
+      },
+      {
+        "code": "UNSUPPORTED_MODE",
+        "uid": "C02276",
+        "variantId": "MCA:26795"
+      },
+      {
+        "code": "UNSUPPORTED_MODE",
+        "uid": "C02280",
+        "variantId": "MCA:26799"
+      },
+      {
+        "code": "UNSUPPORTED_MODE",
+        "uid": "C02282",
+        "variantId": "MCA:26803"
+      },
+      {
+        "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+        "uid": "C06944",
+        "variantId": "MCA:33450"
+      },
+      {
+        "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+        "uid": "C06946",
+        "variantId": "MCA:33457"
+      },
+      {
+        "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+        "uid": "C06948",
+        "variantId": "MCA:33466"
+      },
+      {
+        "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+        "uid": "C06950",
+        "variantId": "MCA:33475"
+      },
+      {
+        "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+        "uid": "C06952",
+        "variantId": "MCA:33484"
+      },
+      {
+        "code": "UNMAPPED_PASSENGER_CALLS",
+        "uid": "C55452",
+        "locations": [
+          "NWCSRC",
+          "SGOS",
+          "PELAWTW",
+          "CIVI",
+          "UNIV",
+          "MLLF",
+          "PALL",
+          "STHH"
+        ]
+      },
+      {
+        "code": "UNMAPPED_PASSENGER_CALLS",
+        "uid": "C55453",
+        "locations": [
+          "NWCSRC",
+          "SGOS",
+          "PELAWTW",
+          "CIVI",
+          "UNIV",
+          "MLLF",
+          "PALL",
+          "STHH"
+        ]
+      },
+      {
+        "code": "UNMAPPED_PASSENGER_CALLS",
+        "uid": "C55454",
+        "locations": [
+          "NWCSRC",
+          "SGOS",
+          "PELAWTW",
+          "CIVI",
+          "UNIV",
+          "MLLF",
+          "PALL",
+          "STHH"
+        ]
+      },
+      {
+        "code": "UNMAPPED_PASSENGER_CALLS",
+        "uid": "C55455",
+        "locations": [
+          "NWCSRC",
+          "SGOS",
+          "PELAWTW",
+          "CIVI",
+          "UNIV",
+          "MLLF",
+          "PALL",
+          "STHH"
+        ]
+      },
+      {
+        "code": "UNMAPPED_PASSENGER_CALLS",
+        "uid": "C55456",
+        "locations": [
+          "NWCSRC",
+          "SGOS",
+          "PELAWTW",
+          "CIVI",
+          "UNIV",
+          "MLLF",
+          "PALL",
+          "STHH"
+        ]
+      },
+      {
+        "code": "INSUFFICIENT_PASSENGER_CALLS",
+        "uid": "C04558",
+        "variantId": "MCA:352465"
+      },
+      {
+        "code": "INSUFFICIENT_PASSENGER_CALLS",
+        "uid": "C04555",
+        "variantId": "MCA:870994"
+      },
+      {
+        "code": "INSUFFICIENT_PASSENGER_CALLS",
+        "uid": "C04557",
+        "variantId": "MCA:871005"
+      },
+      {
+        "code": "INSUFFICIENT_PASSENGER_CALLS",
+        "uid": "C04554",
+        "variantId": "MCA:880513"
+      },
+      {
+        "code": "INSUFFICIENT_PASSENGER_CALLS",
+        "uid": "C04559",
+        "variantId": "MCA:886795"
+      },
+      {
+        "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+        "uid": "Z01401",
+        "variantId": "ZTR:2"
+      },
+      {
+        "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+        "uid": "Z01401",
+        "variantId": "ZTR:7"
+      },
+      {
+        "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+        "uid": "Z01401",
+        "variantId": "ZTR:12"
+      },
+      {
+        "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+        "uid": "Z01401",
+        "variantId": "ZTR:17"
+      },
+      {
+        "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+        "uid": "Z01402",
+        "variantId": "ZTR:22"
+      }
+    ]
+  },
+  "representativeDates": [
+    {
+      "date": "2026-05-17",
+      "serviceCount": 13420,
+      "operatorCounts": {
+        "SW": 911,
+        "LF": 8,
+        "SR": 1124,
+        "SE": 893,
+        "ME": 324,
+        "AW": 526,
+        "GW": 904,
+        "LE": 899,
+        "EM": 292,
+        "TP": 247,
+        "SN": 1040,
+        "XC": 170,
+        "NT": 1307,
+        "HX": 151,
+        "VT": 223,
+        "CH": 193,
+        "TL": 460,
+        "GN": 238,
+        "LT": 365,
+        "GX": 72,
+        "LO": 1348,
+        "GR": 162,
+        "IL": 46,
+        "LD": 9,
+        "LM": 647,
+        "GC": 18,
+        "HT": 11,
+        "CC": 199,
+        "XR": 505,
+        "TW": 128
+      },
+      "stationCount": 2439,
+      "diagnostics": {
+        "counts": {
+          "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 293,
+          "CANCELLED": 4,
+          "UNSUPPORTED_MODE": 1362,
+          "HOLIDAY_CALENDAR_NOT_CONFIGURED": 49
+        },
+        "examples": [
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08001",
+            "variantId": "ZTR:10770"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08003",
+            "variantId": "ZTR:10782"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08076",
+            "variantId": "ZTR:12118"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08008",
+            "variantId": "ZTR:10814"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08007",
+            "variantId": "ZTR:10806"
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G00704",
+            "candidates": [
+              "MCA:116771",
+              "MCA:116733"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G66729",
+            "candidates": [
+              "MCA:156003",
+              "MCA:155965"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G66826",
+            "candidates": [
+              "MCA:156283",
+              "MCA:156234"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "W29840",
+            "candidates": [
+              "MCA:274871",
+              "MCA:274843"
+            ]
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42968",
+            "variantId": "MCA:87788"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42971",
+            "variantId": "MCA:87792"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42974",
+            "variantId": "MCA:87796"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42977",
+            "variantId": "MCA:87800"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42980",
+            "variantId": "MCA:87804"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14180",
+            "variantId": "MCA:38008"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14182",
+            "variantId": "MCA:38013"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14184",
+            "variantId": "MCA:38019"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14186",
+            "variantId": "MCA:38024"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14188",
+            "variantId": "MCA:38030"
+          }
+        ]
+      }
+    },
+    {
+      "date": "2026-08-25",
+      "serviceCount": 23150,
+      "operatorCounts": {
+        "SN": 1736,
+        "XC": 280,
+        "GW": 1787,
+        "SE": 1833,
+        "LM": 1334,
+        "LF": 10,
+        "AW": 1122,
+        "LE": 1329,
+        "SW": 1615,
+        "ME": 622,
+        "GR": 201,
+        "NT": 2843,
+        "SR": 2283,
+        "CH": 351,
+        "EM": 500,
+        "TP": 345,
+        "VT": 280,
+        "LO": 1613,
+        "XR": 696,
+        "GC": 20,
+        "TL": 622,
+        "GN": 399,
+        "TW": 174,
+        "LT": 435,
+        "GX": 72,
+        "HT": 14,
+        "IL": 52,
+        "LD": 10,
+        "HX": 152,
+        "CS": 8,
+        "CC": 412
+      },
+      "stationCount": 2608,
+      "diagnostics": {
+        "counts": {
+          "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 608,
+          "CONFLICTING_VARIANTS": 6,
+          "CANCELLED": 842,
+          "HOLIDAY_CALENDAR_NOT_CONFIGURED": 118,
+          "UNSUPPORTED_MODE": 2036,
+          "INSUFFICIENT_PASSENGER_CALLS": 2
+        },
+        "examples": [
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08001",
+            "variantId": "ZTR:10774"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08003",
+            "variantId": "ZTR:10778"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z03805",
+            "variantId": "ZTR:9818"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04201",
+            "variantId": "ZTR:10407"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04203",
+            "variantId": "ZTR:10411"
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03684",
+            "candidates": [
+              "ZTR:6421",
+              "ZTR:6470"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03686",
+            "candidates": [
+              "ZTR:6545",
+              "ZTR:6594"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03687",
+            "candidates": [
+              "ZTR:6609",
+              "ZTR:6658"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03708",
+            "candidates": [
+              "ZTR:7873",
+              "ZTR:7922"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03710",
+            "candidates": [
+              "ZTR:7997",
+              "ZTR:8041"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G38408",
+            "candidates": [
+              "MCA:531378",
+              "MCA:1406304"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G38427",
+            "candidates": [
+              "MCA:531724",
+              "MCA:1425659"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "Y62818",
+            "candidates": [
+              "MCA:853239",
+              "MCA:1453718"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G15352",
+            "candidates": [
+              "MCA:490554",
+              "MCA:1420949"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G38379",
+            "candidates": [
+              "MCA:530825",
+              "MCA:1406303"
+            ]
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G38911",
+            "variantId": "MCA:1428529"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G38934",
+            "variantId": "MCA:1428882"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G39024",
+            "variantId": "MCA:1429143"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G39032",
+            "variantId": "MCA:1429271"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G39040",
+            "variantId": "MCA:1429463"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "G80674",
+            "variantId": "MCA:561042"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C05206",
+            "variantId": "MCA:353194"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42966",
+            "variantId": "MCA:439491"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42969",
+            "variantId": "MCA:439495"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42972",
+            "variantId": "MCA:439499"
+          },
+          {
+            "code": "INSUFFICIENT_PASSENGER_CALLS",
+            "uid": "C04555",
+            "variantId": "MCA:1455156"
+          },
+          {
+            "code": "INSUFFICIENT_PASSENGER_CALLS",
+            "uid": "C04557",
+            "variantId": "MCA:1455167"
+          }
+        ]
+      }
+    },
+    {
+      "date": "2026-08-29",
+      "serviceCount": 22293,
+      "operatorCounts": {
+        "ME": 620,
+        "NT": 2899,
+        "SR": 2291,
+        "TP": 381,
+        "GN": 376,
+        "TL": 609,
+        "XR": 665,
+        "GW": 1588,
+        "LT": 407,
+        "LO": 1523,
+        "CH": 227,
+        "LE": 1294,
+        "SE": 1389,
+        "LF": 10,
+        "AW": 1108,
+        "SN": 1792,
+        "SW": 1694,
+        "EM": 509,
+        "XC": 335,
+        "TW": 166,
+        "GX": 74,
+        "GR": 189,
+        "HT": 12,
+        "IL": 52,
+        "LD": 11,
+        "LM": 1263,
+        "HX": 152,
+        "VT": 290,
+        "GC": 19,
+        "CC": 346,
+        "CS": 2
+      },
+      "stationCount": 2600,
+      "diagnostics": {
+        "counts": {
+          "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 549,
+          "CONFLICTING_VARIANTS": 9,
+          "UNSUPPORTED_MODE": 1985,
+          "CANCELLED": 965,
+          "HOLIDAY_CALENDAR_NOT_CONFIGURED": 126,
+          "INSUFFICIENT_PASSENGER_CALLS": 1
+        },
+        "examples": [
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08001",
+            "variantId": "ZTR:10774"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08003",
+            "variantId": "ZTR:10778"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z03803",
+            "variantId": "ZTR:9814"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04201",
+            "variantId": "ZTR:10407"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04203",
+            "variantId": "ZTR:10411"
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03684",
+            "candidates": [
+              "ZTR:6421",
+              "ZTR:6430"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03686",
+            "candidates": [
+              "ZTR:6545",
+              "ZTR:6554"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03687",
+            "candidates": [
+              "ZTR:6609",
+              "ZTR:6618"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03708",
+            "candidates": [
+              "ZTR:7873",
+              "ZTR:7882"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z03710",
+            "candidates": [
+              "ZTR:7997",
+              "ZTR:8005"
+            ]
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C46666",
+            "variantId": "MCA:440079"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C46667",
+            "variantId": "MCA:440083"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C46668",
+            "variantId": "MCA:440087"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C46672",
+            "variantId": "MCA:440092"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C46728",
+            "variantId": "MCA:440127"
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "C32690",
+            "candidates": [
+              "MCA:413006",
+              "MCA:1374861"
+            ]
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G53308",
+            "variantId": "MCA:544537"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G53309",
+            "variantId": "MCA:544541"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G53310",
+            "variantId": "MCA:544545"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G53311",
+            "variantId": "MCA:544549"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "G53312",
+            "variantId": "MCA:544553"
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "L87035",
+            "candidates": [
+              "MCA:638263",
+              "MCA:1572263"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "L89529",
+            "candidates": [
+              "MCA:657212",
+              "MCA:1574404"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "L89726",
+            "candidates": [
+              "MCA:659736",
+              "MCA:1373626"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "P28841",
+            "candidates": [
+              "MCA:682427",
+              "MCA:1578490"
+            ]
+          },
+          {
+            "code": "INSUFFICIENT_PASSENGER_CALLS",
+            "uid": "C04556",
+            "variantId": "MCA:924842"
+          }
+        ]
+      }
+    },
+    {
+      "date": "2026-08-30",
+      "serviceCount": 15010,
+      "operatorCounts": {
+        "SW": 1155,
+        "LF": 8,
+        "SR": 1164,
+        "SE": 899,
+        "ME": 360,
+        "AW": 723,
+        "GW": 953,
+        "LE": 939,
+        "EM": 164,
+        "TP": 307,
+        "SN": 1129,
+        "XC": 232,
+        "NT": 1454,
+        "HX": 151,
+        "VT": 212,
+        "CH": 210,
+        "TL": 663,
+        "GN": 817,
+        "LT": 368,
+        "GX": 68,
+        "LO": 1287,
+        "GR": 178,
+        "IL": 46,
+        "LD": 6,
+        "LM": 673,
+        "XR": 506,
+        "TW": 128,
+        "CS": 6,
+        "CC": 198,
+        "HT": 6
+      },
+      "stationCount": 2471,
+      "diagnostics": {
+        "counts": {
+          "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 402,
+          "CONFLICTING_VARIANTS": 3,
+          "CANCELLED": 1022,
+          "UNSUPPORTED_MODE": 1445,
+          "HOLIDAY_CALENDAR_NOT_CONFIGURED": 49,
+          "INSUFFICIENT_PASSENGER_CALLS": 1
+        },
+        "examples": [
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08001",
+            "variantId": "ZTR:10770"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08003",
+            "variantId": "ZTR:10782"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08076",
+            "variantId": "ZTR:12118"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08008",
+            "variantId": "ZTR:10814"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08007",
+            "variantId": "ZTR:10806"
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z01672",
+            "candidates": [
+              "ZTR:1935",
+              "ZTR:1947"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z01675",
+            "candidates": [
+              "ZTR:2007",
+              "ZTR:2031"
+            ]
+          },
+          {
+            "code": "CONFLICTING_VARIANTS",
+            "uid": "Z01677",
+            "candidates": [
+              "ZTR:2073",
+              "ZTR:2097"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G00704",
+            "candidates": [
+              "MCA:116771",
+              "MCA:116733"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G66729",
+            "candidates": [
+              "MCA:156003",
+              "MCA:155965"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "G66826",
+            "candidates": [
+              "MCA:156283",
+              "MCA:156234"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "W29840",
+            "candidates": [
+              "MCA:274871",
+              "MCA:274843"
+            ]
+          },
+          {
+            "code": "CANCELLED",
+            "uid": "L81618",
+            "candidates": [
+              "MCA:200987",
+              "MCA:1659290"
+            ]
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42968",
+            "variantId": "MCA:87788"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42971",
+            "variantId": "MCA:87792"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42974",
+            "variantId": "MCA:87796"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42977",
+            "variantId": "MCA:87800"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C42980",
+            "variantId": "MCA:87804"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14180",
+            "variantId": "MCA:38008"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14182",
+            "variantId": "MCA:38013"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14184",
+            "variantId": "MCA:38019"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14186",
+            "variantId": "MCA:38024"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "C14188",
+            "variantId": "MCA:38030"
+          },
+          {
+            "code": "INSUFFICIENT_PASSENGER_CALLS",
+            "uid": "C04492",
+            "variantId": "MCA:1611758"
+          }
+        ]
+      }
+    },
+    {
+      "date": "2027-05-15",
+      "serviceCount": 21920,
+      "operatorCounts": {
+        "NT": 2779,
+        "SR": 2232,
+        "ME": 601,
+        "TP": 313,
+        "LT": 407,
+        "CC": 295,
+        "GN": 378,
+        "LE": 1237,
+        "TL": 601,
+        "XR": 665,
+        "LO": 1572,
+        "GW": 1583,
+        "CH": 237,
+        "SE": 1741,
+        "LF": 9,
+        "AW": 1067,
+        "CS": 2,
+        "GC": 20,
+        "TW": 160,
+        "LD": 12,
+        "HT": 12,
+        "IL": 52,
+        "EM": 522,
+        "VT": 292,
+        "HX": 152,
+        "LM": 1260,
+        "GR": 191,
+        "SN": 1569,
+        "GX": 140,
+        "XC": 272,
+        "SW": 1547
+      },
+      "stationCount": 2615,
+      "diagnostics": {
+        "counts": {
+          "SUPPLEMENTARY_DIALECT_NOT_ENABLED": 161,
+          "UNSUPPORTED_MODE": 380,
+          "HOLIDAY_CALENDAR_NOT_CONFIGURED": 135,
+          "INSUFFICIENT_PASSENGER_CALLS": 1
+        },
+        "examples": [
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z08003",
+            "variantId": "ZTR:10778"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z03803",
+            "variantId": "ZTR:9814"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04201",
+            "variantId": "ZTR:10407"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04203",
+            "variantId": "ZTR:10411"
+          },
+          {
+            "code": "SUPPLEMENTARY_DIALECT_NOT_ENABLED",
+            "uid": "Z04210",
+            "variantId": "ZTR:10415"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C26022",
+            "variantId": "MCA:7063474"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C26024",
+            "variantId": "MCA:7063478"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C26026",
+            "variantId": "MCA:7063482"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C26028",
+            "variantId": "MCA:7063486"
+          },
+          {
+            "code": "UNSUPPORTED_MODE",
+            "uid": "C26030",
+            "variantId": "MCA:7063490"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "L19294",
+            "variantId": "MCA:7147620"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "L19296",
+            "variantId": "MCA:7147628"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "L19297",
+            "variantId": "MCA:7147632"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "L19299",
+            "variantId": "MCA:7147640"
+          },
+          {
+            "code": "HOLIDAY_CALENDAR_NOT_CONFIGURED",
+            "uid": "L19300",
+            "variantId": "MCA:7147644"
+          },
+          {
+            "code": "INSUFFICIENT_PASSENGER_CALLS",
+            "uid": "C01072",
+            "variantId": "MCA:7651197"
+          }
+        ]
+      }
+    }
+  ],
+  "databaseBytes": 275701760
+}
+{
+  "version": "e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
+  "path": "/Users/mwagstaff/.local/share/train-track-planner/mvp-data/snapshots/e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
+  "activatedAt": "2026-09-21T00:27:00.783Z",
+  "previousVersion": null,
+  "previousPath": null,
+  "unchanged": true
+}
+==> Starting project: train-track-planner-mvp
+    Remote host: mini
+    Service labels:
+      - com.train-track-planner.mvp
+
+Detected launchd (macOS). Using domain: gui/501
+Started com.train-track-planner.mvp
+
+✅ Started and enabled 1 service(s) on mini
+==> Running authenticated functional and performance checks on mini
+Planner service smoke test · mikes-mac-mini · KTH → VIC
+Dataset e9a2be699c4a · 2026-09-22T09:00:00Z
+original: 1591.3 ms, 7.1 ms, 6 ms (median 7.1 ms, p95 1591.3 ms)
+raptor: 373.1 ms, 2.3 ms, 1.9 ms (median 2.3 ms, p95 373.1 ms)
+Queued search: 1006.9 ms across 1 poll(s)
+KTH → INV original: 2438 ms / HTTP 200
+KTH → INV raptor: 903.3 ms / HTTP 504; queued fallback 1007.5 ms (5 journeys)
+ABD → PNZ original: 672.1 ms / HTTP 200
+ABD → PNZ raptor: 303.7 ms / HTTP 200
+CLK → CDB original: 1233.7 ms / HTTP 200
+CLK → CDB raptor: 116.9 ms / HTTP 200
+HHD → NRW original: 669.5 ms / HTTP 200
+HHD → NRW raptor: 321.9 ms / HTTP 200
+Process RSS after checks: 978.7 MiB
+Readiness: not production-ready (timetable_stale); searches still passed in isolated MVP mode.
+Report: /Users/mwagstaff/.local/share/train-track-planner/mvp-reports/20260921T083702Z.json
+Local dataset: /Users/mwagstaff/dev/train-track-uk/api/train-track-api/var/planner/snapshots/RJTTF939-compact-v2
+Dataset version: e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988
+Remote host: mini
+ok: Darwin arm64 host
+ok: pinned Node runtime with node:sqlite
+ok: Mini-local active timetable pointer
+ok: MVP service token
+ok: Mini-local Mongo credentials
+ok: MVP LaunchAgent loaded
+ok: planner liveness on loopback
+/dev/disk3s5   460Gi   118Gi   321Gi    27%    1.1M  3.4G    0%   /System/Volumes/Data

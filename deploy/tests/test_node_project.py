@@ -41,7 +41,8 @@ python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write
 
 class NodeProjectDeploymentTests(unittest.TestCase):
     def run_deploy(self, *, quick=False, pin=PIN, pnpm=False, build=False,
-                   excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None):
+                   excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
+                   service_scope=None, log_file=None, error_log_file=None, metrics_port=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -66,12 +67,20 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         config = {"name": "test-project", "path": str(project),
                   "remote_dir": "/srv/test-project", "startup_port": "", "metrics_port": "",
                   "static_env": {"TEST_CONFIG": "set"}}
+        if metrics_port is not None:
+            config["metrics_port"] = metrics_port
         if pin is not None:
             config["node_binary"] = pin
         if excludes is not None:
             config["rsync_excludes"] = excludes
         if build:
             config["build_command"] = "npm run build"
+        if service_scope is not None:
+            config["service_scope"] = service_scope
+        if log_file is not None:
+            config["log_file"] = log_file
+        if error_log_file is not None:
+            config["error_log_file"] = error_log_file
         (deploy / "config/node_projects.json").write_text(json.dumps([config]))
         binaries = root / "bin"
         binaries.mkdir()
@@ -209,6 +218,38 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                 result, calls = self.run_deploy(excludes=excludes)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(calls, [])
+
+    def test_system_launchd_scope_uses_a_launchdaemon_and_administrator_boundary(self):
+        result, calls = self.run_deploy(service_scope="system", log_file="/var/log/test-project/service.log",
+                                        error_log_file="/var/log/test-project/service.error.log")
+        self.assert_success(result)
+        service_setup = next(" ".join(call["args"]) for call in calls
+                             if call["name"] == "ssh" and "/Library/LaunchDaemons" in " ".join(call["args"]))
+        self.assertIn("SERVICE_SCOPE='system'", service_setup)
+        self.assertIn("sudo -n install -o root -g wheel -m 644", service_setup)
+        self.assertIn("launchctl bootstrap system", service_setup)
+        self.assertIn("<key>UserName</key>", service_setup)
+        self.assertIn("/var/log/test-project/service.log", service_setup)
+        self.assertNotIn("/srv/test-project//var/log/test-project", service_setup)
+        self.assertLess(service_setup.index("s|ERROR_LOG_FILE_PLACEHOLDER|"),
+                        service_setup.index("s|LOG_FILE_PLACEHOLDER|"))
+
+        result, calls = self.run_deploy(service_scope="invalid")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_user_launchd_scope_can_recover_from_bootstrap_failure(self):
+        result, calls = self.run_deploy(service_scope="user")
+        self.assert_success(result)
+        service_setup = next(" ".join(call["args"]) for call in calls
+                             if call["name"] == "ssh" and "restart_launchd_service" in " ".join(call["args"]))
+        self.assertIn('launchctl load -w', service_setup)
+        self.assertIn('launchctl print', service_setup)
+
+    def test_false_metrics_port_disables_monitoring_for_isolated_project(self):
+        result, calls = self.run_deploy(metrics_port=False)
+        self.assert_success(result)
+        self.assertIn('No metrics port configured; skipping Prometheus scrape target.', result.stdout)
 
 
 if __name__ == "__main__":

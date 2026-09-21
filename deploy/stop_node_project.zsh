@@ -78,6 +78,10 @@ get_project_legacy_service_labels() {
   ' "$CONFIG_FILE"
 }
 
+get_project_service_scope() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .service_scope // "user"' "$CONFIG_FILE"
+}
+
 if [[ $# -eq 0 ]]; then
   echo "==> Interactive stop mode"
   echo ""
@@ -137,6 +141,7 @@ done
 SERVICE_LABELS+=("${(@f)$(get_project_service_labels "$PROJECT_NAME")}")
 SERVICE_LABELS+=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
 typeset -U SERVICE_LABELS
+SERVICE_SCOPE="$(get_project_service_scope "$PROJECT_NAME")"
 
 PROJECT_NAME_REGEX="${(j:|:)PROJECT_AND_ALIAS_NAMES}"
 PROCESS_REGEX="/dev/(.*/)?(${PROJECT_NAME_REGEX})/(server|scraper|monitor|audit|index)\\.(js|mjs)"
@@ -156,8 +161,20 @@ for SERVICE_LABEL in "${SERVICE_LABELS[@]}"; do
 set -eu
 SERVICE_LABEL='$SERVICE_LABEL'
 SERVICE_UNIT='$SERVICE_UNIT'
+SERVICE_SCOPE='$SERVICE_SCOPE'
 
 if command -v launchctl >/dev/null 2>&1; then
+  if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+    sudo -n launchctl disable \"system/\$SERVICE_LABEL\" || true
+    sudo -n launchctl bootout \"system/\$SERVICE_LABEL\" || {
+      echo 'Error: stopping the system LaunchDaemon requires administrator authorization.' >&2; exit 1;
+    }
+    if launchctl print \"system/\$SERVICE_LABEL\" >/dev/null 2>&1; then
+      echo 'Final state: loaded' >&2; exit 1
+    fi
+    echo 'Final state: not loaded'
+    exit 0
+  fi
   UID_NUM=\"\$(id -u)\"
   echo \"Detected launchd (macOS) for \$SERVICE_LABEL.\"
 
