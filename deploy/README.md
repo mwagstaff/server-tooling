@@ -31,6 +31,8 @@ TrainTrack's live validated timetable belongs in Mini's `/Users/mwagstaff/.local
 
 When no host is given, each project deploys to its entry in `PROJECT_DEFAULT_HOSTS` at the top of `node_project.zsh` (falling back to `DEFAULT_DEPLOY_HOST`). Edit that mapping to move a project to another host. So `./deploy/node_project.zsh train-track-api` is equivalent to `./deploy/node_project.zsh -q -e train-track-api sky`.
 
+`./deploy/node_project.zsh journey-planner` deploys the currently active `train-track-planner-mvp` service to `mini` by default. Use `--no-tail` for a one-shot deploy; the normal default follows the remote error log. The separate `train-track-planner` config also defaults to `mini`, but it describes a not-yet-promoted system LaunchDaemon on the same port; do not deploy both at once. The `journey-planner` alias should move to that config as part of the one-time service promotion. `metrics_port: false` keeps MVP full deploys from attempting a Grafana import for a service with no scrape target.
+
 ## Alerting
 
 Prometheus alert rules and Alertmanager (email via Plunk) are documented in

@@ -222,6 +222,7 @@
     },
     {
         "name": "train-track-planner-mvp",
+        "aliases": ["journey-planner"],
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
         "remote_dir": "/Users/mwagstaff/dev/train-track-planner-mvp",
         "node_binary": "/Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node",

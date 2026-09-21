@@ -512,6 +512,7 @@ ensure_remote_port_available() {
   local host="$1"
   local port="$2"
   local service_label="${3:-}"
+  local restart_mode="${4:-full}"
 
   if [[ -z "$port" || "$port" == "null" ]]; then
     echo "==> Startup port not configured; skipping port cleanup."
@@ -523,6 +524,7 @@ ensure_remote_port_available() {
     set -eu
     TARGET_PORT='$port'
     SERVICE_LABEL='$service_label'
+    RESTART_MODE='$restart_mode'
     SERVICE_UNIT=''
     if [[ -n \"\$SERVICE_LABEL\" ]]; then
       SERVICE_UNIT=\"\$SERVICE_LABEL.service\"
@@ -611,6 +613,33 @@ ensure_remote_port_available() {
       systemctl --user status \"\$SERVICE_UNIT\" --no-pager >&2 || true
       return 1
     }
+
+    if [[ -n \"\$SERVICE_LABEL\" ]] && command -v launchctl >/dev/null 2>&1; then
+      UID_NUM=\"\$(id -u)\"
+      LAUNCHD_DOMAIN=''
+      for candidate in \"gui/\$UID_NUM\" \"user/\$UID_NUM\" system; do
+        if launchctl print \"\$candidate/\$SERVICE_LABEL\" >/dev/null 2>&1; then
+          LAUNCHD_DOMAIN=\"\$candidate\"
+          break
+        fi
+      done
+      if [[ -n \"\$LAUNCHD_DOMAIN\" ]]; then
+        if [[ \"\$RESTART_MODE\" == quick ]]; then
+          echo \"Launchd manages \$SERVICE_LABEL; kickstart will replace its listener.\"
+          exit 0
+        fi
+        echo \"Stopping launchd service \$SERVICE_LABEL before freeing port \$TARGET_PORT...\"
+        if [[ \"\$LAUNCHD_DOMAIN\" == system ]]; then
+          sudo -n launchctl bootout \"system/\$SERVICE_LABEL\" || exit 1
+        else
+          launchctl bootout \"\$LAUNCHD_DOMAIN/\$SERVICE_LABEL\" || exit 1
+        fi
+        if wait_for_listener_exit 15; then
+          echo \"Port \$TARGET_PORT was released after stopping the service.\"
+          exit 0
+        fi
+      fi
+    fi
 
     PIDS=\"\$(get_listening_pids)\"
     if [[ -z \"\$PIDS\" ]]; then
@@ -2360,7 +2389,7 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     if [[ "$current_startup_port" == "__NONE__" ]]; then
       continue
     fi
-    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}"
+    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}" quick
   done
   ssh "$HOST" "
     set -e
@@ -3044,7 +3073,9 @@ else
     DASHBOARD_SCRIPT="$CENTRAL_DASHBOARD_SCRIPT"
   fi
 
-  if [[ -n "$DASHBOARD_SCRIPT" ]]; then
+  if [[ -z "$METRICS_PORT" ]]; then
+    echo "==> No metrics port configured; skipping Grafana dashboard import."
+  elif [[ -n "$DASHBOARD_SCRIPT" ]]; then
     if [[ ! -d "$PROJECT_DASHBOARD_DIR" ]]; then
       echo "==> Grafana dashboard directory not found (${PROJECT_DASHBOARD_DIR}), skipping..."
     else
@@ -3084,13 +3115,23 @@ else
       GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_HOST_HEADER:-}"
       GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_FORWARDED_PREFIX:-}"
       if [[ -z "$GRAFANA_IMPORT_URL" ]]; then
+        GRAFANA_REMOTE_PORT="${GRAFANA_REMOTE_PORT:-}"
+        if [[ -z "$GRAFANA_REMOTE_PORT" ]]; then
+          if [[ "$HOST" == mini ]]; then
+            GRAFANA_REMOTE_PORT=3000
+          else
+            GRAFANA_REMOTE_PORT=3001
+          fi
+        fi
         GRAFANA_TUNNEL_PORT="$(find_free_local_port)"
         GRAFANA_IMPORT_URL="http://127.0.0.1:${GRAFANA_TUNNEL_PORT}"
-        GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_IMPORT_HOST_HEADER:-api.skynolimit.dev}"
-        GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_IMPORT_FORWARDED_PREFIX:-/grafana}"
-        echo "   Grafana URL: ${GRAFANA_IMPORT_URL} (SSH tunnel to ${HOST}:127.0.0.1:3001)"
+        if [[ "$HOST" != mini ]]; then
+          GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_IMPORT_HOST_HEADER:-api.skynolimit.dev}"
+          GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_IMPORT_FORWARDED_PREFIX:-/grafana}"
+        fi
+        echo "   Grafana URL: ${GRAFANA_IMPORT_URL} (SSH tunnel to ${HOST}:127.0.0.1:${GRAFANA_REMOTE_PORT})"
         ssh -o ExitOnForwardFailure=yes -N \
-          -L "127.0.0.1:${GRAFANA_TUNNEL_PORT}:127.0.0.1:3001" \
+          -L "127.0.0.1:${GRAFANA_TUNNEL_PORT}:127.0.0.1:${GRAFANA_REMOTE_PORT}" \
           "$HOST" &
         GRAFANA_TUNNEL_PID="$!"
 

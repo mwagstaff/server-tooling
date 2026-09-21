@@ -42,7 +42,8 @@ python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write
 class NodeProjectDeploymentTests(unittest.TestCase):
     def run_deploy(self, *, quick=False, pin=PIN, pnpm=False, build=False,
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
-                   service_scope=None, log_file=None, error_log_file=None, metrics_port=None):
+                   service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
+                   project_name="test-project", aliases=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -64,9 +65,11 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         (project / "package.json").write_text(json.dumps(package))
         (project / "index.js").write_text("// Synthetic deployment fixture\n")
         (project / ("pnpm-lock.yaml" if pnpm else "package-lock.json")).write_text("{}")
-        config = {"name": "test-project", "path": str(project),
+        config = {"name": project_name, "path": str(project),
                   "remote_dir": "/srv/test-project", "startup_port": "", "metrics_port": "",
                   "static_env": {"TEST_CONFIG": "set"}}
+        if aliases is not None:
+            config["aliases"] = aliases
         if metrics_port is not None:
             config["metrics_port"] = metrics_port
         if pin is not None:
@@ -181,6 +184,22 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             self.assertFalse(any("test-host" in arg for arg in call["args"]), call)
         tails = [call for call in calls if call["name"] == "tail"]
         self.assertEqual([call["args"] for call in tails], [["test-project", "sky", "--errors-only"]])
+
+    def test_journey_planner_alias_defaults_to_mini(self):
+        projects = json.loads((DEPLOY / "config/node_projects.json").read_text())
+        active = next(project for project in projects if project["name"] == "train-track-planner-mvp")
+        self.assertIn("journey-planner", active["aliases"])
+        self.assertEqual(active["static_env"]["PLANNER_RAPTOR_ONLY"], "true")
+        result, calls = self.run_deploy(project_arg="journey-planner", host=None,
+                                        project_name="train-track-planner-mvp",
+                                        aliases=["journey-planner"], switches=["--no-tail"])
+        self.assert_success(result)
+        self.assertIn("Deploy mode: quick", result.stdout)
+        remote = [call for call in calls if call["name"] in ("ssh", "rsync")]
+        self.assertTrue(remote)
+        for call in remote:
+            self.assertTrue(any(arg == "mini" or arg.startswith("mini:") for arg in call["args"]), call)
+        self.assertFalse([call for call in calls if call["name"] == "tail"])
 
     def test_explicit_host_and_switches_override_defaults(self):
         result, calls = self.run_deploy(switches=["--full", "--tail"])
