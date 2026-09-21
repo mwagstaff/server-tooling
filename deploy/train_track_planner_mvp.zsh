@@ -21,7 +21,7 @@ Environment overrides:
   PLANNER_MVP_DESTINATION      Smoke destination (default: VIC)
   PLANNER_MVP_COMPLEX_ROUTES   Comma-separated ORG-DST pairs for queued fallback checks
   PLANNER_MVP_RUNS             Timed runs per algorithm, 1-20 (default: 3)
-  PLANNER_MVP_ALGORITHMS       original,raptor (default), or either one
+  PLANNER_MVP_ALGORITHMS       raptor (default); original is rejected by the Mini service
   PLANNER_MVP_NO_CACHE         1 clears search-result caches before every request
   PLANNER_MVP_LOAD_LEVELS      Concurrent-user stages (default: 5,10,20,50)
 
@@ -37,7 +37,7 @@ EOF
 command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 [[ "$NODE_VERSION" == 24.* ]] || { echo "PLANNER_MVP_NODE_VERSION must select Node 24." >&2; exit 1; }
 [[ "$RUNS" =~ ^[0-9]+$ && "$RUNS" -ge 1 && "$RUNS" -le 20 ]] || { echo "PLANNER_MVP_RUNS must be between 1 and 20." >&2; exit 1; }
-ALGORITHMS="${PLANNER_MVP_ALGORITHMS:-original,raptor}"
+ALGORITHMS="${PLANNER_MVP_ALGORITHMS:-raptor}"
 NO_CACHE="${PLANNER_MVP_NO_CACHE:-0}"
 [[ "$ALGORITHMS" =~ '^(original|raptor)(,(original|raptor))*$' ]] || { echo "PLANNER_MVP_ALGORITHMS must contain original and/or raptor." >&2; exit 1; }
 [[ "$NO_CACHE" == 0 || "$NO_CACHE" == 1 ]] || { echo "PLANNER_MVP_NO_CACHE must be 0 or 1." >&2; exit 1; }
@@ -141,6 +141,10 @@ deploy_service() {
 stage_dataset() {
   local version remote_dataset
   local -a rsync_progress
+  if [[ "$(static_value PLANNER_INGESTION_ENABLED)" == "true" ]]; then
+    echo '==> Skipping bundled snapshot activation: Mini ingestion owns the active timetable.'
+    return
+  fi
   version="$(dataset_version)"
   remote_dataset="$DATA_DIR/snapshots/$version"
   echo "==> Copying validated snapshot ${version[1,12]} to $HOST"
@@ -299,9 +303,13 @@ REMOTE
 
 preflight() {
   local version
-  version="$(dataset_version)"
-  echo "Local dataset: $SOURCE_DATASET"
-  echo "Dataset version: $version"
+  if [[ "$(static_value PLANNER_INGESTION_ENABLED)" == "true" ]]; then
+    echo "Timetable: managed by Mini ingestion at $DATA_DIR"
+  else
+    version="$(dataset_version)"
+    echo "Local dataset: $SOURCE_DATASET"
+    echo "Dataset version: $version"
+  fi
   echo "Remote host: $HOST"
   ssh -o ConnectTimeout=10 "$HOST" zsh -s -- "$NODE_BINARY" "$DATA_DIR" "$SECRET_FILE" "$PORT" <<'REMOTE'
 set -u

@@ -3001,6 +3001,27 @@ else
     PROM_SCRAPE_METRICS_PATH="${PROM_SCRAPE_METRICS_PATH:-/metrics}" \
       bash "$PROM_SCRAPE_CONFIG_SCRIPT"
     MONITORING_CONFIGURED=1
+
+    # Per-project alert rules: observability/prometheus/rules.yml is installed
+    # as rules/<job>.yml on the monitoring host (see monitoring/install-alerting.zsh).
+    PROM_RULES_CONFIG_SCRIPT="$SCRIPT_DIR/../monitoring/configure-prometheus-rules.sh"
+    PROJECT_PROM_RULES_FILE="${PROM_RULES_FILE:-$LOCAL_DIR/observability/prometheus/rules.yml}"
+    if [[ -f "$PROJECT_PROM_RULES_FILE" ]]; then
+      if [[ ! -f "$PROM_RULES_CONFIG_SCRIPT" ]]; then
+        echo "Error: Prometheus rules configurator not found: $PROM_RULES_CONFIG_SCRIPT" >&2
+        exit 1
+      fi
+      echo "==> Configuring Prometheus alert rules..."
+      echo "   Rules file: ${PROJECT_PROM_RULES_FILE}"
+      PROM_CONFIG_HOST="$HOST" \
+      PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
+      PROM_RELOAD_URL="${PROM_RELOAD_URL:-http://localhost:9090/-/reload}" \
+      PROM_RULES_JOB_NAME="$PROMETHEUS_SCRAPE_JOB_NAME" \
+      PROM_RULES_FILE="$PROJECT_PROM_RULES_FILE" \
+        bash "$PROM_RULES_CONFIG_SCRIPT"
+    else
+      echo "==> No observability/prometheus/rules.yml in project; skipping alert rules."
+    fi
   else
     echo "==> No metrics port configured; skipping Prometheus scrape target."
   fi

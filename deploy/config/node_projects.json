@@ -170,10 +170,13 @@
         },
         "static_env": {
             "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds",
-            "PLANNER_DATA_DIR": "/home/mwagstaff/.local/share/train-track-api/planner",
             "PLANNER_HOST_ID": "sky",
-            "PLANNER_DEFAULT_TARGET": "sky",
-            "PLANNER_INGESTION_ENABLED": "true"
+            "PLANNER_DEFAULT_TARGET": "mini",
+            "PLANNER_TARGETS_FILE": "/home/mwagstaff/.local/share/train-track-api/planner-targets.json",
+            "PLANNER_LEGACY_TARGET": "mini",
+            "PLANNER_EMBEDDED_ENABLED": "false",
+            "PLANNER_ENABLED": "false",
+            "PLANNER_INGESTION_ENABLED": "false"
         }
     },
     {
@@ -211,6 +214,7 @@
             "PORT": "3014",
             "PLANNER_LISTEN_HOST": "127.0.0.1",
             "PLANNER_HOST_ID": "mikes-mac-mini",
+            "PLANNER_RAPTOR_ONLY": "true",
             "PLANNER_INGESTION_ENABLED": "true",
             "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/planner",
             "PROMETHEUS_SERVICE_NAME": "train-track-planner"
@@ -250,9 +254,10 @@
             "PORT": "3014",
             "PLANNER_LISTEN_HOST": "127.0.0.1",
             "PLANNER_HOST_ID": "mikes-mac-mini",
+            "PLANNER_RAPTOR_ONLY": "true",
             "PLANNER_PERSISTENCE_MODE": "mongo",
-            "PLANNER_INGESTION_ENABLED": "false",
-            "PLANNER_TUBETRACK_ENABLED": "false",
+            "PLANNER_INGESTION_ENABLED": "true",
+            "PLANNER_TUBETRACK_ENABLED": "true",
             "PLANNER_WORKERS": "2",
             "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/mvp-data",
             "PROMETHEUS_SERVICE_NAME": "train-track-planner-mvp"
