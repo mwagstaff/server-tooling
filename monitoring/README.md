@@ -134,6 +134,39 @@ docker run --rm -v "$PWD/observability/prometheus:/r:ro" --entrypoint promtool p
 To remove a project's rules, delete `~/monitoring/rules/<job>.yml` on the host
 and `curl -X POST localhost:9090/-/reload`.
 
+## Mini journey-planner timetable alerts
+
+`monitoring/configure-planner-ingestion-alerts.sh sky` installs the dedicated
+`train-track-planner-mvp` scrape job and five ingestion rules on Sky. Prometheus
+scrapes Mini's authenticated `/train-track-planner/internal/planner/metrics`
+over the existing HTTPS Funnel route. The setup reads Sky's existing
+`PLANNER_MINI_SERVICE_TOKEN` from its gateway secret, writes only the raw token
+to `~/monitoring/secrets/train-track-planner-token` (group 65534, mode 640),
+and mounts that single file read-only into Prometheus. It does **not** open
+Mini's loopback metrics listener or expose its Mongo database. Rerun after
+rotating the gateway token. `node_project.zsh journey-planner --full` does not
+replace this Sky scrape job: the MVP deploy entry has `metrics_port: false`.
+
+The rules in `monitoring/rules/train-track-planner-mvp.yml` fire for a failed
+check or missing delivery sequence (after 1 minute), no hourly check for over
+2 hours (plus 10 minutes), unreadable state, disabled ingestion, or a confirmed
+dead ingestion worker. Generic `TargetDown` covers a failed authenticated
+scrape. Alerts continue until a successful check clears the recorded failure;
+the previous timetable can remain available while an update is blocked.
+
+Check the target and rules on Sky:
+
+```bash
+ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/targets | jq -r ".data.activeTargets[] | select(.labels.job == \"train-track-planner-mvp\") | [.health,.lastError] | @tsv"'
+ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/rules | jq -r ".data.groups[] | select(.file | endswith(\"/train-track-planner-mvp.yml\")) | .rules[].name"'
+```
+
+The [planner operations runbook](../../train-track-uk/docs/journey-planner-operations.md)
+has the Sky/Mini/live-data flow diagram and lock-recovery precautions. A
+zero-byte lock left by a crash is automatically reclaimed only after ten
+minutes and only if no process has the file open; other unknown locks fail
+closed and trigger the ingestion alert for investigation.
+
 ## Adding a new app to monitoring
 
 1. Expose `/metrics` (prom-client, `service_name` default label) and set

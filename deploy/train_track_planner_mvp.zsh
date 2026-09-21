@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="${0:a:h}"
 SCRIPT_NAME="${0:t}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
-PROJECT_NAME="train-track-planner-mvp"
+PROJECT_NAME="train-track-journey-planner"
 HOST="${PLANNER_MVP_HOST:-mini}"
 NODE_VERSION="${PLANNER_MVP_NODE_VERSION:-24.21.0}"
 RUNS="${PLANNER_MVP_RUNS:-3}"
@@ -323,7 +323,7 @@ check 'Darwin arm64 host' '[[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]]'
 check 'pinned Node runtime with node:sqlite' '[[ -x "$node_binary" ]] && "$node_binary" -e "require(\"node:sqlite\")" >/dev/null 2>&1'
 check 'Mini-local active timetable pointer' '[[ -f "$data_dir/active.json" ]]'
 check 'MVP service token' '[[ -f "$secret_file" ]] && grep -q "^export PLANNER_SERVICE_TOKEN=" "$secret_file"'
-check 'Mini-local Mongo credentials' '[[ -f "$secret_file" ]] && grep -q "^export MONGODB_URI_TRAIN_TRACK_UK=" "$secret_file"'
+check 'Mini-local Mongo credentials' '[[ -f "$secret_file" ]] && grep -Eq "^export MONGODB_URI_(JOURNEY_PLANNER|TRAIN_TRACK_UK)=" "$secret_file"'
 uid="$(id -u)"
 check 'MVP LaunchAgent loaded' 'launchctl print "gui/$uid/com.train-track-planner.mvp" >/dev/null 2>&1 || launchctl print "user/$uid/com.train-track-planner.mvp" >/dev/null 2>&1'
 check 'planner liveness on loopback' 'curl --fail --silent --max-time 3 "http://127.0.0.1:$port/healthcheck" >/dev/null 2>&1'

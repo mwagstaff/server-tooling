@@ -38,12 +38,20 @@ TAIL_STUB = r"""#!/usr/bin/env zsh
 python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write(json.dumps({"name": "tail", "args": sys.argv[1:], "stdin": ""}) + "\n")' "$@"
 """
 
+BW_STUB = r'''#!/usr/bin/env python3
+import os, sys
+if "status" in sys.argv:
+    print('{"status":"unlocked"}')
+elif "list" in sys.argv and "items" in sys.argv:
+    print(os.environ["DEPLOY_TEST_BW_ITEMS"])
+'''
+
 
 class NodeProjectDeploymentTests(unittest.TestCase):
     def run_deploy(self, *, quick=False, pin=PIN, pnpm=False, build=False,
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
-                   project_name="test-project", aliases=None):
+                   project_name="test-project", aliases=None, required_bw_env=None, bw_items=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -70,6 +78,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                   "static_env": {"TEST_CONFIG": "set"}}
         if aliases is not None:
             config["aliases"] = aliases
+        if required_bw_env is not None:
+            config["required_bitwarden_env"] = required_bw_env
         if metrics_port is not None:
             config["metrics_port"] = metrics_port
         if pin is not None:
@@ -91,11 +101,18 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             executable = binaries / name
             executable.write_text(MOCK)
             executable.chmod(0o755)
+        if bw_items is not None:
+            bw = binaries / "bw"
+            bw.write_text(BW_STUB)
+            bw.chmod(0o755)
         log = root / "calls.jsonl"
         ssh_config = root / "ssh-config"
         ssh_config.write_text("Host test-host\n  HostName example.invalid\n")
         env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}",
                    DEPLOY_TEST_LOG=str(log), SSH_CONFIG_FILE=str(ssh_config), BW_ENV_SYNC="0")
+        if bw_items is not None:
+            env.update(BW_ENV_SYNC="1", BW_SESSION="test-session", BW_SKIP_SYNC="1",
+                       DEPLOY_TEST_BW_ITEMS=json.dumps(bw_items))
         if missing:
             env["DEPLOY_TEST_NODE_MISSING"] = "1"
         command = ["zsh", str(deploy / "node_project.zsh")]
@@ -187,11 +204,11 @@ class NodeProjectDeploymentTests(unittest.TestCase):
 
     def test_journey_planner_alias_defaults_to_mini(self):
         projects = json.loads((DEPLOY / "config/node_projects.json").read_text())
-        active = next(project for project in projects if project["name"] == "train-track-planner-mvp")
+        active = next(project for project in projects if project["name"] == "train-track-journey-planner")
         self.assertIn("journey-planner", active["aliases"])
         self.assertEqual(active["static_env"]["PLANNER_RAPTOR_ONLY"], "true")
         result, calls = self.run_deploy(project_arg="journey-planner", host=None,
-                                        project_name="train-track-planner-mvp",
+                                        project_name="train-track-journey-planner",
                                         aliases=["journey-planner"], switches=["--no-tail"])
         self.assert_success(result)
         self.assertIn("Deploy mode: quick", result.stdout)
@@ -200,6 +217,26 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         for call in remote:
             self.assertTrue(any(arg == "mini" or arg.startswith("mini:") for arg in call["args"]), call)
         self.assertFalse([call for call in calls if call["name"] == "tail"])
+
+    def test_required_bitwarden_vars_are_checked_before_remote_secret_replacement(self):
+        def item(name):
+            return {"name": name, "fields": [{"name": "Apps", "value": "test-project"}],
+                    "login": {"password": "test-value"}}
+
+        missing, calls = self.run_deploy(required_bw_env=["ONE", "TWO"], bw_items=[item("ONE")])
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("Missing required Bitwarden env var 'TWO'", missing.stderr)
+        self.assertFalse(any(".incoming." in " ".join(call["args"]) for call in calls if call["name"] == "rsync"))
+
+        complete, calls = self.run_deploy(required_bw_env=["ONE", "TWO"], bw_items=[item("ONE"), item("TWO")])
+        self.assert_success(complete)
+        self.assertTrue(any(".incoming." in " ".join(call["args"]) for call in calls if call["name"] == "rsync"))
+        self.assertTrue(any(".incoming." in " ".join(call["args"]) and "mv " in " ".join(call["args"])
+                            for call in calls if call["name"] == "ssh"))
+
+        duplicate, _ = self.run_deploy(required_bw_env=["ONE"], bw_items=[item("ONE"), item("ONE")])
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("Duplicate Bitwarden env var 'ONE'", duplicate.stderr)
 
     def test_explicit_host_and_switches_override_defaults(self):
         result, calls = self.run_deploy(switches=["--full", "--tail"])

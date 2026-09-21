@@ -91,9 +91,9 @@ MONGO_PLANNER_PASSWORD="$planner_password" mongosh --quiet --norc "$database" \
 if mongosh --quiet --norc "$database" --eval 'db.runCommand({listCollections:1})' >/dev/null 2>&1; then
   print -u2 'Unauthenticated reads are still allowed; inspect Mini Mongo.'; exit 1
 fi
-if [[ -f "$mvp_secret" && ! -L "$mvp_secret" ]] && ! grep -q '^export MONGODB_URI_TRAIN_TRACK_UK=' "$mvp_secret"; then
+if [[ -f "$mvp_secret" && ! -L "$mvp_secret" ]] && ! grep -q '^export MONGODB_URI_JOURNEY_PLANNER=' "$mvp_secret"; then
   chmod 600 "$mvp_secret"
-  print -r -- "export MONGODB_URI_TRAIN_TRACK_UK=mongodb://$user:$planner_password@127.0.0.1:27017/$database?authSource=$database" >> "$mvp_secret"
+  print -r -- "export MONGODB_URI_JOURNEY_PLANNER=mongodb://$user:$planner_password@127.0.0.1:27017/$database?authSource=$database" >> "$mvp_secret"
   print 'Added the same Mini-local Mongo connection to the existing MVP service credentials.'
 fi
 print 'Mini Mongo is loopback-only, authorization is enabled, and planner credentials authenticate.'

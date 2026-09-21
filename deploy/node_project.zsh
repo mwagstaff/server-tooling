@@ -30,7 +30,7 @@ typeset -A PROJECT_DEFAULT_HOSTS=(
   sky-no-limit-web       sky
   train-track-api        sky
   train-track-planner    mini
-  train-track-planner-mvp mini
+  train-track-journey-planner mini
   tube-track-api         sky
   train-loading-service  sky
   bromley-bins           sky
@@ -2276,6 +2276,11 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
       echo "   Normalized env var name '$item_name' -> '$env_var_name'"
     fi
 
+    if (( ${matched_env_var_names[(Ie)$env_var_name]} > 0 )); then
+      echo "Error: Duplicate Bitwarden env var '$env_var_name' for '$PROJECT_NAME'; remote secrets were not replaced." >&2
+      exit 1
+    fi
+
     printf 'export %s=%q\n' "$env_var_name" "$item_value" >> "$bw_env_file_local"
     matched_env_var_names+=("$env_var_name")
     matched_secret_count=$((matched_secret_count + 1))
@@ -2292,9 +2297,18 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
     printf '     - %s\n' "${matched_env_var_names[@]}"
   fi
 
+  required_bw_env_names=("${(@f)$(jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .required_bitwarden_env[]?' "$CONFIG_FILE")}")
+  for required_name in "${required_bw_env_names[@]}"; do
+    if (( ${matched_env_var_names[(Ie)$required_name]} == 0 )); then
+      echo "Error: Missing required Bitwarden env var '$required_name' for '$PROJECT_NAME'; remote secrets were not replaced." >&2
+      exit 1
+    fi
+  done
+
   REMOTE_BW_ENV_FILE="${REMOTE_DIR}/${BW_REMOTE_ENV_FILE_NAME}"
-  rsync -az "$bw_env_file_local" "${HOST}:${REMOTE_BW_ENV_FILE}"
-  ssh "$HOST" "chmod 600 ${REMOTE_BW_ENV_FILE}"
+  remote_incoming="${REMOTE_BW_ENV_FILE}.incoming.$$"
+  rsync -az "$bw_env_file_local" "${HOST}:${remote_incoming}"
+  ssh "$HOST" "chmod 600 '${remote_incoming}' && mv '${remote_incoming}' '${REMOTE_BW_ENV_FILE}'"
   echo "   Uploaded Bitwarden env file to ${HOST}:${REMOTE_BW_ENV_FILE}"
 else
   echo "==> Skipping Bitwarden env sync (BW_ENV_SYNC=${BW_ENV_SYNC})"

@@ -221,7 +221,7 @@
         }
     },
     {
-        "name": "train-track-planner-mvp",
+        "name": "train-track-journey-planner",
         "aliases": ["journey-planner"],
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
         "remote_dir": "/Users/mwagstaff/dev/train-track-planner-mvp",
@@ -232,18 +232,27 @@
         ],
         "sync_env_local": false,
         "bw_remote_env_file_name": ".bw-secrets.planner-mvp.env.sh",
+        "required_bitwarden_env": [
+            "MONGODB_URI_JOURNEY_PLANNER",
+            "PLANNER_SERVICE_TOKEN",
+            "TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_ACCESS_KEY",
+            "TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_SECRET_ACCESS_KEY",
+            "LIVE_DEPARTURE_BOARD_API_KEY",
+            "LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY",
+            "SERVICE_DETAILS_API_KEY"
+        ],
         "entry_file": "planner-server.js",
         "startup_port": 3014,
         "metrics_port": false,
         "healthcheck_path": "/healthcheck",
         "service_scope": "user",
         "service_label": "com.train-track-planner.mvp",
-        "service_description": "TrainTrack Journey Planner MVP",
+        "service_description": "TrainTrack Journey Planner",
         "services": [
             {
                 "name": "api",
                 "service_label": "com.train-track-planner.mvp",
-                "service_description": "TrainTrack Journey Planner MVP",
+                "service_description": "TrainTrack Journey Planner",
                 "entry_file": "planner-server.js",
                 "startup_port": 3014,
                 "log_file": "/Users/mwagstaff/Library/Logs/train-track-planner-mvp/service.log",
