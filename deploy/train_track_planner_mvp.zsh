@@ -11,7 +11,7 @@ RUNS="${PLANNER_MVP_RUNS:-3}"
 
 usage() {
   cat >&2 <<EOF
-Usage: $SCRIPT_NAME preflight|runtime|deploy|dataset|smoke|load [--admission-cap 1-100]|all
+Usage: $SCRIPT_NAME preflight|runtime|deploy|dataset|smoke|load [--admission-cap 1-100]|jobs-load [--levels 5,10,20] [--users 20] [--duration-seconds 60]|all
 
 Environment overrides:
   PLANNER_MVP_HOST             SSH host (default: mini)
@@ -28,6 +28,8 @@ Environment overrides:
 The load action clears result caches, checks Mongo search logs for zero hits,
 and exits non-zero if any search fails, times out, or is rejected. An admission
 override applies only for the test and is restored automatically.
+The jobs-load action tests /search-jobs through bursts and a sustained run;
+duration 0 skips the sustained stage.
 EOF
 }
 
@@ -233,7 +235,7 @@ port="$5"
 levels="$6"
 report_dir="$7"
 report_file="$8"
-admission_cap="$9"
+admission_cap="${9:-}"
 source "$static_file"
 source "$secret_file"
 pid="$(/usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN -t)"
@@ -243,6 +245,55 @@ cd "$remote_dir"
 args=(--base-url "http://127.0.0.1:$port" --pid "$pid" --levels "$levels" --output "$report_file")
 if [[ -n "$admission_cap" ]]; then args+=(--admission-cap "$admission_cap"); fi
 "$node_binary" scripts/planner-service-load.js "${args[@]}"
+REMOTE
+}
+
+jobs_load_test() {
+  local report_dir report_file timestamp levels users duration
+  levels="5,10,20"
+  users="20"
+  duration="60"
+  while (( $# )); do
+    (( $# >= 2 )) || { echo "Missing value for $1." >&2; exit 1; }
+    case "$1" in
+      --levels) levels="$2" ;;
+      --users) users="$2" ;;
+      --duration-seconds) duration="$2" ;;
+      *) echo "Unknown jobs-load option: $1" >&2; usage; exit 1 ;;
+    esac
+    shift 2
+  done
+  [[ "$users" =~ '^[0-9]+$' && "$users" -ge 1 && "$users" -le 32 ]] || {
+    echo 'Sustained users must be an integer from 1 to 32.' >&2; exit 1
+  }
+  [[ "$duration" =~ '^[0-9]+$' && "$duration" -le 600 ]] || {
+    echo 'Sustained duration must be an integer from 0 to 600 seconds.' >&2; exit 1
+  }
+  report_dir="/Users/mwagstaff/.local/share/train-track-planner/mvp-reports"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  report_file="$report_dir/jobs-load-$timestamp.json"
+  echo "==> Running RAPTOR queued-job load on $HOST (bursts $levels; $users users for ${duration}s)"
+  ssh -o ConnectTimeout=10 "$HOST" zsh -s -- "$REMOTE_DIR" "$STATIC_FILE" "$SECRET_FILE" "$NODE_BINARY" "$PORT" \
+    "$levels" "$users" "$duration" "$report_dir" "$report_file" <<'REMOTE'
+set -euo pipefail
+remote_dir="$1"
+static_file="$2"
+secret_file="$3"
+node_binary="$4"
+port="$5"
+levels="$6"
+users="$7"
+duration="$8"
+report_dir="$9"
+report_file="${10}"
+source "$static_file"
+source "$secret_file"
+pid="$(/usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN -t)"
+[[ "$pid" =~ '^[0-9]+$' ]] || { echo 'Expected exactly one Mini planner listener.' >&2; exit 1; }
+mkdir -p "$report_dir"
+cd "$remote_dir"
+"$node_binary" scripts/planner-service-jobs-load.js --base-url "http://127.0.0.1:$port" \
+  --pid "$pid" --levels "$levels" --users "$users" --duration-seconds "$duration" --output "$report_file"
 REMOTE
 }
 
@@ -282,6 +333,7 @@ case "$action" in
   dataset) stage_dataset ;;
   smoke) smoke ;;
   load) load_test "$@" ;;
+  jobs-load) jobs_load_test "$@" ;;
   all) deploy_service; stage_dataset; smoke; preflight ;;
   help|--help|-h) usage ;;
   *) usage; exit 1 ;;
