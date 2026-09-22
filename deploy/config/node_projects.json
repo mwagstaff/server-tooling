@@ -230,7 +230,7 @@
             "PLANNER_PERSISTENCE_MODE": "mongo",
             "PLANNER_INGESTION_ENABLED": "true",
             "PLANNER_TUBETRACK_ENABLED": "true",
-            "PLANNER_WORKERS": "2",
+            "PLANNER_WORKERS": "auto",
             "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/planner",
             "PROMETHEUS_SERVICE_NAME": "train-track-planner"
         }
