@@ -5,6 +5,16 @@ Prometheus, Grafana and Alertmanager run on `sky` from `~/monitoring`
 Prometheus scrapes it, alert rules turn metrics into alerts, and Alertmanager
 emails them through Plunk.
 
+**`sky` is the only monitoring host.** `install-monitoring.zsh` and
+`install-alerting.zsh` refuse to run anywhere else: the stack is Docker +
+Debian packaging, and `mini` has neither Docker nor passwordless sudo. Apps on
+`mini` are scraped from `sky` over their public HTTPS route instead (see
+[Mini journey-planner timetable alerts](#mini-journey-planner-timetable-alerts)),
+so all scrape jobs, alert rules and Alertmanager state live in one place.
+`mini` does run its own Homebrew Prometheus + Grafana + node_exporter for
+local system and connectivity probes; that install is independent of these
+scripts and is not managed by them.
+
 ```
 app /metrics ──scrape──> Prometheus ──rules──> Alertmanager ──SMTP (Plunk)──> inbox
    :3018 etc.             :9090        rules/*.yml   127.0.0.1:9093           mike.wagstaff@gmail.com
@@ -110,6 +120,16 @@ name (the project slug), and reloads Prometheus. Quick deploys skip all
 Prometheus/Grafana configuration. The file is validated with `promtool` first
 and the previous version is kept if validation fails. Deploys skip the step
 with a warning when Alertmanager has not been installed.
+
+A deploy only installs a project's rules when the project is deployed to the
+monitoring host itself (`MONITORING_HOST` in `deploy/node_project.zsh`,
+default `sky`). Deploying to `mini` skips both the scrape job and the rules —
+Prometheus on `sky` cannot reach `mini`'s loopback metrics port, so the scrape
+target a deploy would derive is meaningless there. Rules for a `mini` app
+belong on `sky` next to the job that actually scrapes it; see the planner
+section below. Because every rule file ends up in one `rules/` directory,
+**scope each expression to its own job** (`{job="train-track-planner-mvp"}`) so
+one app's alert cannot match another app's metric of the same name.
 
 To install or update rules without a full deploy:
 

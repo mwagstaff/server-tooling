@@ -32,6 +32,17 @@ for arg in "$@"; do
   [[ "$arg" == "--keep-secret" ]] && KEEP_SECRET=1
 done
 
+# The stack is Docker + Debian packaging and runs on one host only. Mini has
+# neither Docker nor passwordless sudo; its apps are scraped from the
+# monitoring host over their public route instead (see monitoring/README.md).
+MONITORING_HOST="${MONITORING_HOST:-sky}"
+if [[ "$TARGET_HOST" != "$MONITORING_HOST" ]]; then
+  echo "Error: the monitoring stack runs on ${MONITORING_HOST} only; refusing to install it on ${TARGET_HOST}." >&2
+  echo "Apps on other hosts are scraped from ${MONITORING_HOST} over their public route; see monitoring/README.md." >&2
+  echo "Set MONITORING_HOST=${TARGET_HOST} to override." >&2
+  exit 1
+fi
+
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/monitoring}"
 ALERTMANAGER_IMAGE="${ALERTMANAGER_IMAGE:-prom/alertmanager:latest}"
 ALERTMANAGER_HOST_PORT="${ALERTMANAGER_HOST_PORT:-9093}"

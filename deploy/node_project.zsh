@@ -42,6 +42,11 @@ get_project_default_host() {
   echo "${PROJECT_DEFAULT_HOSTS[$1]:-$DEFAULT_DEPLOY_HOST}"
 }
 
+# Prometheus, Grafana and Alertmanager run on this host only. Apps deployed
+# elsewhere are scraped from it over their public route rather than getting
+# their own stack; see monitoring/README.md.
+MONITORING_HOST="${MONITORING_HOST:-sky}"
+
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
 SCRIPT_PATH="${0:a}"
@@ -1370,7 +1375,7 @@ usage() {
   echo "Usage: $0 [PROJECT_QUERY... [HOST]] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--full|full|--no-quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only] [--no-tail]" >&2
   echo "  If no parameters provided, interactive mode will be used" >&2
   echo "  Manual mode supports either: [PROJECT_QUERY... [HOST]] or [HOST PROJECT_QUERY...]" >&2
-  echo "  Defaults: quick deploy tailing stderr afterwards (-q -e); HOST defaults to the project's entry in PROJECT_DEFAULT_HOSTS" >&2
+  echo "  Defaults: quick deploy tailing stderr afterwards (-q -e, new lines only; TAIL_LINES=N to include history); HOST defaults to the project's entry in PROJECT_DEFAULT_HOSTS" >&2
   echo "  Example: $0 train-track-api   (same as: $0 -q -e train-track-api $(get_project_default_host train-track-api))" >&2
   echo "  Example: $0 top web sky --quick" >&2
   echo "  Example: $0 sky --quick top web" >&2
@@ -2971,7 +2976,15 @@ else
   fi
   typeset -U AUTO_PROM_METRICS_PORTS
 
-  if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -gt 0 ]]; then
+  if [[ "$HOST" != "$MONITORING_HOST" ]]; then
+    # The scrape target below is derived from the deploy host's own IP, which
+    # only Prometheus running on that host can reach. Apps on other hosts are
+    # scraped from ${MONITORING_HOST} over their public route, configured
+    # separately (monitoring/configure-planner-ingestion-alerts.sh), so writing
+    # a prometheus.yml here would only create a file nothing reads.
+    echo "==> ${HOST} is not the monitoring host (${MONITORING_HOST}); skipping Prometheus scrape target and alert rules."
+    echo "   Apps on ${HOST} are scraped from ${MONITORING_HOST}; see monitoring/README.md."
+  elif [[ ${#AUTO_PROM_METRICS_PORTS[@]} -gt 0 ]]; then
     if [[ ! -f "$PROM_SCRAPE_CONFIG_SCRIPT" ]]; then
       echo "Error: Prometheus scrape configurator not found: $PROM_SCRAPE_CONFIG_SCRIPT" >&2
       exit 1
@@ -3221,5 +3234,7 @@ if [[ "$TAIL_MODE" == "1" ]]; then
   if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
     TAIL_ARGS+=("--errors-only")
   fi
+  # Only show log lines written after the deploy; override with TAIL_LINES=N.
+  export TAIL_LINES="${TAIL_LINES:-0}"
   tail_with_redeploy_controls "$TAIL_SCRIPT" "${TAIL_ARGS[@]}"
 fi
