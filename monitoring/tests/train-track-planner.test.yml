@@ -1,28 +1,28 @@
 rule_files:
-  - /etc/prometheus/rules/train-track-planner-mvp.yml
+  - /etc/prometheus/rules/train-track-planner.yml
 evaluation_interval: 15s
 tests:
   - interval: 15s
     input_series:
-      - series: 'timetable_ingestion_last_result{job="train-track-planner-mvp",instance="mini",result="error"}'
+      - series: 'timetable_ingestion_last_result{job="train-track-planner",instance="mini",result="error"}'
         values: '1+0x12'
     alert_rule_test:
       - eval_time: 2m
         alertname: PlannerTimetableUpdateFailed
         exp_alerts:
           - exp_labels:
-              job: train-track-planner-mvp
+              job: train-track-planner
               instance: mini
               result: error
               severity: critical
-              service_name: train-track-planner-mvp
+              service_name: train-track-planner
             exp_annotations:
               summary: 'Mini timetable update failed (error)'
               description: 'The last ingestion check failed or found a missing delivery sequence. The previous active timetable remains in use; inspect ingestion-state.json on Mini.'
 
   - interval: 15s
     input_series:
-      - series: 'timetable_ingestion_last_result{job="train-track-planner-mvp",instance="mini",result="activated"}'
+      - series: 'timetable_ingestion_last_result{job="train-track-planner",instance="mini",result="activated"}'
         values: '1+0x12'
     alert_rule_test:
       - eval_time: 2m

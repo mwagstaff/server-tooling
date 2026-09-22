@@ -180,7 +180,11 @@
         }
     },
     {
-        "name": "train-track-planner",
+        "name": "train-track-journey-planner",
+        "aliases": [
+            "journey-planner",
+            "train-track-planner"
+        ],
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
         "remote_dir": "/Users/mwagstaff/dev/train-track-planner",
         "node_binary": "/Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node",
@@ -190,48 +194,6 @@
         ],
         "sync_env_local": false,
         "bw_remote_env_file_name": ".bw-secrets.planner.env.sh",
-        "entry_file": "planner-server.js",
-        "startup_port": 3014,
-        "metrics_port": 3014,
-        "healthcheck_path": "/healthcheck",
-        "service_scope": "system",
-        "service_label": "com.train-track-planner.api",
-        "service_description": "TrainTrack Journey Planner Service",
-        "services": [
-            {
-                "name": "api",
-                "service_label": "com.train-track-planner.api",
-                "service_description": "TrainTrack Journey Planner Service",
-                "entry_file": "planner-server.js",
-                "startup_port": 3014,
-                "metrics_port": 3014,
-                "log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.log",
-                "error_log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.error.log"
-            }
-        ],
-        "static_env": {
-            "NODE_ENV": "production",
-            "PORT": "3014",
-            "PLANNER_LISTEN_HOST": "127.0.0.1",
-            "PLANNER_HOST_ID": "mikes-mac-mini",
-            "PLANNER_RAPTOR_ONLY": "true",
-            "PLANNER_INGESTION_ENABLED": "true",
-            "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/planner",
-            "PROMETHEUS_SERVICE_NAME": "train-track-planner"
-        }
-    },
-    {
-        "name": "train-track-journey-planner",
-        "aliases": ["journey-planner"],
-        "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
-        "remote_dir": "/Users/mwagstaff/dev/train-track-planner-mvp",
-        "node_binary": "/Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node",
-        "rsync_excludes": [
-            "/resources/timetable_full/",
-            "/var/planner/"
-        ],
-        "sync_env_local": false,
-        "bw_remote_env_file_name": ".bw-secrets.planner-mvp.env.sh",
         "required_bitwarden_env": [
             "MONGODB_URI_JOURNEY_PLANNER",
             "PLANNER_SERVICE_TOKEN",
@@ -246,17 +208,17 @@
         "metrics_port": false,
         "healthcheck_path": "/healthcheck",
         "service_scope": "user",
-        "service_label": "com.train-track-planner.mvp",
+        "service_label": "com.train-track-planner.api",
         "service_description": "TrainTrack Journey Planner",
         "services": [
             {
                 "name": "api",
-                "service_label": "com.train-track-planner.mvp",
+                "service_label": "com.train-track-planner.api",
                 "service_description": "TrainTrack Journey Planner",
                 "entry_file": "planner-server.js",
                 "startup_port": 3014,
-                "log_file": "/Users/mwagstaff/Library/Logs/train-track-planner-mvp/service.log",
-                "error_log_file": "/Users/mwagstaff/Library/Logs/train-track-planner-mvp/service.error.log"
+                "log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.log",
+                "error_log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.error.log"
             }
         ],
         "static_env": {
@@ -269,8 +231,8 @@
             "PLANNER_INGESTION_ENABLED": "true",
             "PLANNER_TUBETRACK_ENABLED": "true",
             "PLANNER_WORKERS": "2",
-            "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/mvp-data",
-            "PROMETHEUS_SERVICE_NAME": "train-track-planner-mvp"
+            "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/planner",
+            "PROMETHEUS_SERVICE_NAME": "train-track-planner"
         }
     },
     {

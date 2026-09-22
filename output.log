@@ -1,14 +1,14 @@
 ==> Installing verified Node 24.21.0 runtime on mini
 runtime=v24.21.0 sqlite=available
-==> Ensuring a host-local MVP service token exists
+==> Ensuring a host-local production service token exists
 token=existing
-==> Deploying the isolated planner MVP to mini
-==> Deploying project: train-track-planner-mvp
+==> Deploying the isolated planner production to mini
+==> Deploying project: train-track-planner
     Local path: /Users/mwagstaff/dev/train-track-uk/api/train-track-api
     Remote host: mini
-    Remote path: /Users/mwagstaff/dev/train-track-planner-mvp
-    Service label: com.train-track-planner.mvp
-    Service description: TrainTrack Journey Planner MVP
+    Remote path: /Users/mwagstaff/dev/train-track-planner
+    Service label: com.train-track-planner.api
+    Service description: TrainTrack Journey Planner production
     Healthcheck path: /healthcheck
     Sync .env.local: false
     Deploy mode: full
@@ -18,13 +18,13 @@ token=existing
 24.21.0
 ==> Checking if rsync is installed on remote host...
 ==> Ensuring remote directory exists...
-==> Syncing files to mini:/Users/mwagstaff/dev/train-track-planner-mvp ...
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library/Logs/train-track-planner-mvp: not empty, cannot delete
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library/Logs: not empty, cannot delete
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff/Library: not empty, cannot delete
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users/mwagstaff: not empty, cannot delete
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_/Users: not empty, cannot delete
-rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner-mvp//./ERROR_: not empty, cannot delete
+==> Syncing files to mini:/Users/mwagstaff/dev/train-track-planner ...
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_/Users/mwagstaff/Library/Logs/train-track-planner: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_/Users/mwagstaff/Library/Logs: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_/Users/mwagstaff/Library: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_/Users/mwagstaff: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_/Users: not empty, cannot delete
+rsync(34538): warning: /Users/mwagstaff/dev/train-track-planner//./ERROR_: not empty, cannot delete
 ==> Ensuring app certs symlink exists...
 ==> Writing static (non-sensitive) environment config...
 ==> Installing deps on server...
@@ -45,15 +45,15 @@ Run `npm audit` for details.
 ==> Ensuring port 3014 is free before restart...
 Found existing listener(s) on port 3014: 34443
   UID   PID  PPID   C STIME   TTY           TIME CMD
-  501 34443     1   0  9:35a.m. ??         0:15.83 /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node /Users/mwagstaff/dev/train-track-planner-mvp/planner-server.js
+  501 34443     1   0  9:35a.m. ??         0:15.83 /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node /Users/mwagstaff/dev/train-track-planner/planner-server.js
 Port 3014 is clear.
 ==> Using launchd (macOS)
 Detected launchd domains: gui/501=1 user/501=1
-Attempting launchd bootstrap for com.train-track-planner.mvp in domain: gui/501
+Attempting launchd bootstrap for com.train-track-planner.api in domain: gui/501
 Services loaded in launchd domain: gui/501
 Services restarted via launchd
 ==> Verifying service healthchecks...
-   com.train-track-planner.mvp (api):
+   com.train-track-planner.api (api):
    ssh mini 'curl -sS --max-time 10 http://localhost:3014/healthcheck'
 ✅ Healthcheck OK for api at http://localhost:3014/healthcheck
    Response: {"status":"ok"}
@@ -1172,19 +1172,19 @@ Services restarted via launchd
 }
 {
   "version": "e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
-  "path": "/Users/mwagstaff/.local/share/train-track-planner/mvp-data/snapshots/e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
+  "path": "/Users/mwagstaff/.local/share/train-track-planner/planner/snapshots/e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988",
   "activatedAt": "2026-09-21T00:27:00.783Z",
   "previousVersion": null,
   "previousPath": null,
   "unchanged": true
 }
-==> Starting project: train-track-planner-mvp
+==> Starting project: train-track-planner
     Remote host: mini
     Service labels:
-      - com.train-track-planner.mvp
+      - com.train-track-planner.api
 
 Detected launchd (macOS). Using domain: gui/501
-Started com.train-track-planner.mvp
+Started com.train-track-planner.api
 
 ✅ Started and enabled 1 service(s) on mini
 ==> Running authenticated functional and performance checks on mini
@@ -1202,16 +1202,16 @@ CLK → CDB raptor: 116.9 ms / HTTP 200
 HHD → NRW original: 669.5 ms / HTTP 200
 HHD → NRW raptor: 321.9 ms / HTTP 200
 Process RSS after checks: 978.7 MiB
-Readiness: not production-ready (timetable_stale); searches still passed in isolated MVP mode.
-Report: /Users/mwagstaff/.local/share/train-track-planner/mvp-reports/20260921T083702Z.json
+Readiness: not production-ready (timetable_stale); searches still passed in isolated test mode.
+Report: /Users/mwagstaff/.local/share/train-track-planner/reports/20260921T083702Z.json
 Local dataset: /Users/mwagstaff/dev/train-track-uk/api/train-track-api/var/planner/snapshots/RJTTF939-compact-v2
 Dataset version: e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988
 Remote host: mini
 ok: Darwin arm64 host
 ok: pinned Node runtime with node:sqlite
 ok: Mini-local active timetable pointer
-ok: MVP service token
+ok: production service token
 ok: Mini-local Mongo credentials
-ok: MVP LaunchAgent loaded
+ok: production LaunchAgent loaded
 ok: planner liveness on loopback
 /dev/disk3s5   460Gi   118Gi   321Gi    27%    1.1M  3.4G    0%   /System/Volumes/Data

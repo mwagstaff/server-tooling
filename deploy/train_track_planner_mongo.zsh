@@ -17,7 +17,6 @@ export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 config='/opt/homebrew/etc/mongod.conf'
 admin_secret="$HOME/.local/share/train-track-planner/mongodb-admin.password"
 planner_secret="$HOME/dev/train-track-planner/.bw-secrets.planner.env.sh"
-mvp_secret="$HOME/dev/train-track-planner-mvp/.bw-secrets.planner-mvp.env.sh"
 database='train_track_planner'
 user='planner_service'
 
@@ -31,7 +30,6 @@ if [[ "$action" == check ]]; then
   sed -n '/^[[:space:]]*bindIp:/p; /^[[:space:]]*authorization:/p' "$config"
   [[ -f "$admin_secret" ]] && print 'admin credential=present' || print 'admin credential=absent'
   [[ -f "$planner_secret" ]] && print 'planner credential=present' || print 'planner credential=absent'
-  [[ -f "$mvp_secret" ]] && print 'MVP credential=present' || print 'MVP credential=absent'
   exit 0
 fi
 [[ "$(mongosh --quiet --norc --eval 'db.adminCommand({getCmdLineOpts:1}).parsed.net.bindIp')" == '127.0.0.1, ::1' ]] || {
@@ -90,11 +88,6 @@ MONGO_PLANNER_PASSWORD="$planner_password" mongosh --quiet --norc "$database" \
   --eval 'db.auth("planner_service", process.env.MONGO_PLANNER_PASSWORD); if (db.runCommand({connectionStatus:1}).authInfo.authenticatedUsers.length !== 1) quit(1)' >/dev/null
 if mongosh --quiet --norc "$database" --eval 'db.runCommand({listCollections:1})' >/dev/null 2>&1; then
   print -u2 'Unauthenticated reads are still allowed; inspect Mini Mongo.'; exit 1
-fi
-if [[ -f "$mvp_secret" && ! -L "$mvp_secret" ]] && ! grep -q '^export MONGODB_URI_JOURNEY_PLANNER=' "$mvp_secret"; then
-  chmod 600 "$mvp_secret"
-  print -r -- "export MONGODB_URI_JOURNEY_PLANNER=mongodb://$user:$planner_password@127.0.0.1:27017/$database?authSource=$database" >> "$mvp_secret"
-  print 'Added the same Mini-local Mongo connection to the existing MVP service credentials.'
 fi
 print 'Mini Mongo is loopback-only, authorization is enabled, and planner credentials authenticate.'
 print "Admin password: $admin_secret (back up securely)"

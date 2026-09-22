@@ -16,8 +16,8 @@ registry="$HOME/.local/share/train-track-api/planner-targets.json"
 gateway_env="$HOME/dev/train-track-api/.bw-secrets.env.sh"
 token_file="$monitoring_dir/secrets/train-track-planner-token"
 mount='./secrets/train-track-planner-token:/etc/prometheus/secrets/train-track-planner-token:ro'
-begin='# BEGIN train-track-planner-mvp managed scrape config'
-end='# END train-track-planner-mvp managed scrape config'
+begin='# BEGIN train-track-planner managed scrape config'
+end='# END train-track-planner managed scrape config'
 test -f "$config" && test -f "$compose" && test -f "$registry" && test -f "$gateway_env"
 base_url="$(jq -r '.targets[] | select(.id == "mini") | .baseUrl' "$registry")"
 if [[ ! "$base_url" =~ ^https://([A-Za-z0-9.-]+)(/[A-Za-z0-9/_-]+)$ ]]; then
@@ -70,7 +70,7 @@ awk -v begin="$begin" -v end="$end" '
 grep -q '^scrape_configs:' "$candidate_config" || { echo 'Error: scrape_configs is missing.' >&2; exit 1; }
 cat >> "$candidate_config" <<SCRAPE
 $begin
-  - job_name: 'train-track-planner-mvp'
+  - job_name: 'train-track-planner'
     scheme: https
     metrics_path: '$metrics_path'
     authorization:
@@ -97,22 +97,22 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 curl -fsS --max-time 2 http://127.0.0.1:9090/-/ready >/dev/null
-echo "Configured authenticated Mini scrape as train-track-planner-mvp on $target"
+echo "Configured authenticated Mini scrape as train-track-planner on $target"
 REMOTE
 
-PROM_CONFIG_HOST="$MONITOR_HOST" PROM_RULES_JOB_NAME=train-track-planner-mvp \
-  PROM_RULES_FILE="$SCRIPT_DIR/rules/train-track-planner-mvp.yml" \
+PROM_CONFIG_HOST="$MONITOR_HOST" PROM_RULES_JOB_NAME=train-track-planner \
+  PROM_RULES_FILE="$SCRIPT_DIR/rules/train-track-planner.yml" \
   bash "$SCRIPT_DIR/configure-prometheus-rules.sh"
 
 ssh -o BatchMode=yes "$MONITOR_HOST" bash -s <<'VERIFY'
 set -euo pipefail
 for attempt in 1 2 3 4 5 6 7 8; do
-  health="$(curl -fsS --max-time 5 http://127.0.0.1:9090/api/v1/targets | jq -r '[.data.activeTargets[] | select(.labels.job == "train-track-planner-mvp") | .health][0] // "missing"')"
+  health="$(curl -fsS --max-time 5 http://127.0.0.1:9090/api/v1/targets | jq -r '[.data.activeTargets[] | select(.labels.job == "train-track-planner") | .health][0] // "missing"')"
   [[ "$health" == up ]] && break
   sleep 4
 done
 [[ "$health" == up ]] || { echo "Error: Mini scrape is $health; inspect Prometheus target diagnostics." >&2; exit 1; }
-count="$(curl -fsS --max-time 5 http://127.0.0.1:9090/api/v1/rules | jq '[.data.groups[] | select(.file | endswith("/train-track-planner-mvp.yml")) | .rules | length] | add // 0')"
+count="$(curl -fsS --max-time 5 http://127.0.0.1:9090/api/v1/rules | jq '[.data.groups[] | select(.file | endswith("/train-track-planner.yml")) | .rules | length] | add // 0')"
 [[ "$count" -ge 5 ]] || { echo "Error: only $count planner alert rules are loaded." >&2; exit 1; }
 echo "Mini scrape is up; $count timetable alert rules are loaded on Sky."
 VERIFY

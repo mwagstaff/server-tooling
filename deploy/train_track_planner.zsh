@@ -5,25 +5,25 @@ SCRIPT_DIR="${0:a:h}"
 SCRIPT_NAME="${0:t}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
 PROJECT_NAME="train-track-journey-planner"
-HOST="${PLANNER_MVP_HOST:-mini}"
-NODE_VERSION="${PLANNER_MVP_NODE_VERSION:-24.21.0}"
-RUNS="${PLANNER_MVP_RUNS:-3}"
+HOST="${PLANNER_SERVICE_HOST:-mini}"
+NODE_VERSION="${PLANNER_SERVICE_NODE_VERSION:-24.21.0}"
+RUNS="${PLANNER_SERVICE_RUNS:-3}"
 
 usage() {
   cat >&2 <<EOF
 Usage: $SCRIPT_NAME preflight|runtime|deploy|dataset|smoke|load [--admission-cap 1-100]|jobs-load [--levels 5,10,20] [--users 20] [--duration-seconds 60]|all
 
 Environment overrides:
-  PLANNER_MVP_HOST             SSH host (default: mini)
-  PLANNER_MVP_NODE_VERSION     Node 24 release (default: 24.21.0)
-  PLANNER_MVP_DATASET_SOURCE   Local validated snapshot directory
-  PLANNER_MVP_ORIGIN           Smoke origin (default: KTH)
-  PLANNER_MVP_DESTINATION      Smoke destination (default: VIC)
-  PLANNER_MVP_COMPLEX_ROUTES   Comma-separated ORG-DST pairs for queued fallback checks
-  PLANNER_MVP_RUNS             Timed runs per algorithm, 1-20 (default: 3)
-  PLANNER_MVP_ALGORITHMS       raptor (default); original is rejected by the Mini service
-  PLANNER_MVP_NO_CACHE         1 clears search-result caches before every request
-  PLANNER_MVP_LOAD_LEVELS      Concurrent-user stages (default: 5,10,20,50)
+  PLANNER_SERVICE_HOST             SSH host (default: mini)
+  PLANNER_SERVICE_NODE_VERSION     Node 24 release (default: 24.21.0)
+  PLANNER_SERVICE_DATASET_SOURCE   Local validated snapshot directory
+  PLANNER_SERVICE_ORIGIN           Smoke origin (default: KTH)
+  PLANNER_SERVICE_DESTINATION      Smoke destination (default: VIC)
+  PLANNER_SERVICE_COMPLEX_ROUTES   Comma-separated ORG-DST pairs for queued fallback checks
+  PLANNER_SERVICE_RUNS             Timed runs per algorithm, 1-20 (default: 3)
+  PLANNER_SERVICE_ALGORITHMS       raptor (default); original is rejected by the Mini service
+  PLANNER_SERVICE_NO_CACHE         1 clears search-result caches before every request
+  PLANNER_SERVICE_LOAD_LEVELS      Concurrent-user stages (default: 5,10,20,50)
 
 The load action clears result caches, checks Mongo search logs for zero hits,
 and exits non-zero if any search fails, times out, or is rejected. An admission
@@ -35,12 +35,12 @@ EOF
 
 [[ -f "$CONFIG_FILE" ]] || { echo "Missing deployment configuration: $CONFIG_FILE" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
-[[ "$NODE_VERSION" == 24.* ]] || { echo "PLANNER_MVP_NODE_VERSION must select Node 24." >&2; exit 1; }
-[[ "$RUNS" =~ ^[0-9]+$ && "$RUNS" -ge 1 && "$RUNS" -le 20 ]] || { echo "PLANNER_MVP_RUNS must be between 1 and 20." >&2; exit 1; }
-ALGORITHMS="${PLANNER_MVP_ALGORITHMS:-raptor}"
-NO_CACHE="${PLANNER_MVP_NO_CACHE:-0}"
-[[ "$ALGORITHMS" =~ '^(original|raptor)(,(original|raptor))*$' ]] || { echo "PLANNER_MVP_ALGORITHMS must contain original and/or raptor." >&2; exit 1; }
-[[ "$NO_CACHE" == 0 || "$NO_CACHE" == 1 ]] || { echo "PLANNER_MVP_NO_CACHE must be 0 or 1." >&2; exit 1; }
+[[ "$NODE_VERSION" == 24.* ]] || { echo "PLANNER_SERVICE_NODE_VERSION must select Node 24." >&2; exit 1; }
+[[ "$RUNS" =~ ^[0-9]+$ && "$RUNS" -ge 1 && "$RUNS" -le 20 ]] || { echo "PLANNER_SERVICE_RUNS must be between 1 and 20." >&2; exit 1; }
+ALGORITHMS="${PLANNER_SERVICE_ALGORITHMS:-raptor}"
+NO_CACHE="${PLANNER_SERVICE_NO_CACHE:-0}"
+[[ "$ALGORITHMS" =~ '^(original|raptor)(,(original|raptor))*$' ]] || { echo "PLANNER_SERVICE_ALGORITHMS must contain original and/or raptor." >&2; exit 1; }
+[[ "$NO_CACHE" == 0 || "$NO_CACHE" == 1 ]] || { echo "PLANNER_SERVICE_NO_CACHE must be 0 or 1." >&2; exit 1; }
 
 project_value() {
   jq -r --arg name "$PROJECT_NAME" --arg key "$1" '.[] | select(.name == $name) | .[$key] // empty' "$CONFIG_FILE"
@@ -56,7 +56,7 @@ NODE_BINARY="$(project_value node_binary)"
 SECRET_NAME="$(project_value bw_remote_env_file_name)"
 DATA_DIR="$(static_value PLANNER_DATA_DIR)"
 PORT="$(static_value PORT)"
-SOURCE_DATASET="${PLANNER_MVP_DATASET_SOURCE:-$LOCAL_API_DIR/var/planner/snapshots/RJTTF939-compact-v2}"
+SOURCE_DATASET="${PLANNER_SERVICE_DATASET_SOURCE:-$LOCAL_API_DIR/var/planner/snapshots/RJTTF939-compact-v2}"
 SECRET_FILE="$REMOTE_DIR/$SECRET_NAME"
 STATIC_FILE="$REMOTE_DIR/.static-config-${PROJECT_NAME}.env.sh"
 
@@ -66,10 +66,10 @@ done
 
 dataset_version() {
   [[ -f "$SOURCE_DATASET/metadata.json" && -f "$SOURCE_DATASET/validation.json" ]] || {
-    echo "Validated MVP snapshot not found: $SOURCE_DATASET" >&2; exit 1;
+    echo "Validated production snapshot not found: $SOURCE_DATASET" >&2; exit 1;
   }
   jq -e '.valid == true' "$SOURCE_DATASET/validation.json" >/dev/null || {
-    echo "MVP snapshot validation is not successful: $SOURCE_DATASET" >&2; exit 1;
+    echo "Snapshot validation is not successful: $SOURCE_DATASET" >&2; exit 1;
   }
   jq -er '.version | select(test("^[a-f0-9]{64}$"))' "$SOURCE_DATASET/metadata.json"
 }
@@ -109,7 +109,7 @@ REMOTE
 }
 
 ensure_secret() {
-  echo "==> Ensuring a host-local MVP service token exists"
+  echo "==> Ensuring a host-local production service token exists"
   ssh -o ConnectTimeout=10 "$HOST" zsh -s -- "$REMOTE_DIR" "$SECRET_FILE" <<'REMOTE'
 set -euo pipefail
 remote_dir="$1"
@@ -123,7 +123,7 @@ fi
 umask 077
 token="$(openssl rand -hex 32)"
 temporary="${secret_file}.new.$$"
-if [[ -f "$secret_file" ]]; then cp "$secret_file" "$temporary"; else print '# Local Mini MVP credentials; not managed by Bitwarden.' > "$temporary"; fi
+if [[ -f "$secret_file" ]]; then cp "$secret_file" "$temporary"; else print '# Local Mini planner credentials; not managed by Bitwarden.' > "$temporary"; fi
 print "export PLANNER_SERVICE_TOKEN=$token" >> "$temporary"
 mv "$temporary" "$secret_file"
 chmod 600 "$secret_file"
@@ -134,7 +134,7 @@ REMOTE
 deploy_service() {
   install_runtime
   ensure_secret
-  echo "==> Deploying the isolated planner MVP to $HOST"
+  echo "==> Deploying the production planner to $HOST"
   GRAFANA_DASHBOARD_DIR=/dev/null "$SCRIPT_DIR/node_project.zsh" "$PROJECT_NAME" "$HOST" --full --no-tail
 }
 
@@ -171,12 +171,12 @@ REMOTE
 
 smoke() {
   local report_dir report_file timestamp origin destination complex_routes
-  report_dir="/Users/mwagstaff/.local/share/train-track-planner/mvp-reports"
+  report_dir="/Users/mwagstaff/.local/share/train-track-planner/reports"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   report_file="$report_dir/$timestamp.json"
-  origin="${PLANNER_MVP_ORIGIN:-KTH}"
-  destination="${PLANNER_MVP_DESTINATION:-VIC}"
-  complex_routes="${PLANNER_MVP_COMPLEX_ROUTES:-KTH-INV,ABD-PNZ,CLK-CDB,HHD-NRW}"
+  origin="${PLANNER_SERVICE_ORIGIN:-KTH}"
+  destination="${PLANNER_SERVICE_DESTINATION:-VIC}"
+  complex_routes="${PLANNER_SERVICE_COMPLEX_ROUTES:-KTH-INV,ABD-PNZ,CLK-CDB,HHD-NRW}"
   echo "==> Running authenticated functional and performance checks on $HOST"
   ssh -o ConnectTimeout=10 "$HOST" zsh -s -- "$REMOTE_DIR" "$STATIC_FILE" "$SECRET_FILE" "$NODE_BINARY" "$PORT" \
     "$origin" "$destination" "$RUNS" "$complex_routes" "$report_dir" "$report_file" "$ALGORITHMS" "$NO_CACHE" <<'REMOTE'
@@ -223,10 +223,10 @@ load_test() {
      [[ -n "$admission_cap" && ( "$admission_cap" -lt 1 || "$admission_cap" -gt 100 ) ]]; then
     echo 'Admission cap must be an integer from 1 to 100.' >&2; exit 1
   fi
-  report_dir="/Users/mwagstaff/.local/share/train-track-planner/mvp-reports"
+  report_dir="/Users/mwagstaff/.local/share/train-track-planner/reports"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   report_file="$report_dir/load-$timestamp.json"
-  levels="${PLANNER_MVP_LOAD_LEVELS:-5,10,20,50}"
+  levels="${PLANNER_SERVICE_LOAD_LEVELS:-5,10,20,50}"
   echo "==> Running bounded RAPTOR load stages on $HOST ($levels simultaneous users${admission_cap:+, admission cap $admission_cap})"
   ssh -o ConnectTimeout=10 "$HOST" zsh -s -- "$REMOTE_DIR" "$STATIC_FILE" "$SECRET_FILE" "$NODE_BINARY" "$PORT" \
     "$levels" "$report_dir" "$report_file" "$admission_cap" <<'REMOTE'
@@ -273,7 +273,7 @@ jobs_load_test() {
   [[ "$duration" =~ '^[0-9]+$' && "$duration" -le 600 ]] || {
     echo 'Sustained duration must be an integer from 0 to 600 seconds.' >&2; exit 1
   }
-  report_dir="/Users/mwagstaff/.local/share/train-track-planner/mvp-reports"
+  report_dir="/Users/mwagstaff/.local/share/train-track-planner/reports"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   report_file="$report_dir/jobs-load-$timestamp.json"
   echo "==> Running RAPTOR queued-job load on $HOST (bursts $levels; $users users for ${duration}s)"
@@ -322,10 +322,10 @@ check() { if eval "$2"; then echo "ok: $1"; else echo "missing: $1"; failures=$(
 check 'Darwin arm64 host' '[[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]]'
 check 'pinned Node runtime with node:sqlite' '[[ -x "$node_binary" ]] && "$node_binary" -e "require(\"node:sqlite\")" >/dev/null 2>&1'
 check 'Mini-local active timetable pointer' '[[ -f "$data_dir/active.json" ]]'
-check 'MVP service token' '[[ -f "$secret_file" ]] && grep -q "^export PLANNER_SERVICE_TOKEN=" "$secret_file"'
+check 'planner service token' '[[ -f "$secret_file" ]] && grep -q "^export PLANNER_SERVICE_TOKEN=" "$secret_file"'
 check 'Mini-local Mongo credentials' '[[ -f "$secret_file" ]] && grep -Eq "^export MONGODB_URI_(JOURNEY_PLANNER|TRAIN_TRACK_UK)=" "$secret_file"'
 uid="$(id -u)"
-check 'MVP LaunchAgent loaded' 'launchctl print "gui/$uid/com.train-track-planner.mvp" >/dev/null 2>&1 || launchctl print "user/$uid/com.train-track-planner.mvp" >/dev/null 2>&1'
+check 'planner LaunchAgent loaded' 'launchctl print "gui/$uid/com.train-track-planner.api" >/dev/null 2>&1 || launchctl print "user/$uid/com.train-track-planner.api" >/dev/null 2>&1'
 check 'planner liveness on loopback' 'curl --fail --silent --max-time 3 "http://127.0.0.1:$port/healthcheck" >/dev/null 2>&1'
 if [[ -e "$data_dir" ]]; then df -h "$data_dir" | tail -1; else df -h "$HOME" | tail -1; fi
 exit "$failures"

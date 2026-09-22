@@ -1,49 +1,49 @@
 groups:
-  - name: train-track-planner-mvp-ingestion
+  - name: train-track-planner-ingestion
     rules:
       - alert: PlannerTimetableUpdateFailed
-        expr: timetable_ingestion_last_result{job="train-track-planner-mvp",result=~"error|gap"} == 1
+        expr: timetable_ingestion_last_result{job="train-track-planner",result=~"error|gap"} == 1
         for: 1m
         labels:
           severity: critical
-          service_name: train-track-planner-mvp
+          service_name: train-track-planner
         annotations:
           summary: 'Mini timetable update failed ({{ $labels.result }})'
           description: 'The last ingestion check failed or found a missing delivery sequence. The previous active timetable remains in use; inspect ingestion-state.json on Mini.'
 
       - alert: PlannerTimetableCheckOverdue
-        expr: time() - timetable_ingestion_last_check_timestamp_seconds{job="train-track-planner-mvp"} > 7200
+        expr: time() - timetable_ingestion_last_check_timestamp_seconds{job="train-track-planner"} > 7200
         for: 10m
         labels:
           severity: critical
-          service_name: train-track-planner-mvp
+          service_name: train-track-planner
         annotations:
           summary: 'Mini has not checked for timetable updates in over two hours'
           description: 'The hourly ingestion scheduler may have stopped; inspect the planner service and ingestion state.'
 
       - alert: PlannerTimetableStateUnreadable
-        expr: timetable_ingestion_state_readable{job="train-track-planner-mvp"} == 0
+        expr: timetable_ingestion_state_readable{job="train-track-planner"} == 0
         for: 3m
         labels:
           severity: critical
-          service_name: train-track-planner-mvp
+          service_name: train-track-planner
         annotations:
           summary: 'Mini timetable ingestion state cannot be read'
 
       - alert: PlannerTimetableIngestionDisabled
-        expr: timetable_ingestion_enabled{job="train-track-planner-mvp"} == 0
+        expr: timetable_ingestion_enabled{job="train-track-planner"} == 0
         for: 3m
         labels:
           severity: critical
-          service_name: train-track-planner-mvp
+          service_name: train-track-planner
         annotations:
           summary: 'Mini timetable ingestion is disabled'
 
       - alert: PlannerTimetableRunAbandoned
-        expr: timetable_ingestion_abandoned_run{job="train-track-planner-mvp"} == 1
+        expr: timetable_ingestion_abandoned_run{job="train-track-planner"} == 1
         for: 3m
         labels:
           severity: critical
-          service_name: train-track-planner-mvp
+          service_name: train-track-planner
         annotations:
           summary: 'Mini timetable worker died during an update'

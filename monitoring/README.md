@@ -128,7 +128,7 @@ Prometheus on `sky` cannot reach `mini`'s loopback metrics port, so the scrape
 target a deploy would derive is meaningless there. Rules for a `mini` app
 belong on `sky` next to the job that actually scrapes it; see the planner
 section below. Because every rule file ends up in one `rules/` directory,
-**scope each expression to its own job** (`{job="train-track-planner-mvp"}`) so
+**scope each expression to its own job** (`{job="train-track-planner"}`) so
 one app's alert cannot match another app's metric of the same name.
 
 To install or update rules without a full deploy:
@@ -157,7 +157,7 @@ and `curl -X POST localhost:9090/-/reload`.
 ## Mini journey-planner timetable alerts
 
 `monitoring/configure-planner-ingestion-alerts.sh sky` installs the dedicated
-`train-track-planner-mvp` scrape job and five ingestion rules on Sky. Prometheus
+`train-track-planner` scrape job and five ingestion rules on Sky. Prometheus
 scrapes Mini's authenticated `/train-track-planner/internal/planner/metrics`
 over the existing HTTPS Funnel route. The setup reads Sky's existing
 `PLANNER_MINI_SERVICE_TOKEN` from its gateway secret, writes only the raw token
@@ -165,9 +165,9 @@ to `~/monitoring/secrets/train-track-planner-token` (group 65534, mode 640),
 and mounts that single file read-only into Prometheus. It does **not** open
 Mini's loopback metrics listener or expose its Mongo database. Rerun after
 rotating the gateway token. `node_project.zsh journey-planner --full` does not
-replace this Sky scrape job: the MVP deploy entry has `metrics_port: false`.
+replace this Sky scrape job: the production deploy entry has `metrics_port: false`.
 
-The rules in `monitoring/rules/train-track-planner-mvp.yml` fire for a failed
+The rules in `monitoring/rules/train-track-planner.yml` fire for a failed
 check or missing delivery sequence (after 1 minute), no hourly check for over
 2 hours (plus 10 minutes), unreadable state, disabled ingestion, or a confirmed
 dead ingestion worker. Generic `TargetDown` covers a failed authenticated
@@ -177,8 +177,8 @@ the previous timetable can remain available while an update is blocked.
 Check the target and rules on Sky:
 
 ```bash
-ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/targets | jq -r ".data.activeTargets[] | select(.labels.job == \"train-track-planner-mvp\") | [.health,.lastError] | @tsv"'
-ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/rules | jq -r ".data.groups[] | select(.file | endswith(\"/train-track-planner-mvp.yml\")) | .rules[].name"'
+ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/targets | jq -r ".data.activeTargets[] | select(.labels.job == \"train-track-planner\") | [.health,.lastError] | @tsv"'
+ssh sky 'curl -fsS http://127.0.0.1:9090/api/v1/rules | jq -r ".data.groups[] | select(.file | endswith(\"/train-track-planner.yml\")) | .rules[].name"'
 ```
 
 The [planner operations runbook](../../train-track-uk/docs/journey-planner-operations.md)
