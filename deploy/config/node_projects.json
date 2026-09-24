@@ -245,8 +245,15 @@
         "healthcheck_path": "/healthcheck",
         "static_env": {
             "PORT": "3018",
-            "NODE_OPTIONS": "--max-old-space-size=192"
-        }
+            "NODE_OPTIONS": "--max-old-space-size=192",
+            "APNS_AUTH_KEY_PATH": "/home/mwagstaff/dev/tube-track-api/certs/APNS_AuthKey_SkyNoLimit_SandboxAndProd.p8"
+        },
+        "required_bitwarden_env": [
+            "APNS_KEY_ID",
+            "APNS_TEAM_ID",
+            "TUBETRACK_UK_PUSH_CLIENT_SECRET",
+            "TUBETRACK_UK_TFL_UNIFIED_API_KEY"
+        ]
     },
     {
         "name": "train-loading-service",

@@ -52,7 +52,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
                    project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
-                   launchd_admin_helper=None):
+                   launchd_admin_helper=None, remote_dir="/srv/test-project"):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -75,7 +75,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         (project / "index.js").write_text("// Synthetic deployment fixture\n")
         (project / ("pnpm-lock.yaml" if pnpm else "package-lock.json")).write_text("{}")
         config = {"name": project_name, "path": str(project),
-                  "remote_dir": "/srv/test-project", "startup_port": "", "metrics_port": "",
+                  "remote_dir": remote_dir, "startup_port": "", "metrics_port": "",
                   "static_env": {"TEST_CONFIG": "set"}}
         if aliases is not None:
             config["aliases"] = aliases
@@ -240,6 +240,34 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         duplicate, _ = self.run_deploy(required_bw_env=["ONE"], bw_items=[item("ONE"), item("ONE")])
         self.assertNotEqual(duplicate.returncode, 0)
         self.assertIn("Duplicate Bitwarden env var 'ONE'", duplicate.stderr)
+
+    def test_bitwarden_sync_without_required_vars(self):
+        item = {"name": "ONE", "fields": [{"name": "Apps", "value": "test-project"}],
+                "login": {"password": "test-value"}}
+        for required in (None, []):
+            with self.subTest(required=required):
+                result, calls = self.run_deploy(required_bw_env=required, bw_items=[item])
+                self.assert_success(result)
+                self.assertTrue(any(".incoming." in " ".join(call["args"])
+                                    for call in calls if call["name"] == "rsync"))
+
+    def test_bitwarden_swap_expands_remote_home_directory(self):
+        item = {"name": "ONE", "fields": [{"name": "Apps", "value": "test-project"}],
+                "login": {"password": "test-value"}}
+        result, calls = self.run_deploy(remote_dir="~/dev/test-project", bw_items=[item])
+        self.assert_success(result)
+        upload = next(call for call in calls if call["name"] == "rsync"
+                      and any(".incoming." in arg for arg in call["args"]))
+        swap = next(call["args"][-1] for call in calls if call["name"] == "ssh"
+                    and any(".incoming." in arg for arg in call["args"]))
+        with tempfile.TemporaryDirectory(prefix="node-deploy-remote-home-") as home:
+            incoming = Path(home) / upload["args"][-1].split(":~/", 1)[1]
+            incoming.parent.mkdir(parents=True)
+            incoming.write_text("secret")
+            swapped = subprocess.run(["sh", "-c", swap], text=True, capture_output=True,
+                                     env={**os.environ, "HOME": home})
+            self.assertEqual(swapped.returncode, 0, swapped.stderr)
+            self.assertEqual((incoming.parent / ".bw-secrets.env.sh").read_text(), "secret")
 
     def test_explicit_host_and_switches_override_defaults(self):
         result, calls = self.run_deploy(switches=["--full", "--tail"])
