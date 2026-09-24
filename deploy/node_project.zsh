@@ -130,6 +130,10 @@ get_project_service_scope() {
   jq -r --arg name "$1" '.[] | select(.name == $name) | .service_scope // "user"' "$CONFIG_FILE"
 }
 
+get_project_launchd_admin_helper() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .launchd_admin_helper // empty' "$CONFIG_FILE"
+}
+
 get_project_rsync_excludes() {
   jq -r --arg name "$1" '.[] | select(.name == $name) | (.rsync_excludes // [])[]' "$CONFIG_FILE"
 }
@@ -1698,6 +1702,11 @@ if [[ "$SERVICE_SCOPE" != "user" && "$SERVICE_SCOPE" != "system" ]]; then
   echo "Error: service_scope must be 'user' or 'system'" >&2
   exit 1
 fi
+LAUNCHD_ADMIN_HELPER=$(get_project_launchd_admin_helper "$PROJECT_NAME")
+if [[ -n "$LAUNCHD_ADMIN_HELPER" && ("$SERVICE_SCOPE" != "system" || ! "$LAUNCHD_ADMIN_HELPER" =~ '^/[A-Za-z0-9_./-]+$' || "$LAUNCHD_ADMIN_HELPER" == *'/../'* || "$LAUNCHD_ADMIN_HELPER" == *'/./'*) ]]; then
+  echo "Error: launchd_admin_helper requires system scope and an absolute path without spaces or shell syntax" >&2
+  exit 1
+fi
 REMOTE_NODE_PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 if [[ -n "$NODE_BINARY" ]]; then
   # Restrict the interpolated remote path to literal path characters. Naming
@@ -1817,6 +1826,7 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - rsync_excludes: optional array of additional application-sync exclude patterns" >&2
   echo "  - service_label: optional service identifier for launchd/systemd" >&2
   echo "  - service_description: optional service description for launchd/systemd" >&2
+  echo "  - launchd_admin_helper: optional allowlisted sudo helper for system-scoped launchd services" >&2
   echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
   echo "  - startup_port: app HTTP port used for the post-deploy healthcheck (optional; defaults to metrics_port)" >&2
   echo "  - healthcheck_path: optional health endpoint path (defaults to /healthcheck)" >&2
@@ -2424,6 +2434,7 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
     SERVICE_SCOPE='$SERVICE_SCOPE'
+    LAUNCHD_ADMIN_HELPER='$LAUNCHD_ADMIN_HELPER'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2506,7 +2517,11 @@ EOF_START_WRAPPER
         fi
         echo \"Using launchd domain for \$service_label: \$DOMAIN\"
         if [[ \"\$DOMAIN\" == 'system' ]]; then
-          sudo -n launchctl kickstart -k \"\$DOMAIN/\$service_label\" || {
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            sudo -n \"\$LAUNCHD_ADMIN_HELPER\" restart \"\$service_label\"
+          else
+            sudo -n launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+          fi || {
             echo 'Error: restarting the system LaunchDaemon requires administrator authorization.' >&2
             exit 1
           }
@@ -2558,6 +2573,25 @@ else
   else
     echo "==> Setting up and restarting services..."
   fi
+  if [[ "$SERVICE_SCOPE" == "system" ]]; then
+    if [[ -n "$LAUNCHD_ADMIN_HELPER" ]]; then
+      ssh "$HOST" "test -x '$LAUNCHD_ADMIN_HELPER'" || {
+        echo "Error: configured launchd admin helper is not installed on $HOST: $LAUNCHD_ADMIN_HELPER" >&2
+        exit 1
+      }
+      for service_label in "${SERVICE_LABELS[@]}"; do
+        ssh "$HOST" "sudo -n '$LAUNCHD_ADMIN_HELPER' check '$service_label'" >/dev/null || {
+          echo "Error: launchd admin helper is not authorized for $service_label on $HOST." >&2
+          exit 1
+        }
+      done
+    else
+      ssh "$HOST" "sudo -n true" >/dev/null || {
+        echo "Error: system LaunchDaemon deployment requires administrator authorization on $HOST." >&2
+        exit 1
+      }
+    fi
+  fi
   for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
     current_startup_port="${SERVICE_STARTUP_PORTS[$idx]}"
     if [[ "$current_startup_port" == "__NONE__" ]]; then
@@ -2581,6 +2615,7 @@ else
     SERVICE_LOG_FILES=(${SERVICE_LOG_FILES_SSH})
     SERVICE_ERROR_LOG_FILES=(${SERVICE_ERROR_LOG_FILES_SSH})
     SERVICE_SCOPE='$SERVICE_SCOPE'
+    LAUNCHD_ADMIN_HELPER='$LAUNCHD_ADMIN_HELPER'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2644,7 +2679,18 @@ EOF_START_WRAPPER
       UID_NUM=\"\$(id -u)\"
       USER_NAME=\"\$(id -un)\"
       if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
-        if ! sudo -n true >/dev/null 2>&1; then
+        if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+          if [[ ! -x \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            echo \"Error: configured launchd admin helper is not installed: \$LAUNCHD_ADMIN_HELPER\" >&2
+            exit 1
+          fi
+          for SERVICE_LABEL_TO_CHECK in \"\${SERVICE_LABELS[@]}\"; do
+            if ! sudo -n \"\$LAUNCHD_ADMIN_HELPER\" check \"\$SERVICE_LABEL_TO_CHECK\" >/dev/null 2>&1; then
+              echo \"Error: launchd admin helper is not authorized for \$SERVICE_LABEL_TO_CHECK.\" >&2
+              exit 1
+            fi
+          done
+        elif ! sudo -n true >/dev/null 2>&1; then
           echo 'Error: installing the system LaunchDaemon requires administrator authorization.' >&2
           echo 'Run the deployment from an administrator-authorized session, or install the reviewed plist separately.' >&2
           exit 1
@@ -2673,8 +2719,15 @@ EOF_START_WRAPPER
         [[ \"\$OLD_SERVICE_LABEL\" == \"${SERVICE_LABEL}\" ]] && continue
         echo \"Removing legacy launchd service: \$OLD_SERVICE_LABEL\"
         if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
-          sudo -n launchctl bootout \"system/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
-          sudo -n rm -f \"/Library/LaunchDaemons/\${OLD_SERVICE_LABEL}.plist\"
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            sudo -n \"\$LAUNCHD_ADMIN_HELPER\" remove \"\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          else
+            sudo -n launchctl bootout \"system/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+            sudo -n rm -f \"/Library/LaunchDaemons/\${OLD_SERVICE_LABEL}.plist\"
+          fi
+          launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
         else
           launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
           launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
@@ -2756,15 +2809,29 @@ EOF_PLIST
         local bootstrap_ok=0
         if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
           local installed=\"/Library/LaunchDaemons/\${service_label}.plist\"
-          sudo -n launchctl bootout \"system/\$service_label\" 2>/dev/null || true
-          sudo -n install -o root -g wheel -m 644 \"\$plist\" \"\$installed\"
-          sudo -n launchctl bootstrap system \"\$installed\"
-          sudo -n launchctl enable \"system/\$service_label\" || true
-          sudo -n launchctl kickstart -k \"system/\$service_label\"
+          local old_user_plist=\"\$HOME/Library/LaunchAgents/\${service_label}.plist\"
+          launchctl bootout \"gui/\$UID_NUM/\$service_label\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$service_label\" 2>/dev/null || true
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            if ! sudo -n \"\$LAUNCHD_ADMIN_HELPER\" install \"\$service_label\" \"\$plist\"; then
+              if [[ -f \"\$old_user_plist\" && \"\$HAVE_GUI_DOMAIN\" -eq 1 ]]; then
+                launchctl bootstrap \"gui/\$UID_NUM\" \"\$old_user_plist\" 2>/dev/null || true
+              fi
+              echo \"Error: system LaunchDaemon installation failed for \$service_label; restored the previous user agent where possible.\" >&2
+              exit 1
+            fi
+          else
+            sudo -n launchctl bootout \"system/\$service_label\" 2>/dev/null || true
+            sudo -n install -o root -g wheel -m 644 \"\$plist\" \"\$installed\"
+            sudo -n launchctl bootstrap system \"\$installed\"
+            sudo -n launchctl enable \"system/\$service_label\" || true
+            sudo -n launchctl kickstart -k \"system/\$service_label\"
+          fi
           if ! launchctl print \"system/\$service_label\" >/dev/null 2>&1; then
             echo \"Error: system LaunchDaemon did not load: \$service_label\" >&2
             exit 1
           fi
+          rm -f \"\$old_user_plist\"
           DOMAIN='system'
           return
         fi

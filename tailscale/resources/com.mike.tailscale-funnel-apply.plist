@@ -1,23 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
- "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mike.tailscale-funnel-apply</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mwagstaff/bin/tailscale-funnel-apply.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mwagstaff</string>
+  <key>UserName</key>
+  <string>mwagstaff</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mwagstaff/Library/Logs/tailscale-funnel-apply.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mwagstaff/Library/Logs/tailscale-funnel-apply.error.log</string>
+  <key>EnvironmentVariables</key>
   <dict>
-    <key>Label</key>
-    <string>com.mike.tailscale-funnel-apply</string>
-
-    <key>ProgramArguments</key>
-    <array>
-      <string>/Users/mwagstaff/bin/tailscale-funnel-apply.sh</string>
-    </array>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>/tmp/tailscale-funnel-apply.out.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/tmp/tailscale-funnel-apply.err.log</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
+</dict>
 </plist>

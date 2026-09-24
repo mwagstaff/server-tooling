@@ -51,7 +51,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
     def run_deploy(self, *, quick=False, pin=PIN, pnpm=False, build=False,
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
-                   project_name="test-project", aliases=None, required_bw_env=None, bw_items=None):
+                   project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
+                   launchd_admin_helper=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -90,6 +91,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["build_command"] = "npm run build"
         if service_scope is not None:
             config["service_scope"] = service_scope
+        if launchd_admin_helper is not None:
+            config["launchd_admin_helper"] = launchd_admin_helper
         if log_file is not None:
             config["log_file"] = log_file
         if error_log_file is not None:
@@ -291,6 +294,22 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                         service_setup.index("s|LOG_FILE_PLACEHOLDER|"))
 
         result, calls = self.run_deploy(service_scope="invalid")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_system_launchd_helper_is_used_and_removes_the_old_user_agent(self):
+        helper = "/usr/local/sbin/test-launchd-admin"
+        result, calls = self.run_deploy(service_scope="system", launchd_admin_helper=helper)
+        self.assert_success(result)
+        service_setup = next(" ".join(call["args"]) for call in calls
+                             if call["name"] == "ssh" and "restart_launchd_service" in " ".join(call["args"]))
+        self.assertIn(f"LAUNCHD_ADMIN_HELPER='{helper}'", service_setup)
+        self.assertIn('sudo -n "$LAUNCHD_ADMIN_HELPER" check', service_setup)
+        self.assertIn('sudo -n "$LAUNCHD_ADMIN_HELPER" install', service_setup)
+        self.assertIn('launchctl bootout "gui/$UID_NUM/$service_label"', service_setup)
+        self.assertIn('rm -f "$old_user_plist"', service_setup)
+
+        result, calls = self.run_deploy(service_scope="user", launchd_admin_helper=helper)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
 

@@ -207,7 +207,8 @@
         "startup_port": 3014,
         "metrics_port": false,
         "healthcheck_path": "/healthcheck",
-        "service_scope": "user",
+        "service_scope": "system",
+        "launchd_admin_helper": "/usr/local/sbin/train-track-boot-service-admin",
         "service_label": "com.train-track-planner.api",
         "service_description": "TrainTrack Journey Planner",
         "services": [

@@ -1,0 +1,206 @@
+#!/bin/bash
+set -euo pipefail
+
+readonly SERVICE_USER="mwagstaff"
+readonly SERVICE_UID="$(id -u "$SERVICE_USER")"
+readonly PLANNER_LABEL="com.train-track-planner.api"
+readonly FUNNEL_LABEL="com.mike.tailscale-funnel-apply"
+TEMP_EXPECTED=""
+TEMP_BACKUP=""
+
+cleanup() {
+  [[ -z "$TEMP_EXPECTED" ]] || rm -f "$TEMP_EXPECTED"
+  [[ -z "$TEMP_BACKUP" ]] || rm -f "$TEMP_BACKUP"
+}
+trap cleanup EXIT
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_root() {
+  [[ "$EUID" -eq 0 ]] || die "this helper must run as root"
+}
+
+require_allowed_label() {
+  case "$1" in
+    "$PLANNER_LABEL"|"$FUNNEL_LABEL") ;;
+    *) die "service is not allowlisted: $1" ;;
+  esac
+}
+
+staged_plist_for() {
+  case "$1" in
+    "$PLANNER_LABEL") printf '%s\n' "/Users/$SERVICE_USER/dev/train-track-planner/.$PLANNER_LABEL.plist" ;;
+    "$FUNNEL_LABEL") printf '%s\n' "/Users/$SERVICE_USER/.local/share/server-tooling/.$FUNNEL_LABEL.plist" ;;
+  esac
+}
+
+write_expected_plist() {
+  local label="$1"
+  local destination="$2"
+  case "$label" in
+    "$PLANNER_LABEL")
+      cat > "$destination" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$PLANNER_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/$SERVICE_USER/dev/train-track-planner/.start-with-bw-env-api.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/$SERVICE_USER/dev/train-track-planner</string>
+  <key>UserName</key>
+  <string>$SERVICE_USER</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/$SERVICE_USER/Library/Logs/train-track-planner/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/$SERVICE_USER/Library/Logs/train-track-planner/service.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
+EOF
+      ;;
+    "$FUNNEL_LABEL")
+      cat > "$destination" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$FUNNEL_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/$SERVICE_USER/bin/tailscale-funnel-apply.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/$SERVICE_USER</string>
+  <key>UserName</key>
+  <string>$SERVICE_USER</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/$SERVICE_USER/Library/Logs/tailscale-funnel-apply.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/$SERVICE_USER/Library/Logs/tailscale-funnel-apply.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
+EOF
+      ;;
+  esac
+}
+
+install_service() {
+  local label="$1"
+  local staged="$2"
+  local allowed_staged
+  local installed="/Library/LaunchDaemons/$label.plist"
+
+  require_allowed_label "$label"
+  allowed_staged="$(staged_plist_for "$label")"
+  [[ "$staged" == "$allowed_staged" ]] || die "unexpected staged plist path for $label"
+  [[ -f "$staged" && ! -L "$staged" ]] || die "staged plist is missing or unsafe: $staged"
+  [[ "$(stat -f '%Su' "$staged")" == "$SERVICE_USER" ]] || die "staged plist must be owned by $SERVICE_USER"
+
+  TEMP_EXPECTED="$(mktemp "/var/tmp/$label.expected.XXXXXX")"
+  write_expected_plist "$label" "$TEMP_EXPECTED"
+  plutil -lint "$staged" >/dev/null
+  cmp -s "$TEMP_EXPECTED" "$staged" || die "staged plist does not match the root-owned allowlist for $label"
+
+  if [[ "$label" == "$PLANNER_LABEL" ]]; then
+    [[ -x "/Users/$SERVICE_USER/dev/train-track-planner/.start-with-bw-env-api.sh" ]] || die "planner start wrapper is missing"
+  else
+    [[ -x "/Users/$SERVICE_USER/bin/tailscale-funnel-apply.sh" ]] || die "Funnel apply script is missing"
+  fi
+
+  if [[ -f "$installed" ]]; then
+    TEMP_BACKUP="$(mktemp "/var/tmp/$label.backup.XXXXXX")"
+    cp "$installed" "$TEMP_BACKUP"
+  fi
+
+  launchctl bootout "system/$label" 2>/dev/null || true
+  # A previously disabled label remains disabled across plist replacement.
+  # Clear that override before bootstrap so migrations can recover it.
+  launchctl enable "system/$label" || true
+  install -o root -g wheel -m 644 "$staged" "$installed"
+  if ! launchctl bootstrap system "$installed"; then
+    rm -f "$installed"
+    if [[ -n "$TEMP_BACKUP" ]]; then
+      install -o root -g wheel -m 644 "$TEMP_BACKUP" "$installed"
+      launchctl bootstrap system "$installed" 2>/dev/null || true
+    fi
+    die "failed to bootstrap $label"
+  fi
+  launchctl kickstart -k "system/$label"
+  launchctl print "system/$label" >/dev/null || die "$label did not load"
+  cleanup
+  TEMP_EXPECTED=""
+  TEMP_BACKUP=""
+}
+
+restart_service() {
+  local label="$1"
+  require_allowed_label "$label"
+  [[ -f "/Library/LaunchDaemons/$label.plist" ]] || die "LaunchDaemon is not installed: $label"
+  launchctl kickstart -k "system/$label"
+}
+
+remove_service() {
+  local label="$1"
+  require_allowed_label "$label"
+  launchctl bootout "system/$label" 2>/dev/null || true
+  rm -f "/Library/LaunchDaemons/$label.plist"
+}
+
+main() {
+  local action="${1:-}"
+  local label="${2:-}"
+  require_root
+  case "$action" in
+    check)
+      [[ "$#" -eq 2 ]] || die "usage: $0 check LABEL"
+      require_allowed_label "$label"
+      ;;
+    install)
+      [[ "$#" -eq 3 ]] || die "usage: $0 install LABEL STAGED_PLIST"
+      install_service "$label" "$3"
+      ;;
+    restart)
+      [[ "$#" -eq 2 ]] || die "usage: $0 restart LABEL"
+      restart_service "$label"
+      ;;
+    remove)
+      [[ "$#" -eq 2 ]] || die "usage: $0 remove LABEL"
+      remove_service "$label"
+      ;;
+    *) die "supported actions: check, install, restart, remove" ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
