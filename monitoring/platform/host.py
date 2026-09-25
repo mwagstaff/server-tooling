@@ -56,7 +56,7 @@ def binary(name):
     return destination / name
 
 
-def service(name, argv):
+def service(name, argv, refresh=True):
     label = 'com.server-tooling.monitoring.' + name
     log = ROOT / 'logs' / (name + '.log')
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +75,8 @@ def service(name, argv):
             installed = plistlib.loads(system_file.read_bytes())
             if installed['ProgramArguments'] != current['ProgramArguments']:
                 raise RuntimeError('Boot service executable changed. Apply staged update with enable-boot.sh: ' + label)
+            if not refresh:
+                return
             # The daemon runs as this user; restarting its process needs no privilege.
             # launchd's KeepAlive starts it again with the same reviewed arguments.
             state = subprocess.check_output(['launchctl', 'print', 'system/' + label], text=True)
@@ -93,6 +95,8 @@ def service(name, argv):
             domain = f'user/{os.getuid()}'
         loaded = subprocess.run(['launchctl', 'print', domain + '/' + label], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
         if loaded and previous == plist:
+            if not refresh:
+                return
             if name in ('prometheus', 'alertmanager', 'blackbox'):
                 run(['launchctl', 'kill', 'SIGHUP', domain + '/' + label])
             else:
@@ -115,10 +119,13 @@ def service(name, argv):
         command = ' '.join(json.dumps(str(a)) for a in argv)
         content = f'[Unit]\nDescription=Server tooling {name}\nAfter=network-online.target\n[Service]\nExecStart={command}\nWorkingDirectory={ROOT}\nRestart=always\nRestartSec=10\n[Install]\nWantedBy=default.target\n'
         unchanged = unit.exists() and unit.read_text() == content
+        active = subprocess.run(['systemctl', '--user', 'is-active', '--quiet', label + '.service']).returncode == 0
         unit.write_text(content)
         run(['systemctl', '--user', 'daemon-reload'])
         run(['systemctl', '--user', 'enable', '--now', label + '.service'], stdout=subprocess.DEVNULL)
-        if unchanged and name in ('prometheus', 'alertmanager', 'blackbox'):
+        if unchanged and active and not refresh:
+            return
+        if unchanged and active and name in ('prometheus', 'alertmanager', 'blackbox'):
             run(['systemctl', '--user', 'kill', '--kill-whom=main', '-s', 'HUP', label + '.service'])
         else:
             run(['systemctl', '--user', 'restart', label + '.service'])
@@ -227,6 +234,7 @@ def target(config):
 def monitor(config):
     prometheus, alertmanager, blackbox = [binary(x) for x in ('prometheus', 'alertmanager', 'blackbox_exporter')]
     watchdog = (ROOT / 'secrets' / ('HEALTHCHECKS_PING_URL_' + config['monitor'].upper())).exists()
+    changed = set()
     # Validate a complete candidate before replacing any active configuration.
     with tempfile.TemporaryDirectory(dir=ROOT, prefix='candidate-') as directory:
         candidate = Path(directory)
@@ -242,19 +250,24 @@ def monitor(config):
                 continue
             relative = path.relative_to(candidate)
             destination = ROOT / relative
+            content = path.read_text().replace(str(candidate), str(ROOT))
+            if destination.exists() and destination.read_text() == content:
+                continue
+            changed.add(str(relative))
             if destination.exists():
                 saved = backup / relative
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(destination, saved)
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_suffix(destination.suffix + '.new')
-            temporary.write_text(path.read_text().replace(str(candidate), str(ROOT)))
+            temporary.write_text(content)
             temporary.replace(destination)
     service('prometheus', [prometheus, '--config.file=' + str(ROOT / 'prometheus.json'), '--web.listen-address=127.0.0.1:19090',
-                           '--storage.tsdb.path=' + str(ROOT / 'data/prometheus'), '--storage.tsdb.retention.time=30d', '--storage.tsdb.retention.size=5GB'])
+                           '--storage.tsdb.path=' + str(ROOT / 'data/prometheus'), '--storage.tsdb.retention.time=30d', '--storage.tsdb.retention.size=5GB'], refresh=bool(changed & {'prometheus.json', 'rules.json'}))
     service('alertmanager', [alertmanager, '--config.file=' + str(ROOT / 'alertmanager.json'), '--web.listen-address=127.0.0.1:19093',
-                             '--cluster.listen-address=', '--storage.path=' + str(ROOT / 'data/alertmanager')])
-    service('blackbox', [blackbox, '--config.file=' + str(ROOT / 'blackbox.json'), '--web.listen-address=127.0.0.1:19115'])
+                             '--cluster.listen-address=', '--storage.path=' + str(ROOT / 'data/alertmanager')], refresh=True)
+    # Alertmanager reloads even with identical config to reread rotated secret files.
+    service('blackbox', [blackbox, '--config.file=' + str(ROOT / 'blackbox.json'), '--web.listen-address=127.0.0.1:19115'], refresh='blackbox.json' in changed)
     if platform.system() == 'Darwin':
         brew = shutil.which('brew')
         if not brew:
@@ -263,14 +276,16 @@ def monitor(config):
         grafana = Path(prefix) / 'bin/grafana'
         if not grafana.exists():
             run([brew, 'install', 'grafana'])
-        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')])
+        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')], refresh='grafana.ini' in changed)
         grafana_cli = [grafana, 'cli', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
     else:
         # Existing Linux hosts already use Docker. Only Grafana needs this backend.
         name = 'server-tooling-monitoring-grafana'
-        subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        run(['docker', 'run', '-d', '--name', name, '--network=host', '--restart=unless-stopped', '--user', f'{os.getuid()}:{os.getgid()}',
-             '-v', f'{ROOT}:{ROOT}', 'grafana/grafana:12.3.2', '--config=' + str(ROOT / 'grafana.ini')])
+        state = subprocess.run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Running}}', name], capture_output=True, text=True)
+        if 'grafana.ini' in changed or state.stdout.strip() != 'grafana/grafana:12.3.2 true':
+            subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run(['docker', 'run', '-d', '--name', name, '--network=host', '--restart=unless-stopped', '--user', f'{os.getuid()}:{os.getgid()}',
+                 '-v', f'{ROOT}:{ROOT}', 'grafana/grafana:12.3.2', '--config=' + str(ROOT / 'grafana.ini')])
         grafana_cli = ['docker', 'exec', '-i', name, 'grafana', 'cli', '--homepath=/usr/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
     for port in [19090, 19093]:
         ready(f'http://127.0.0.1:{port}/-/ready')
