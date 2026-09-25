@@ -2,6 +2,7 @@
 """Inspect real scrape/rule health, optionally send a self-resolving notification."""
 import argparse
 import json
+from pathlib import Path
 import subprocess
 import sys
 from install import ssh
@@ -10,9 +11,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--host', required=True)
 parser.add_argument('--test-alert', action='store_true')
 args = parser.parse_args()
-code = '''import datetime,json,urllib.request,urllib.parse
+code = Path(__file__).with_name('grafana_check.py').read_text() + '''
+import configparser,datetime,json,pathlib,urllib.request,urllib.parse
 def read(path):
- return json.load(urllib.request.urlopen('http://127.0.0.1:19090'+path))['data']
+ return json.load(urllib.request.urlopen('http://127.0.0.1:19090'+path,timeout=15))['data']
 targets=read('/api/v1/targets')['activeTargets']
 for t in targets:
  print(t['labels'].get('job'),t['health'],t.get('lastError',''))
@@ -24,6 +26,10 @@ probes=read('/api/v1/query?'+urllib.parse.urlencode({'query':'probe_success == 0
 for probe in probes: print('PUBLIC PROBE FAILED:',probe['metric'].get('service'))
 print('Targets:',len(targets),'unhealthy:',len(bad),'rules:',len(rules),'unhealthy:',len(failed))
 for r in failed: print(r['name'],r.get('lastError'))
+root=pathlib.Path.home()/'.local/share/server-tooling-monitoring'
+ini=configparser.ConfigParser(interpolation=None)
+ini.read(root/'grafana.ini')
+print(check_grafana('http://'+ini['server']['http_addr']+':13000', (root/'secrets/GRAFANA_PASSWORD').read_text().strip()))
 if TEST:
  now=datetime.datetime.now(datetime.timezone.utc)
  alert={'labels':{'alertname':'MonitoringDeliveryTest','severity':'warning','host':'HOST','service':'monitoring'},'annotations':{'summary':'Monitoring Pushover delivery test; resolves automatically'},'startsAt':now.isoformat(),'endsAt':(now+datetime.timedelta(minutes=2)).isoformat()}

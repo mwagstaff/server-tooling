@@ -63,8 +63,9 @@ def make_rules(services, target):
                        {'name': 'monitoring-alerts', 'rules': rules}]}
 
 
-def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=False):
+def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=False, hostname=None, target_os=None):
     root = Path(root)
+    dashboard_host = hostname or monitor_ip
     endpoint = f'{target_ip}:19443'
     jobs = []
     def scrape(job, kind, service, address, path='/metrics'):
@@ -96,7 +97,7 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         'priority': '{{ if eq .Status "resolved" }}0{{ else if eq .CommonLabels.severity "critical" }}1{{ else }}0{{ end }}',
         'title': '[{{ .Status | toUpper }}] {{ .CommonLabels.host }} {{ .CommonLabels.service }}',
         'message': '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}',
-        'url': f'http://{monitor_ip}:13000/d/monitoring-fleet', 'url_title': 'Monitoring dashboards',
+        'url': f'http://{dashboard_host}:13000/d/monitoring-fleet', 'url_title': 'Monitoring dashboards',
     }]}]
     routes = [{'matchers': ['alertname="MonitoringWatchdog"'], 'receiver': 'watchdog' if watchdog else 'silent', 'group_wait': '0s', 'group_interval': '1m', 'repeat_interval': '1m'}]
     if watchdog:
@@ -112,11 +113,12 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
     write_json(root / 'grafana/provisioning/datasources/monitoring.yaml', {'apiVersion': 1, 'datasources': [
         {'name': 'Monitoring Prometheus', 'uid': 'monitoring-prometheus', 'type': 'prometheus', 'access': 'proxy', 'url': 'http://127.0.0.1:19090', 'isDefault': True, 'editable': False},
         {'name': 'Monitoring Alertmanager', 'uid': 'monitoring-alertmanager', 'type': 'alertmanager', 'access': 'proxy', 'url': 'http://127.0.0.1:19093', 'jsonData': {'implementation': 'prometheus'}, 'editable': False}]})
-    write_json(root / 'grafana/provisioning/dashboards/monitoring.yaml', {'apiVersion': 1, 'providers': [{'name': 'Monitoring', 'folder': 'Monitoring', 'type': 'file', 'options': {'path': str(root / 'grafana/dashboards')}}]})
+    write_json(root / 'grafana/provisioning/dashboards/monitoring.yaml', {'apiVersion': 1, 'providers': [{'name': 'Monitoring', 'folder': 'Monitoring', 'type': 'file', 'updateIntervalSeconds': 30, 'options': {'path': str(root / 'grafana/dashboards')}}]})
     (root / 'grafana.ini').write_text(f'''[server]
 http_addr = {monitor_ip}
 http_port = 13000
-root_url = http://{monitor_ip}:13000/
+domain = {dashboard_host}
+root_url = http://{dashboard_host}:13000/
 [paths]
 data = {root}/data/grafana
 logs = {root}/logs
@@ -130,10 +132,10 @@ allow_sign_up = false
 [auth.anonymous]
 enabled = false
 ''')
-    dashboards(root)
+    dashboards(root, target_os)
 
 
-def dashboards(root):
+def dashboards(root, target_os=None):
     selector = '{host=~"$host",service=~"$service"}'
     def panel(title, expression, unit='short', description='', legend='{{service}}'):
         return {'title': title, 'type': 'timeseries', 'datasource': {'type': 'prometheus', 'uid': 'monitoring-prometheus'},
@@ -168,15 +170,19 @@ def dashboards(root):
         panel('Event-loop p99 delay', 'monitoring_event_loop_delay_p99_seconds' + selector, 's'),
         panel('Time spent in garbage collection', 'rate(monitoring_gc_duration_seconds_total' + selector + '[5m])', 'percentunit'),
         panel('Restarts in 1 hour', 'changes(monitoring_process_start_time_seconds' + selector + '[1h])')])
+    memory_panels = []
+    if target_os != 'darwin':
+        memory_panels.append(panel('Available memory (Linux)', 'node_memory_MemAvailable_bytes{kind="host",host=~"$host"}', 'bytes', legend='{{host}}'))
+    if target_os != 'linux':
+        memory_panels.append(panel('Memory by type (macOS)', '{__name__=~"node_memory_(free|active|inactive|wired|compressed)_bytes",kind="host",host=~"$host"}', 'bytes', legend='{{__name__}}'))
     dashboard('host', 'Host health', [
-        panel('CPU busy', '1 - avg by(host) (rate(node_cpu_seconds_total{mode="idle",host=~"$host"}[5m]))', 'percentunit', legend='{{host}}'),
-        panel('Available memory (Linux)', 'node_memory_MemAvailable_bytes{host=~"$host"}', 'bytes'),
-        panel('Memory by type (macOS)', '{__name__=~"node_memory_(free|active|inactive|wired|compressed)_bytes",host=~"$host"}', 'bytes', legend='{{__name__}}'),
-        panel('Filesystem free space', 'node_filesystem_avail_bytes{host=~"$host",fstype!~"tmpfs|overlay|squashfs|devtmpfs"}', 'bytes', legend='{{mountpoint}}'),
-        panel('Disk reads', 'rate(node_disk_read_bytes_total{host=~"$host"}[5m])', 'Bps'),
-        panel('Disk writes', 'rate(node_disk_written_bytes_total{host=~"$host"}[5m])', 'Bps'),
-        panel('Read latency', 'rate(node_disk_read_time_seconds_total{host=~"$host"}[5m]) / rate(node_disk_reads_completed_total{host=~"$host"}[5m])', 's', legend='{{device}}'),
-        panel('Network received', 'rate(node_network_receive_bytes_total{host=~"$host"}[5m])', 'Bps')])
+        panel('CPU busy', '1 - avg by(host) (rate(node_cpu_seconds_total{kind="host",mode="idle",host=~"$host"}[5m]))', 'percentunit', legend='{{host}}'),
+        *memory_panels,
+        panel('Filesystem free space', 'node_filesystem_avail_bytes{kind="host",host=~"$host",fstype!~"tmpfs|overlay|squashfs|devtmpfs|efivarfs"}', 'bytes', legend='{{host}} · {{mountpoint}}'),
+        panel('Disk reads', 'rate(node_disk_read_bytes_total{kind="host",host=~"$host"}[5m])', 'Bps', legend='{{host}} · {{device}}'),
+        panel('Disk writes', 'rate(node_disk_written_bytes_total{kind="host",host=~"$host"}[5m])', 'Bps', legend='{{host}} · {{device}}'),
+        panel('Read latency', 'rate(node_disk_read_time_seconds_total{kind="host",host=~"$host"}[5m]) / rate(node_disk_reads_completed_total{kind="host",host=~"$host"}[5m])', 's', legend='{{host}} · {{device}}'),
+        panel('Network received', 'rate(node_network_receive_bytes_total{kind="host",host=~"$host"}[5m])', 'Bps', legend='{{host}} · {{device}}')])
     dashboard('monitor', 'Monitoring health', [
         panel('Scrape success', 'up{host=~"$host",service=~"$service"}'),
         panel('Scrape duration', 'scrape_duration_seconds{host=~"$host"}', 's'),

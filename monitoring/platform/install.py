@@ -26,12 +26,13 @@ def ssh(host, args, **kwargs):
 
 
 def inspect(host):
-    code = '''import json,os,shutil,subprocess
+    code = '''import json,os,platform,shutil,subprocess
 t=shutil.which('tailscale')
 if not t: raise SystemExit('Tailscale is not installed')
 p=subprocess.run([t,'ip','-4'],capture_output=True,text=True,check=True)
 ip=p.stdout.strip().splitlines()[0]
-print(json.dumps({'home':os.path.expanduser('~'),'ip':ip}))'''
+status=json.loads(subprocess.check_output([t,'status','--json'],text=True))
+print(json.dumps({'home':os.path.expanduser('~'),'ip':ip,'dns':status['Self']['DNSName'].rstrip('.'),'os':platform.system().lower()}))'''
     return json.loads(ssh(host, ['python3', '-c', code], capture_output=True, text=True).stdout)
 
 
@@ -99,7 +100,7 @@ def stage(host, info, config, secret_values, work):
     source = remote + '/source/' + uuid.uuid4().hex
     ssh(host, ['mkdir', '-p', source, remote + '/secrets'])
     ssh(host, ['chmod', '700', remote, remote + '/secrets'])
-    for name in ['host.py', 'config.py', 'gateway.py', 'runtime.cjs', 'enable_boot.py']:
+    for name in ['host.py', 'config.py', 'gateway.py', 'runtime.cjs', 'enable_boot.py', 'grafana_check.py']:
         run(['scp', '-q', SOURCE / name, host + ':' + source + '/' + name])
     config_path = work / (host + '-deploy.json')
     config_path.write_text(json.dumps(config))
@@ -155,7 +156,8 @@ def main():
             config = {'services': services, 'ip': target_info['ip'], 'allowed': [monitor_info['ip']]}
             source = stage(args.target, target_info, config, target_secrets, work)
             ssh(args.target, ['python3', source + '/host.py', 'target', source + '/deploy.json'])
-        config = {'monitor': args.monitor, 'target': args.target, 'ip': monitor_info['ip'], 'target_ip': target_info['ip'], 'services': services}
+        config = {'monitor': args.monitor, 'target': args.target, 'ip': monitor_info['ip'], 'target_ip': target_info['ip'], 'services': services,
+                  'hostname': monitor_info['dns'], 'target_os': target_info['os']}
         source = stage(args.monitor, monitor_info, config, monitor_secrets, work)
         ssh(args.monitor, ['python3', source + '/host.py', 'monitor', source + '/deploy.json'])
     print('Installed. Check the dashboards and expected target count before retiring legacy alerts.')

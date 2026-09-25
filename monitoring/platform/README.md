@@ -76,7 +76,14 @@ allowlisted loopback endpoints. Applications keep their existing listeners.
 Tailscale encrypts the connection. Restrict access further in tailnet policy if
 other users share the network.
 
-Grafana is at `http://<monitor-tailscale-ip>:13000` and requires login. It is
+Grafana uses the monitor's Tailscale DNS hostname and requires login:
+
+- Mini monitoring Sky: <http://mikes-mac-mini.dog-rattlesnake.ts.net:13000/dashboards>
+- Sky monitoring Mini: <http://sky.dog-rattlesnake.ts.net:13000/dashboards>
+
+Connect the viewing device to Tailscale. The installer discovers these hostnames
+and uses them for Grafana's root URL and Pushover dashboard links, while private
+listeners and scraper access controls remain bound to Tailscale IPs. Grafana is
 reachable independently of the monitored server. Prometheus (19090), Alertmanager
 (19093), Blackbox Exporter (19115), Node Exporter (19100) and Node adapters
 (19200 onwards) bind to loopback.
@@ -111,7 +118,9 @@ metrics. RSS/CPU describe the process. Short spikes between scrapes may be misse
 Linux and macOS expose different host metrics. Linux memory pressure, I/O wait
 and OOM rules use Linux kernel measurements. macOS has separate memory panels
 and a low-free/inactive-memory alert gated by sustained swap-out;
-unsupported metrics display no data. This is not a portable OOM-kill detector.
+host dashboards select the memory panel for the target OS and use only the host
+exporter, avoiding duplicate application-exported host metrics. This is not a
+portable OOM-kill detector.
 
 Redis, MongoDB, Caddy internals and scheduled-job monitoring are future modules:
 add fixed exporter routes, scrape jobs and rule/dashboard groups without changing
@@ -162,6 +171,12 @@ python3 -m unittest discover -s monitoring/platform -p 'test_*.py' -v
 python3 monitoring/platform/verify.py --host mini
 python3 monitoring/platform/verify.py --host mini --test-alert
 ```
+
+Deployment and `verify.py` both check that all four dashboards are provisioned,
+the monitoring data sources exist, and Grafana can query live Prometheus data.
+Linux Docker path overrides explicitly point provisioning and persistent data at
+the monitoring directory. Upgrading the original container first stops it and
+backs up its database before migrating to persistent storage.
 
 The test alert sends a self-resolving Pushover notification. Do not retire legacy
 alerts until all expected targets are up and firing/recovery notifications have

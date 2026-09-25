@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import render
 from gateway import Handler, NoRedirect
 from install import get_secret
+from grafana_check import check_grafana
 import host
 
 
@@ -77,6 +78,39 @@ class PlatformTests(unittest.TestCase):
                 receiver = next(x for x in am['receivers'] if x['name'] == 'watchdog')
                 self.assertFalse(receiver['webhook_configs'][0]['send_resolved'])
                 self.assertTrue(receiver['webhook_configs'][0]['url_file'].endswith(monitor.upper()))
+
+    def test_grafana_validation_rejects_empty_dashboards(self):
+        class EmptyGrafana(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'[]')
+            def log_message(self, *args):
+                pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), EmptyGrafana)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'Grafana dashboards missing'):
+                check_grafana(f'http://127.0.0.1:{server.server_port}', 'fixture')
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_dashboard_hostname_and_host_metrics_scope(self):
+        for target_os in ('linux', 'darwin'):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                render(root, 'observer', 'target', '100.64.0.2', '100.64.0.1', [],
+                       hostname='observer.example.ts.net', target_os=target_os)
+                self.assertIn('root_url = http://observer.example.ts.net:13000/', (root/'grafana.ini').read_text())
+                am = json.loads((root/'alertmanager.json').read_text())
+                self.assertEqual(am['receivers'][1]['pushover_configs'][0]['url'], 'http://observer.example.ts.net:13000/d/monitoring-fleet')
+                dashboard = json.loads((root/'grafana/dashboards/host.json').read_text())
+                titles = [panel['title'] for panel in dashboard['panels']]
+                self.assertEqual('Available memory (Linux)' in titles, target_os == 'linux')
+                self.assertEqual('Memory by type (macOS)' in titles, target_os == 'darwin')
+                for panel in dashboard['panels']:
+                    self.assertIn('kind="host"', panel['targets'][0]['expr'])
 
     def test_gateway_rejects_unlisted_clients_and_urls(self):
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)

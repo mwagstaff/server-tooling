@@ -22,6 +22,7 @@ import time
 import urllib.request
 
 from config import render, write_json
+from grafana_check import check_grafana
 
 VERSIONS = {'prometheus': '3.15.0', 'alertmanager': '0.34.1', 'node_exporter': '1.12.1', 'blackbox_exporter': '0.28.0'}
 ROOT = Path.home() / '.local/share/server-tooling-monitoring'
@@ -239,7 +240,8 @@ def monitor(config):
     with tempfile.TemporaryDirectory(dir=ROOT, prefix='candidate-') as directory:
         candidate = Path(directory)
         shutil.copytree(ROOT / 'secrets', candidate / 'secrets')
-        render(candidate, config['monitor'], config['target'], config['target_ip'], config['ip'], config['services'], watchdog)
+        render(candidate, config['monitor'], config['target'], config['target_ip'], config['ip'], config['services'], watchdog,
+               hostname=config.get('hostname'), target_os=config.get('target_os'))
         run([prometheus.parent / 'promtool', 'check', 'config', '--lint-fatal', candidate / 'prometheus.json'])
         run([alertmanager.parent / 'amtool', 'check-config', candidate / 'alertmanager.json'])
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
@@ -276,16 +278,41 @@ def monitor(config):
         grafana = Path(prefix) / 'bin/grafana'
         if not grafana.exists():
             run([brew, 'install', 'grafana'])
-        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')], refresh='grafana.ini' in changed)
+        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')],
+                refresh='grafana.ini' in changed or any(path.startswith('grafana/provisioning/') for path in changed))
         grafana_cli = [grafana, 'cli', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
     else:
         # Existing Linux hosts already use Docker. Only Grafana needs this backend.
         name = 'server-tooling-monitoring-grafana'
-        state = subprocess.run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Running}}', name], capture_output=True, text=True)
-        if 'grafana.ini' in changed or state.stdout.strip() != 'grafana/grafana:12.3.2 true':
+        paths = {'GF_PATHS_CONFIG': str(ROOT / 'grafana.ini'), 'GF_PATHS_DATA': str(ROOT / 'data/grafana'),
+                 'GF_PATHS_LOGS': str(ROOT / 'logs'), 'GF_PATHS_PLUGINS': str(ROOT / 'data/grafana/plugins'),
+                 'GF_PATHS_PROVISIONING': str(ROOT / 'grafana/provisioning')}
+        state = subprocess.run(['docker', 'inspect', name], capture_output=True, text=True)
+        current = json.loads(state.stdout)[0] if state.returncode == 0 else None
+        env = dict(item.split('=', 1) for item in current['Config']['Env']) if current else {}
+        if current and env.get('GF_PATHS_DATA') != paths['GF_PATHS_DATA']:
+            # Migrate the original container's database before replacing it.
+            # Stopping first gives a consistent SQLite copy, including user sessions.
+            destination = ROOT / 'data/grafana'
+            if (destination / 'grafana.db').exists():
+                raise RuntimeError('Two Grafana databases exist; reconcile before migrating container storage')
+            saved = ROOT / 'backups' / ('grafana-container-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+            saved.mkdir(parents=True)
+            run(['docker', 'stop', name], stdout=subprocess.DEVNULL)
+            try:
+                run(['docker', 'cp', name + ':' + env.get('GF_PATHS_DATA', '/var/lib/grafana') + '/.', saved])
+                shutil.copytree(saved, destination, dirs_exist_ok=True)
+            except Exception:
+                run(['docker', 'start', name], stdout=subprocess.DEVNULL)
+                raise
+        if ('grafana.ini' in changed or any(path.startswith('grafana/provisioning/') for path in changed)
+                or not current or not current['State']['Running']
+                or current['Config']['Image'] != 'grafana/grafana:12.3.2'
+                or any(env.get(key) != value for key, value in paths.items())):
             subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            environment = [arg for key, value in paths.items() for arg in ('-e', key + '=' + value)]
             run(['docker', 'run', '-d', '--name', name, '--network=host', '--restart=unless-stopped', '--user', f'{os.getuid()}:{os.getgid()}',
-                 '-v', f'{ROOT}:{ROOT}', 'grafana/grafana:12.3.2', '--config=' + str(ROOT / 'grafana.ini')])
+                 '-v', f'{ROOT}:{ROOT}', *environment, 'grafana/grafana:12.3.2', '--config=' + str(ROOT / 'grafana.ini')])
         grafana_cli = ['docker', 'exec', '-i', name, 'grafana', 'cli', '--homepath=/usr/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
     for port in [19090, 19093]:
         ready(f'http://127.0.0.1:{port}/-/ready')
@@ -302,7 +329,19 @@ def monitor(config):
         # The initial-password setting only applies to new Grafana databases.
         run(grafana_cli + ['admin', 'reset-admin-password', '--password-from-stdin'],
             input=password + '\n', text=True, capture_output=True)
-    print('Dashboard: http://' + config['ip'] + ':13000')
+    url = 'http://' + config.get('hostname', config['ip']) + ':13000'
+    # File provisioning polls every 30 seconds; allow one full polling interval.
+    for attempt in range(12):
+        try:
+            # Local health checks must also work on hosts that do not use MagicDNS.
+            result = check_grafana('http://' + config['ip'] + ':13000', password)
+            break
+        except (RuntimeError, OSError):
+            if attempt == 11:
+                raise
+            time.sleep(5)
+    print(result)
+    print('Dashboard: ' + url)
     print('External watchdog:', 'enabled' if watchdog else 'pending Healthchecks ping URL')
 
 
