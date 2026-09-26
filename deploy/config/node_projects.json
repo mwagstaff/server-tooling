@@ -176,7 +176,8 @@
             "PLANNER_LEGACY_TARGET": "mini",
             "PLANNER_EMBEDDED_ENABLED": "false",
             "PLANNER_ENABLED": "false",
-            "PLANNER_INGESTION_ENABLED": "false"
+            "PLANNER_INGESTION_ENABLED": "false",
+            "DISRUPTION_MONITOR_MODE": "off"
         }
     },
     {
@@ -251,7 +252,6 @@
         "required_bitwarden_env": [
             "APNS_KEY_ID",
             "APNS_TEAM_ID",
-            "TUBETRACK_UK_PUSH_CLIENT_SECRET",
             "TUBETRACK_UK_TFL_UNIFIED_API_KEY"
         ]
     },

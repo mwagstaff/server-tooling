@@ -221,6 +221,20 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             self.assertTrue(any(arg == "mini" or arg.startswith("mini:") for arg in call["args"]), call)
         self.assertFalse([call for call in calls if call["name"] == "tail"])
 
+    def test_tubetrack_bitwarden_deploy_does_not_require_obsolete_push_client_secret(self):
+        projects = json.loads((DEPLOY / "config/node_projects.json").read_text())
+        project = next(project for project in projects if project["name"] == "tube-track-api")
+        items = [{"name": name, "fields": [{"name": "Apps", "value": "tube-track-api"}],
+                  "login": {"password": "test-value"}}
+                 for name in ["APNS_KEY_ID", "APNS_TEAM_ID", "TUBETRACK_UK_TFL_UNIFIED_API_KEY"]]
+        result, calls = self.run_deploy(
+            project_name="tube-track-api", project_arg="tube-track",
+            required_bw_env=project["required_bitwarden_env"], bw_items=items,
+            switches=["-b", "--no-tail"])
+        self.assert_success(result)
+        self.assertTrue(any(".incoming." in " ".join(call["args"])
+                            for call in calls if call["name"] == "rsync"))
+
     def test_required_bitwarden_vars_are_checked_before_remote_secret_replacement(self):
         def item(name):
             return {"name": name, "fields": [{"name": "Apps", "value": "test-project"}],

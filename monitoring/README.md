@@ -1,5 +1,10 @@
 # Monitoring and alerting
 
+For independent monitoring between `mini` and `sky`, use the new
+[portable monitoring platform](platform/README.md). It includes Pushover,
+private Tailscale metrics, host/runtime dashboards and optional external
+watchdogs. The remainder of this page describes the legacy Sky stack.
+
 Prometheus, Grafana and Alertmanager run on `sky` from `~/monitoring`
 (`docker-compose.yml`). Every deployed Node project exposes `/metrics`,
 Prometheus scrapes it, alert rules turn metrics into alerts, and Alertmanager

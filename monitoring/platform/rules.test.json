@@ -1,0 +1,130 @@
+{
+  "rule_files": [
+    "rules.json"
+  ],
+  "evaluation_interval": "1m",
+  "fuzzy_compare": true,
+  "tests": [
+    {
+      "name": "runtime outage fires and recovers",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "up{host=\"sky\",service=\"app\",kind=\"runtime\"}",
+          "values": "0 0 0 0 0 1 1"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "RuntimeUnavailable",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "host": "sky",
+                "service": "app",
+                "kind": "runtime",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "app runtime metrics unavailable",
+                "description": "sky / app: 0",
+                "runbook_url": "https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts"
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "6m",
+          "alertname": "RuntimeUnavailable",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "quiet services do not page for error percentages",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "monitoring_http_requests_total{host=\"sky\",service=\"app\",status=\"503\"}",
+          "values": "0+1x20"
+        },
+        {
+          "series": "monitoring_http_request_duration_seconds_count{host=\"sky\",service=\"app\"}",
+          "values": "0+1x20"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "15m",
+          "alertname": "HttpErrors",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "sustained errors with enough traffic page",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "monitoring_http_requests_total{host=\"sky\",service=\"app\",status=\"503\"}",
+          "values": "0+20x20"
+        },
+        {
+          "series": "monitoring_http_request_duration_seconds_count{host=\"sky\",service=\"app\"}",
+          "values": "0+100x20"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "15m",
+          "alertname": "HttpErrors",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "host": "sky",
+                "service": "app",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "app errors exceed 5%",
+                "description": "sky / app: 0.2",
+                "runbook_url": "https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "histogram quantiles preserve seconds",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "monitoring_http_request_duration_seconds_bucket{host=\"sky\",service=\"app\",le=\"0.1\"}",
+          "values": "0+90x10"
+        },
+        {
+          "series": "monitoring_http_request_duration_seconds_bucket{host=\"sky\",service=\"app\",le=\"1\"}",
+          "values": "0+100x10"
+        },
+        {
+          "series": "monitoring_http_request_duration_seconds_bucket{host=\"sky\",service=\"app\",le=\"+Inf\"}",
+          "values": "0+100x10"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "round(monitoring:http_p95_seconds, 0.001)",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{host=\"sky\",service=\"app\"}",
+              "value": 0.55
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
