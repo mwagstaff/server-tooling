@@ -100,7 +100,7 @@ def stage(host, info, config, secret_values, work):
     source = remote + '/source/' + uuid.uuid4().hex
     ssh(host, ['mkdir', '-p', source, remote + '/secrets'])
     ssh(host, ['chmod', '700', remote, remote + '/secrets'])
-    for name in ['host.py', 'config.py', 'gateway.py', 'runtime.cjs', 'enable_boot.py', 'grafana_check.py']:
+    for name in ['host.py', 'config.py', 'gateway.py', 'runtime.cjs', 'enable_boot.py', 'grafana_check.py', 'history.py']:
         run(['scp', '-q', SOURCE / name, host + ':' + source + '/' + name])
     config_path = work / (host + '-deploy.json')
     config_path.write_text(json.dumps(config))

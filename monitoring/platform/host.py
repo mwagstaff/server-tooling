@@ -227,8 +227,10 @@ def target(config):
                 if not Path(route['token_file']).exists():
                     raise RuntimeError('Missing app metrics token: ' + item['metrics_secret'])
             routes['/app/' + name] = route
-    write_json(ROOT / 'gateway.json', {'listen': config['ip'], 'allowed': config['allowed'], 'routes': routes})
+    write_json(ROOT / 'gateway.json', {'listen': config['ip'], 'allowed': config['allowed'], 'routes': routes,
+                                      'history': (ROOT / 'prometheus.json').exists()})
     shutil.copy2(SOURCE / 'gateway.py', ROOT / 'gateway.py')
+    shutil.copy2(SOURCE / 'history.py', ROOT / 'history.py')
     service('gateway', [sys.executable, ROOT / 'gateway.py', ROOT / 'gateway.json'])
 
 
@@ -270,6 +272,19 @@ def monitor(config):
                              '--cluster.listen-address=', '--storage.path=' + str(ROOT / 'data/alertmanager')], refresh=True)
     # Alertmanager reloads even with identical config to reread rotated secret files.
     service('blackbox', [blackbox, '--config.file=' + str(ROOT / 'blackbox.json'), '--web.listen-address=127.0.0.1:19115'], refresh='blackbox.json' in changed)
+    gateway_path = ROOT / 'gateway.json'
+    gateway = json.loads(gateway_path.read_text()) if gateway_path.exists() else {'listen': config['ip'], 'allowed': [], 'routes': {}}
+    gateway_changed = not gateway.get('history') or any(not (ROOT / name).exists() or (ROOT / name).read_bytes() != (SOURCE / name).read_bytes()
+                                                        for name in ('gateway.py', 'history.py'))
+    gateway['history'] = True
+    write_json(gateway_path, gateway)
+    for name in ('gateway.py', 'history.py'):
+        shutil.copy2(SOURCE / name, ROOT / name)
+    service('gateway', [sys.executable, ROOT / 'gateway.py', gateway_path], refresh=gateway_changed)
+    # Grafana's maintained JSON data source reads the private history endpoint.
+    plugin_version = '4.0.0'
+    plugin = ROOT / 'data/grafana/plugins/yesoreyeram-infinity-datasource/plugin.json'
+    plugin_changed = not plugin.exists() or json.loads(plugin.read_text()).get('info', {}).get('version') != plugin_version
     if platform.system() == 'Darwin':
         brew = shutil.which('brew')
         if not brew:
@@ -278,9 +293,11 @@ def monitor(config):
         grafana = Path(prefix) / 'bin/grafana'
         if not grafana.exists():
             run([brew, 'install', 'grafana'])
-        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')],
-                refresh='grafana.ini' in changed or any(path.startswith('grafana/provisioning/') for path in changed))
         grafana_cli = [grafana, 'cli', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
+        if plugin_changed:
+            run(grafana_cli + ['--pluginsDir', str(plugin.parent.parent), 'plugins', 'install', 'yesoreyeram-infinity-datasource', plugin_version])
+        service('grafana', [grafana, 'server', '--homepath=' + prefix + '/share/grafana', '--config=' + str(ROOT / 'grafana.ini')],
+                refresh=plugin_changed or 'grafana.ini' in changed or any(path.startswith('grafana/provisioning/') for path in changed))
     else:
         # Existing Linux hosts already use Docker. Only Grafana needs this backend.
         name = 'server-tooling-monitoring-grafana'
@@ -314,6 +331,9 @@ def monitor(config):
             run(['docker', 'run', '-d', '--name', name, '--network=host', '--restart=unless-stopped', '--user', f'{os.getuid()}:{os.getgid()}',
                  '-v', f'{ROOT}:{ROOT}', *environment, 'grafana/grafana:12.3.2', '--config=' + str(ROOT / 'grafana.ini')])
         grafana_cli = ['docker', 'exec', '-i', name, 'grafana', 'cli', '--homepath=/usr/share/grafana', '--config=' + str(ROOT / 'grafana.ini')]
+        if plugin_changed:
+            run(grafana_cli + ['--pluginsDir', str(plugin.parent.parent), 'plugins', 'install', 'yesoreyeram-infinity-datasource', plugin_version])
+            run(['docker', 'restart', name], stdout=subprocess.DEVNULL)
     for port in [19090, 19093]:
         ready(f'http://127.0.0.1:{port}/-/ready')
     ready('http://' + config['ip'] + ':13000/api/health')
