@@ -112,7 +112,9 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         ]})
     write_json(root / 'grafana/provisioning/datasources/monitoring.yaml', {'apiVersion': 1, 'datasources': [
         {'name': 'Monitoring Prometheus', 'uid': 'monitoring-prometheus', 'type': 'prometheus', 'access': 'proxy', 'url': 'http://127.0.0.1:19090', 'isDefault': True, 'editable': False},
-        {'name': 'Monitoring Alertmanager', 'uid': 'monitoring-alertmanager', 'type': 'alertmanager', 'access': 'proxy', 'url': 'http://127.0.0.1:19093', 'jsonData': {'implementation': 'prometheus'}, 'editable': False}]})
+        {'name': 'Monitoring Alertmanager', 'uid': 'monitoring-alertmanager', 'type': 'alertmanager', 'access': 'proxy', 'url': 'http://127.0.0.1:19093', 'jsonData': {'implementation': 'prometheus'}, 'editable': False},
+        {'name': 'Monitoring Alert History', 'uid': 'monitoring-history', 'type': 'yesoreyeram-infinity-datasource', 'access': 'proxy',
+         'jsonData': {'allowedHosts': ['http://127.0.0.1:19116'], 'auth_method': 'none'}, 'editable': False}]})
     write_json(root / 'grafana/provisioning/dashboards/monitoring.yaml', {'apiVersion': 1, 'providers': [{'name': 'Monitoring', 'folder': 'Monitoring', 'type': 'file', 'updateIntervalSeconds': 30, 'options': {'path': str(root / 'grafana/dashboards')}}]})
     (root / 'grafana.ini').write_text(f'''[server]
 http_addr = {monitor_ip}
@@ -144,6 +146,10 @@ def dashboards(root, target_os=None):
     def dashboard(slug, title, panels):
         for index, item in enumerate(panels):
             item.update(id=index + 1, gridPos={'x': (index % 2) * 12, 'y': (index // 2) * 8, 'w': 12, 'h': 8})
+        if slug == 'fleet':
+            for item in panels:
+                item['gridPos']['y'] += 10
+            panels.insert(0, history_panel())
         write_json(root / f'grafana/dashboards/{slug}.json', {
             'uid': 'monitoring-' + slug, 'title': title, 'schemaVersion': 39, 'version': 1, 'refresh': '30s',
             'time': {'from': 'now-6h', 'to': 'now'}, 'tags': ['monitoring'], 'panels': panels,
@@ -190,3 +196,31 @@ def dashboards(root, target_os=None):
         panel('Rule failures', 'rate(prometheus_rule_evaluation_failures_total[5m])'),
         panel('Notification failures', 'increase(alertmanager_notifications_failed_total[1h])'),
         panel('Watchdog firing', 'ALERTS{alertname="MonitoringWatchdog",alertstate="firing"}')])
+
+
+def history_panel():
+    fields = [('fired_at', 'Fired at', 'number'), ('alert', 'Alert', 'string'),
+              ('host', 'Host', 'string'), ('service', 'Service', 'string'),
+              ('summary', 'Summary', 'string'), ('status', 'Current status', 'string'),
+              ('last_firing', 'Last observed firing', 'number')]
+    return {'id': 8, 'title': 'Alert history', 'type': 'table',
+            'gridPos': {'x': 0, 'y': 0, 'w': 24, 'h': 10},
+            'description': 'Separate observed firing episodes overlapping the selected period (up to 30 days, subject to retention). Status is checked now, even for a past time range. Times are reconstructed from 15-second samples; monitoring gaps may split episodes. Summaries use the current rule definitions. Watchdog and pending-only alerts are excluded.',
+            'datasource': {'type': 'yesoreyeram-infinity-datasource', 'uid': 'monitoring-history'},
+            'targets': [{'refId': 'A', 'type': 'json', 'source': 'url', 'parser': 'backend', 'format': 'table',
+                         'url': 'http://127.0.0.1:19116/history?from=${__from}&to=${__to}&host=${host:percentencode}&service=${service:percentencode}',
+                         'url_options': {'method': 'GET'}, 'root_selector': '',
+                         'columns': [{'selector': key, 'text': title, 'type': kind} for key, title, kind in fields]}],
+            'transformations': [{'id': 'organize', 'options': {'indexByName': {title: index for index, (_, title, _) in enumerate(fields)}}}],
+            'options': {'showHeader': True, 'cellHeight': 'sm', 'sortBy': [{'displayName': 'Fired at', 'desc': True}]},
+            'fieldConfig': {'defaults': {'custom': {'filterable': True}}, 'overrides': [
+                {'matcher': {'id': 'byName', 'options': name}, 'properties': [{'id': 'unit', 'value': 'dateTimeAsIso'}, {'id': 'custom.width', 'value': 185}]}
+                for name in ('Fired at', 'Last observed firing')
+            ] + [{'matcher': {'id': 'byName', 'options': name}, 'properties': [{'id': 'custom.width', 'value': width}]}
+                 for name, width in [('Alert', 220), ('Host', 80), ('Service', 180), ('Current status', 120)]]
+              + [{'matcher': {'id': 'byName', 'options': 'Current status'}, 'properties': [
+                {'id': 'mappings', 'value': [{'type': 'value', 'options': {
+                    'Firing': {'text': 'Firing', 'color': 'red'}, 'Resolved': {'text': 'Resolved', 'color': 'green'},
+                    'Unknown': {'text': 'Unknown', 'color': 'orange'}}}]},
+                {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}}
+            ]}]}}

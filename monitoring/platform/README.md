@@ -150,6 +150,30 @@ set for a service after 7–14 days of representative traffic. Use
 `baseline.py --host mini` to inspect observed latency and provisional thresholds;
 review these before adding thresholds to inventory and reinstalling.
 
+## Alert history
+
+Fleet overview includes an Alert history table with one row per observed firing
+episode: fired at, alert name, host, service, summary, current status and last
+observed firing. Host/service filters and the dashboard time range select episodes
+that overlap that period. Current status is checked against live rules, even
+when the selected period is in the past. Pending-only alerts and Watchdog are
+excluded. Missing/unhealthy/stale rules show Unknown; failed queries show an
+error instead of stale recovery information.
+
+History is reconstructed from retained `ALERTS` samples (up to 30 days, also
+subject to the existing 5 GB storage cap). It is not a notification delivery log.
+Times have the rule evaluation resolution, normally 15 seconds; monitoring gaps
+can split a continuous incident into separate observed episodes. Older summaries
+are rendered from current rule definitions, so editing a rule can change their
+wording. Last observed firing is not an exact recovery timestamp.
+
+Grafana's signed Infinity data source is pinned to 4.0.0. It reads a loopback-only
+JSON endpoint on port 19116, hosted by the existing metrics gateway process.
+Requests are limited to the local Prometheus API and cached for 30 seconds.
+There is no additional database, public listener, or new boot service. Deploying
+a monitor alone installs an empty metrics gateway with history enabled; later
+target installation adds the normal private metric routes.
+
 ## External watchdog
 
 Create `monitoring-mini` and `monitoring-sky` in Healthchecks.io, each with a
@@ -173,7 +197,8 @@ python3 monitoring/platform/verify.py --host mini --test-alert
 ```
 
 Deployment and `verify.py` both check that all four dashboards are provisioned,
-the monitoring data sources exist, and Grafana can query live Prometheus data.
+the monitoring data sources exist, and Grafana can query live Prometheus data
+and execute the alert-history table through its actual backend data source.
 Linux Docker path overrides explicitly point provisioning and persistent data at
 the monitoring directory. Upgrading the original container first stops it and
 backs up its database before migrating to persistent storage.

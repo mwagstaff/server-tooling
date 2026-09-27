@@ -6,6 +6,7 @@ import ipaddress
 import json
 import urllib.error
 import urllib.request
+from history import start_history
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -30,7 +31,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with self.server.opener.open(request, timeout=8) as response:
                 data = response.read(8 * 1024 * 1024 + 1)
                 if len(data) > 8 * 1024 * 1024:
-                    raise ValueError('Metrics response exceeds 8 MiB')
+                    self.send_error(502, 'Metrics response exceeds 8 MiB')
+                    return
                 content_type = response.headers.get('Content-Type', 'text/plain; version=0.0.4')
             self.send_response(200)
             self.send_header('Content-Type', content_type)
@@ -61,6 +63,8 @@ def main():
     server.allowed = set(config['allowed']) | {'127.0.0.1'}
     server.routes = config['routes']
     server.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    if config.get('history'):
+        start_history()
     server.serve_forever()
 
 
