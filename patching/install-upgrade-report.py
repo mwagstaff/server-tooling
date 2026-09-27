@@ -26,7 +26,7 @@ def main():
     units = [service['unit'] + '.service' for service in inventory['hosts'][args.host]['services']]
     remote = ssh(args.host, ['mktemp', '-d'], capture_output=True, text=True).stdout.strip()
     try:
-        for name in ['events.py', 'report.py']:
+        for name in ['events.py', 'report.py', 'email_format.py']:
             run(['scp', '-q', source / name, args.host + ':' + remote + '/' + name])
         code = '''import datetime,json,pathlib,pwd,shutil,subprocess,sys
 staged,home,email,units=sys.argv[1:]
@@ -43,7 +43,7 @@ def put(path,text,mode=0o644):
  if p.exists():
   saved=backup/str(p).lstrip('/'); saved.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,saved)
  temp=p.with_suffix(p.suffix+'.new'); temp.write_text(text); temp.chmod(mode); temp.replace(p)
-for name in ['events.py','report.py']:
+for name in ['events.py','report.py','email_format.py']:
  put(root/name,(pathlib.Path(staged)/name).read_text(),0o755)
 config_dir.mkdir(mode=0o700,exist_ok=True)
 put(config_dir/'weekly-upgrade.smtp-password',secret.read_text(),0o600)
