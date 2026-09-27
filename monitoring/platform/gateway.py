@@ -4,6 +4,7 @@ import argparse
 import http.server
 import ipaddress
 import json
+from pathlib import Path
 import urllib.error
 import urllib.request
 from history import start_history
@@ -18,6 +19,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.client_address[0] not in self.server.allowed:
             self.send_error(403)
+            return
+        if self.path == '/events':
+            # Root-written, non-secret maintenance events; same peer allowlist as metrics.
+            path = Path('/var/lib/server-tooling/events.prom')
+            data = path.read_bytes() if path.exists() else b''
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; version=0.0.4')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         route = self.server.routes.get(self.path)
         if not route:
