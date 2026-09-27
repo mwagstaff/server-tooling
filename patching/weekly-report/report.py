@@ -18,6 +18,7 @@ import subprocess
 import time
 
 from events import atomic, record
+from email_format import html_report
 
 ROOT = Path('/var/lib/server-tooling/weekly-upgrade')
 CONFIG = Path('/etc/server-tooling/weekly-upgrade.json')
@@ -49,7 +50,7 @@ def health():
     if code or failed:
         warnings.append('Failed system services detected' if failed else 'Could not check failed system services')
     sections.append('Failed system services:\n' + (failed or error or 'None'))
-    for unit in ['cloudflared', 'server-tooling-full-upgrade.timer', 'unattended-upgrades']:
+    for unit in ['caddy', 'cloudflared', 'server-tooling-full-upgrade.timer', 'unattended-upgrades']:
         code, output, error = command(['systemctl', 'is-active', unit])
         if code:
             warnings.append(unit + ' is not active')
@@ -79,6 +80,10 @@ def health():
         import apt
         import apt_pkg
         cache = apt.Cache()
+        if 'caddy' in cache and cache['caddy'].installed:
+            caddy = cache['caddy']
+            sections.append('Caddy package: installed ' + caddy.installed.version + '; candidate ' + caddy.candidate.version)
+            sections.append('Caddy update source: ' + ', '.join(sorted({origin.site for origin in caddy.candidate.origins if origin.site})))
         remaining, security = [], []
         for package in cache:
             if package.is_upgradable:
@@ -180,6 +185,8 @@ def queue_report(status, text, validation=False):
     message['Subject'] = f'[{status}] sky ' + ('upgrade report validation' if validation else 'weekly upgrade report')
     message['Date'], message['Message-ID'] = formatdate(localtime=True), make_msgid(domain=config['from'].split('@')[-1])
     message.set_content(text)
+    message.add_alternative(html_report(status, text), subtype='html')
+    message.add_attachment(text, subtype='plain', filename='sky-upgrade-details.txt')
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     outbox = ROOT / 'outbox'
     outbox.mkdir(mode=0o700, parents=True, exist_ok=True)

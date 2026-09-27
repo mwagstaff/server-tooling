@@ -39,6 +39,11 @@ this does not subscribe to Pro or change repositories.
 The snapshot hook cannot prevent updates if it fails. An unavailable assessment
 is reported as unknown/needs review, never a clean bill of health.
 
+Gmail displays an HTML summary with a status badge, findings, package-version
+table, security checks, and service statuses. Times are shown in Europe/London.
+Detailed logs are in the attached `sky-upgrade-details.txt`; a plain-text body
+remains available to other mail clients. Dynamic content is HTML-escaped.
+
 Reports are retained root-only for 90 days in
 `/var/lib/server-tooling/weekly-upgrade/`. Undelivered email stays in `outbox/`;
 `server-tooling-upgrade-report-retry.timer` retries every 15 minutes. SMTP
@@ -89,3 +94,34 @@ Tests:
 python3 -m unittest discover -s patching/weekly-report
 python3 -m unittest discover -s monitoring/platform
 ```
+
+## Automated Caddy security updates
+
+Sky uses Caddy's [official stable APT repository](https://caddyserver.com/docs/install#debian-ubuntu-raspbian).
+The former Ubuntu Universe package required Ubuntu Pro/ESM for an available
+backport. Using maintained upstream packages supplies Caddy updates without
+requiring Pro for this package; other Ubuntu packages keep their existing
+coverage and repository settings.
+
+```bash
+python3 patching/configure-caddy-updates.py sky --apply
+```
+
+Without `--apply`, this **still configures daily automatic updates**, downloads
+the candidate and validates it, but does not immediately install it. The signing
+key fingerprint is checked, the repository uses `signed-by`, and APT pinning
+allows only Caddy from this repository. Stable releases can include functional
+changes as well as security fixes. Existing daily unattended-upgrades timers
+install eligible releases; the weekly full upgrade can also install them.
+
+Before any APT transaction installs Caddy, the pre-install hook extracts the
+candidate and validates `/etc/caddy/Caddyfile` as the `caddy` user. A failed
+validation aborts that transaction, leaving the installed binary intact; check
+`/var/log/server-tooling-caddy-validation.log` and fix the configuration before
+retrying. This guards configuration compatibility, not every application-level
+regression. Package upgrades restart Caddy, so a short interruption is possible.
+Initial migration backups (configuration, executable and previous package) are
+under `/var/backups/server-tooling/caddy-*`.
+
+Existing unattended-upgrades mail settings are retained. The weekly report checks Caddy's service, installed/candidate versions and APT
+source. No Pro subscription is activated and no security warning is suppressed.

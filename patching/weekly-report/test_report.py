@@ -1,4 +1,6 @@
 import json
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 import tempfile
 import time
@@ -8,9 +10,31 @@ from unittest.mock import patch
 
 import events
 import report
+from email_format import html_report
 
 
 class ReportTests(unittest.TestCase):
+    def test_html_escapes_findings_and_keeps_logs_out_of_summary(self):
+        text = ('Weekly upgrade — sky — REVIEW\nCompleted: 2026-09-27T11:00:00+00:00\n'
+                '\nATTENTION\n- <script>untrusted</script>\n\nPACKAGES CHANGED\n'
+                'caddy: 2.6.2 -> 2.11.4\n\nCURRENT STATUS\n'
+                'caddy: active\n\nScope: OS checks\n\nUPGRADE LOG (last 60,000 characters)\nRAW_LOG_ONLY')
+        html = html_report('REVIEW', text)
+        self.assertIn('&lt;script&gt;', html)
+        self.assertNotIn('<script>', html)
+        self.assertNotIn('RAW_LOG_ONLY', html)
+        self.assertIn('12:00:00 BST', html)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'config.json'
+            config.write_text(json.dumps({'from': 'alerts@example.com', 'to': 'user@example.com'}))
+            with patch('report.ROOT', root), patch('report.CONFIG', config):
+                report.queue_report('REVIEW', text)
+            message = BytesParser(policy=policy.default).parsebytes(next((root / 'outbox').glob('*.eml')).read_bytes())
+        self.assertEqual(message.get_body(preferencelist=('html',)).get_content_type(), 'text/html')
+        self.assertIn('RAW_LOG_ONLY', message.get_body(preferencelist=('plain',)).get_content())
+        self.assertEqual(len(list(message.iter_attachments())), 1)
+
     def test_esm_security_gap_is_reported_even_with_no_apt_candidates(self):
         security = {'packages': [{'package': 'caddy', 'version': 'patched',
                                  'service_name': 'esm-apps', 'status': 'pending_attach'}], 'summary': {}}
