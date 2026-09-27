@@ -23,6 +23,7 @@ def make_rules(services, target):
         alert('MetricsAccessUnavailable', 'up{kind="host"} == 0', '3m', 'Cannot collect host metrics from {{ $labels.host }}', 'critical'),
         alert('RuntimeUnavailable', 'up{kind="runtime"} == 0', '3m', '{{ $labels.service }} runtime metrics unavailable', 'critical'),
         alert('AppMetricsUnavailable', 'up{kind="app"} == 0', '5m', '{{ $labels.service }} application metrics unavailable'),
+        alert('SharedPublicOutage', 'count by(host) (probe_success{kind="public"} == 0) >= 2', '45s', 'Multiple public services unavailable on {{ $labels.host }}', 'critical'),
         alert('PublicEndpointUnavailable', 'probe_success{kind="public"} == 0', '2m', '{{ $labels.service }} public endpoint failed', 'critical'),
         alert('PublicProbeUnavailable', 'up{kind="public"} == 0', '3m', 'Cannot run public check for {{ $labels.service }}'),
         alert('HostCpuPressure', '1 - avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.90', '15m', 'Sustained CPU pressure on {{ $labels.host }}'),
@@ -72,6 +73,7 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         jobs.append({'job_name': job, 'metrics_path': path, 'scrape_timeout': '10s',
                      'static_configs': [{'targets': [address], 'labels': {'host': target, 'service': service, 'kind': kind}}]})
     scrape('host', 'host', 'host', endpoint, '/node')
+    scrape('events', 'events', 'host', endpoint, '/events')
     for service in services:
         name = service['name']
         scrape('runtime-' + name, 'runtime', name, endpoint, '/runtime/' + name)
@@ -100,12 +102,14 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         'url': f'http://{dashboard_host}:13000/d/monitoring-fleet', 'url_title': 'Monitoring dashboards',
     }]}]
     routes = [{'matchers': ['alertname="MonitoringWatchdog"'], 'receiver': 'watchdog' if watchdog else 'silent', 'group_wait': '0s', 'group_interval': '1m', 'repeat_interval': '1m'}]
+    routes.append({'matchers': ['alertname="SharedPublicOutage"'], 'receiver': 'pushover', 'group_by': ['host', 'alertname'], 'group_wait': '0s', 'group_interval': '1m'})
     if watchdog:
         receivers.append({'name': 'watchdog', 'webhook_configs': [{'url_file': str(root / 'secrets' / ('HEALTHCHECKS_PING_URL_' + monitor.upper())), 'send_resolved': False}]})
     write_json(root / 'alertmanager.json', {'global': {'resolve_timeout': '5m'},
         'route': {'receiver': 'pushover', 'group_by': ['host', 'service', 'alertname'], 'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h', 'routes': routes},
         'receivers': receivers,
         'inhibit_rules': [
+            {'source_matchers': ['alertname="SharedPublicOutage"'], 'target_matchers': ['alertname="PublicEndpointUnavailable"'], 'equal': ['host']},
             {'source_matchers': ['alertname="MetricsAccessUnavailable"'], 'target_matchers': ['alertname=~"RuntimeUnavailable|AppMetricsUnavailable"'], 'equal': ['host']},
             {'source_matchers': ['alertname="HeapCritical"'], 'target_matchers': ['alertname="HeapPressure"'], 'equal': ['host', 'service']},
             {'source_matchers': ['alertname="DiskSpaceCritical"'], 'target_matchers': ['alertname="DiskSpaceLow"'], 'equal': ['host', 'device', 'mountpoint']}
@@ -148,11 +152,15 @@ def dashboards(root, target_os=None):
             item.update(id=index + 1, gridPos={'x': (index % 2) * 12, 'y': (index // 2) * 8, 'w': 12, 'h': 8})
         if slug == 'fleet':
             for item in panels:
-                item['gridPos']['y'] += 10
+                item['gridPos']['y'] += 17
             panels.insert(0, history_panel())
+            panels.insert(1, events_panel())
         write_json(root / f'grafana/dashboards/{slug}.json', {
             'uid': 'monitoring-' + slug, 'title': title, 'schemaVersion': 39, 'version': 1, 'refresh': '30s',
             'time': {'from': 'now-6h', 'to': 'now'}, 'tags': ['monitoring'], 'panels': panels,
+            'annotations': {'list': [{'name': 'Host events', 'enable': True, 'hide': False, 'iconColor': '#5794F2',
+                                      'datasource': {'type': 'yesoreyeram-infinity-datasource', 'uid': 'monitoring-history'},
+                                      'target': events_query(annotations=True)}]},
             'links': [{'title': 'Monitoring dashboards', 'type': 'dashboards', 'tags': ['monitoring']}],
             'templating': {'list': [
                 {'name': 'host', 'type': 'query', 'datasource': {'type': 'prometheus', 'uid': 'monitoring-prometheus'}, 'query': 'label_values(up, host)', 'refresh': 1, 'includeAll': True, 'allValue': '.*', 'current': {'text': 'All', 'value': '$__all'}},
@@ -199,28 +207,52 @@ def dashboards(root, target_os=None):
 
 
 def history_panel():
-    fields = [('fired_at', 'Fired at', 'number'), ('alert', 'Alert', 'string'),
+    fields = [('started_at', 'Started at', 'number'), ('fired_at', 'Fired at', 'number'), ('alert', 'Alert', 'string'),
               ('host', 'Host', 'string'), ('service', 'Service', 'string'),
               ('summary', 'Summary', 'string'), ('status', 'Current status', 'string'),
-              ('last_firing', 'Last observed firing', 'number')]
+              ('last_seen', 'Last observed failure', 'number')]
     return {'id': 8, 'title': 'Alert history', 'type': 'table',
             'gridPos': {'x': 0, 'y': 0, 'w': 24, 'h': 10},
-            'description': 'Separate observed firing episodes overlapping the selected period (up to 30 days, subject to retention). Status is checked now, even for a past time range. Times are reconstructed from 15-second samples; monitoring gaps may split episodes. Summaries use the current rule definitions. Watchdog and pending-only alerts are excluded.',
+            'description': 'Observed alert episodes, including brief failures that recovered before the notification threshold. Pending and firing samples are joined into one episode. A blank Fired at means the alert never fired; firing does not guarantee notification delivery. Current status is checked now. Up to 30 days subject to retention, 15-second precision; gaps may split episodes. Summaries use current rules. Watchdog excluded.',
             'datasource': {'type': 'yesoreyeram-infinity-datasource', 'uid': 'monitoring-history'},
             'targets': [{'refId': 'A', 'type': 'json', 'source': 'url', 'parser': 'backend', 'format': 'table',
                          'url': 'http://127.0.0.1:19116/history?from=${__from}&to=${__to}&host=${host:percentencode}&service=${service:percentencode}',
                          'url_options': {'method': 'GET'}, 'root_selector': '',
                          'columns': [{'selector': key, 'text': title, 'type': kind} for key, title, kind in fields]}],
             'transformations': [{'id': 'organize', 'options': {'indexByName': {title: index for index, (_, title, _) in enumerate(fields)}}}],
-            'options': {'showHeader': True, 'cellHeight': 'sm', 'sortBy': [{'displayName': 'Fired at', 'desc': True}]},
+            'options': {'showHeader': True, 'cellHeight': 'sm', 'sortBy': [{'displayName': 'Started at', 'desc': True}]},
             'fieldConfig': {'defaults': {'custom': {'filterable': True}}, 'overrides': [
                 {'matcher': {'id': 'byName', 'options': name}, 'properties': [{'id': 'unit', 'value': 'dateTimeAsIso'}, {'id': 'custom.width', 'value': 185}]}
-                for name in ('Fired at', 'Last observed firing')
+                for name in ('Started at', 'Fired at', 'Last observed failure')
             ] + [{'matcher': {'id': 'byName', 'options': name}, 'properties': [{'id': 'custom.width', 'value': width}]}
                  for name, width in [('Alert', 220), ('Host', 80), ('Service', 180), ('Current status', 120)]]
               + [{'matcher': {'id': 'byName', 'options': 'Current status'}, 'properties': [
                 {'id': 'mappings', 'value': [{'type': 'value', 'options': {
                     'Firing': {'text': 'Firing', 'color': 'red'}, 'Resolved': {'text': 'Resolved', 'color': 'green'},
-                    'Unknown': {'text': 'Unknown', 'color': 'orange'}}}]},
+                    'Recovered (brief)': {'text': 'Recovered (brief)', 'color': 'green'},
+                    'Pending': {'text': 'Pending', 'color': 'orange'}, 'Unknown': {'text': 'Unknown', 'color': 'orange'}}}]},
                 {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}}
             ]}]}}
+
+
+def events_query(annotations=False):
+    columns = [('time', 'time' if annotations else 'Time', 'timestamp'),
+               ('text', 'text' if annotations else 'Event', 'string'),
+               ('tags', 'tags' if annotations else 'Host / type', 'string')]
+    return {'refId': 'A', 'type': 'json', 'source': 'url', 'parser': 'backend',
+            'format': 'dataframe' if annotations else 'table',
+            'url': 'http://127.0.0.1:19116/events?from=${__from}&to=${__to}&host=${host:percentencode}',
+            'url_options': {'method': 'GET'}, 'root_selector': '',
+            'columns': [{'selector': key, 'text': title, 'type': kind} for key, title, kind in columns]}
+
+
+def events_panel():
+    return {'id': 9, 'title': 'Host events', 'type': 'table',
+            'gridPos': {'x': 0, 'y': 10, 'w': 24, 'h': 7},
+            'description': 'Weekly upgrades and tunnel lifecycle events recorded on the host; reboots derived from boot timestamps. Also shown as graph annotations. Historical events appear only where retained evidence is available.',
+            'datasource': {'type': 'yesoreyeram-infinity-datasource', 'uid': 'monitoring-history'},
+            'targets': [events_query()],
+            'transformations': [{'id': 'organize', 'options': {'indexByName': {'Time': 0, 'Event': 1, 'Host / type': 2}}}],
+            'options': {'showHeader': True, 'sortBy': [{'displayName': 'Time', 'desc': True}]},
+            'fieldConfig': {'defaults': {}, 'overrides': [{'matcher': {'id': 'byName', 'options': 'Time'},
+                'properties': [{'id': 'unit', 'value': 'dateTimeAsIso'}, {'id': 'custom.width', 'value': 185}]}]}}

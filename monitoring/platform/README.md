@@ -129,14 +129,16 @@ app-specific rules; they do not automatically enable dependency alerting.
 
 ## Alerts
 
-- Critical: public endpoint down for 2 minutes, runtime/host metrics unavailable
+- Critical: shared public outage for 45 seconds (at least two services),
+  individual public endpoint down for 2 minutes, runtime/host metrics unavailable
   for 3 minutes, repeated restarts, >5% HTTP errors with >=100 requests in the
   five-minute window, heap above 95%, disk below 5%, observed Linux OOM kill.
 - Warning: sustained CPU/memory/I/O pressure, heap above 85%, low or rapidly
   filling disk, native metrics unavailable, certificates expiring.
 - Monitoring: missing runtime targets, component/rule/notification failures.
 - Critical Pushover priority is 1; warnings/recovery use 0. Emergency repeats are
-  deliberately disabled. Related notifications group for 30 seconds, with
+  deliberately disabled. Related notifications group for 30 seconds (shared
+  outages notify immediately after firing), with
   unresolved reminders every 4 hours.
 
 Heap/disk critical alerts inhibit their warning counterparts. A metrics gateway
@@ -150,29 +152,38 @@ set for a service after 7–14 days of representative traffic. Use
 `baseline.py --host mini` to inspect observed latency and provisional thresholds;
 review these before adding thresholds to inventory and reinstalling.
 
-## Alert history
+## Alert history and host events
 
-Fleet overview includes an Alert history table with one row per observed firing
-episode: fired at, alert name, host, service, summary, current status and last
-observed firing. Host/service filters and the dashboard time range select episodes
-that overlap that period. Current status is checked against live rules, even
-when the selected period is in the past. Pending-only alerts and Watchdog are
-excluded. Missing/unhealthy/stale rules show Unknown; failed queries show an
-error instead of stale recovery information.
+Fleet overview includes one row per observed alert episode, including failures
+that recover while still **Pending**. It shows Started at, Fired at (blank when
+never fired), summary, current status and last observed failure. Pending and
+firing samples are joined so a continuing failure is not counted twice.
+**Recovered (brief)** means the notification threshold was never reached;
+**Resolved** means a previously firing alert has cleared. A firing timestamp
+does not guarantee delivery: routing, inhibition and delivery failures also
+apply. Status is checked now even when viewing an earlier period.
 
-History is reconstructed from retained `ALERTS` samples (up to 30 days, also
-subject to the existing 5 GB storage cap). It is not a notification delivery log.
-Times have the rule evaluation resolution, normally 15 seconds; monitoring gaps
-can split a continuous incident into separate observed episodes. Older summaries
-are rendered from current rule definitions, so editing a rule can change their
-wording. Last observed firing is not an exact recovery timestamp.
+History uses retained Prometheus samples, up to 30 days subject to the 5 GB cap.
+Times have roughly 15-second precision; collection gaps can split episodes.
+Summaries use current rule templates. Watchdog alerts are excluded. The existing
+metrics gateway serves history on loopback port 19116; Grafana's pinned Infinity
+plugin reads it through a provisioned data source. There is no extra public port
+or event database. Errors are shown instead of stale recovery status when
+Prometheus is unavailable.
 
-Grafana's signed Infinity data source is pinned to 4.0.0. It reads a loopback-only
-JSON endpoint on port 19116, hosted by the existing metrics gateway process.
-Requests are limited to the local Prometheus API and cached for 30 seconds.
-There is no additional database, public listener, or new boot service. Deploying
-a monitor alone installs an empty metrics gateway with history enabled; later
-target installation adds the normal private metric routes.
+A separate **Host events** table and graph annotations show weekly upgrades,
+tunnel lifecycle events and host reboots. Reboots derive from retained boot
+metrics. Install the [weekly report/event hooks](../../patching/weekly-report/README.md)
+on Sky for maintenance events and email reports. Host filters apply to events;
+service filters intentionally do not hide host-wide maintenance. Annotation
+queries follow the [Infinity annotation format](https://grafana.com/docs/plugins/yesoreyeram-infinity-datasource/latest/annotations/).
+
+**SharedPublicOutage** fires when at least two public services on the same host
+fail continuously for 45 seconds. Its Alertmanager route has no extra group wait;
+allow up to two 15-second scrape/evaluation intervals before notification.
+It inhibits individual PublicEndpointUnavailable notifications for that host
+while active; those individual rules retain their two-minute threshold. Hosts
+with only one public endpoint retain individual endpoint alerting.
 
 ## External watchdog
 

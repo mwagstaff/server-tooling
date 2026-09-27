@@ -27,17 +27,24 @@ def check_grafana(url, password):
     if data.get('status') != 'success' or not data['data']['result']:
         raise RuntimeError('Grafana cannot read monitoring metrics')
     fleet = read('/api/dashboards/uid/monitoring-fleet')['dashboard']
-    history = next((panel for panel in fleet['panels'] if panel['title'] == 'Alert history'), None)
-    if not history:
-        raise RuntimeError('Grafana alert history table missing')
+    queries = []
+    for title in ('Alert history', 'Host events'):
+        panel = next((panel for panel in fleet['panels'] if panel['title'] == title), None)
+        if not panel:
+            raise RuntimeError('Grafana table missing: ' + title)
+        queries.append(dict(panel['targets'][0], datasource=panel['datasource']))
+    annotation = next((a for a in fleet.get('annotations', {}).get('list', []) if a['name'] == 'Host events'), None)
+    if not annotation or not annotation.get('enable'):
+        raise RuntimeError('Grafana host event annotations missing')
+    queries.append(dict(annotation['target'], datasource=annotation['datasource']))
     end = int(time.time() * 1000)
     start = end - 86400000
-    query = dict(history['targets'][0], datasource=history['datasource'])
-    query['url'] = query['url'].replace('${__from}', str(start)).replace('${__to}', str(end)).replace('${host:percentencode}', '.*').replace('${service:percentencode}', '.*')
-    request = urllib.request.Request(url + '/api/ds/query', json.dumps({'from': str(start), 'to': str(end), 'queries': [query]}).encode(),
-                                     dict(headers, **{'Content-Type': 'application/json'}))
-    with urllib.request.urlopen(request, timeout=60) as response:
-        result = json.load(response)['results']['A']
-    if result.get('error') or result.get('status', 200) != 200:
-        raise RuntimeError('Grafana alert history query failed')
-    return 'Grafana: 4 dashboards; live metrics and alert history table verified'
+    for query in queries:
+        query['url'] = query['url'].replace('${__from}', str(start)).replace('${__to}', str(end)).replace('${host:percentencode}', '.*').replace('${service:percentencode}', '.*')
+        request = urllib.request.Request(url + '/api/ds/query', json.dumps({'from': str(start), 'to': str(end), 'queries': [query]}).encode(),
+                                         dict(headers, **{'Content-Type': 'application/json'}))
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.load(response)['results']['A']
+        if result.get('error') or result.get('status', 200) != 200:
+            raise RuntimeError('Grafana history/event query failed')
+    return 'Grafana: 4 dashboards; live metrics, alert history, host events and annotation queries verified'

@@ -2,7 +2,7 @@
   "rule_files": [
     "rules.json"
   ],
-  "evaluation_interval": "1m",
+  "evaluation_interval": "15s",
   "fuzzy_compare": true,
   "tests": [
     {
@@ -123,6 +123,79 @@
               "value": 0.55
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "shared outage pages before two minutes then recovers",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "probe_success{host=\"sky\",service=\"a\",kind=\"public\"}",
+          "values": "0 0 0 0 0 0 1 1"
+        },
+        {
+          "series": "probe_success{host=\"sky\",service=\"b\",kind=\"public\"}",
+          "values": "0 0 0 0 0 0 1 1"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "30s",
+          "alertname": "SharedPublicOutage",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "45s",
+          "alertname": "SharedPublicOutage",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "host": "sky",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Multiple public services unavailable on sky",
+                "description": "sky / : 2",
+                "runbook_url": "https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts"
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "75s",
+          "alertname": "PublicEndpointUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "90s",
+          "alertname": "SharedPublicOutage",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "single failures and failures on different hosts do not create shared outage",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "probe_success{host=\"sky\",service=\"a\",kind=\"public\"}",
+          "values": "0+0x8"
+        },
+        {
+          "series": "probe_success{host=\"sky\",service=\"b\",kind=\"public\"}",
+          "values": "1+0x8"
+        },
+        {
+          "series": "probe_success{host=\"mini\",service=\"c\",kind=\"public\"}",
+          "values": "0+0x8"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "90s",
+          "alertname": "SharedPublicOutage",
+          "exp_alerts": []
         }
       ]
     }
