@@ -174,7 +174,7 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   }
 
   handle_path /bromley-bins* {
-    reverse_proxy http://127.0.0.1:3013 {
+    reverse_proxy http://127.0.0.1:3040 {
       header_up Host 127.0.0.1
       header_up X-Forwarded-Host {host}
       header_up X-Forwarded-Proto https

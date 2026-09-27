@@ -8,6 +8,15 @@ Quick usage
 ./install-funnel.sh <remote-host>
 ```
 
+On the Mac Mini, use `../deploy/install_mini_boot_services.zsh` instead. It installs the Funnel apply job as a reviewed system LaunchDaemon so routes are restored after boot without waiting for an interactive login. On macOS the job first kickstarts the versioned Tailscale system extension, starts the saved `Tailscale` NetworkExtension VPN service with `scutil`, waits for it to connect, and only then reapplies the Funnel routes. This ordering is required after a FileVault unlock at the login screen, where the Tailscale GUI has not launched. The generic installer above remains user-scoped on macOS.
+
+The Mini job retries every five minutes. Its logs are:
+
+```bash
+tail -n 100 ~/Library/Logs/tailscale-funnel-apply.log
+tail -n 100 ~/Library/Logs/tailscale-funnel-apply.error.log
+```
+
 Ubuntu (Oracle Cloud) note — one-time step
 
 On Ubuntu, the `tailscale` CLI requires operator privileges to apply "serve"/"funnel" configs without `sudo`.

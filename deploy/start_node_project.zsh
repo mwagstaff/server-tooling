@@ -60,6 +60,10 @@ get_project_service_labels() {
   ' "$CONFIG_FILE"
 }
 
+get_project_service_scope() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .service_scope // "user"' "$CONFIG_FILE"
+}
+
 if [[ $# -eq 0 ]]; then
   echo "==> Interactive start mode"
   echo ""
@@ -107,6 +111,7 @@ if ! project_exists "$PROJECT_NAME"; then
 fi
 
 SERVICE_LABELS=("${(@f)$(get_project_service_labels "$PROJECT_NAME")}")
+SERVICE_SCOPE="$(get_project_service_scope "$PROJECT_NAME")"
 if [[ ${#SERVICE_LABELS[@]} -eq 0 ]]; then
   SERVICE_LABELS=("com.${PROJECT_NAME}.api")
 fi
@@ -124,8 +129,23 @@ SERVICE_LABELS_SSH="${(j: :)SERVICE_LABELS}"
 ssh -o ConnectTimeout=10 "$HOST" "
 set -eu
 SERVICE_LABELS=(${SERVICE_LABELS_SSH})
+SERVICE_SCOPE='$SERVICE_SCOPE'
 
 if command -v launchctl >/dev/null 2>&1; then
+  if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+    for SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+      PLIST=\"/Library/LaunchDaemons/\${SERVICE_LABEL}.plist\"
+      if [[ ! -f \"\$PLIST\" ]]; then echo \"Error: launchd plist not found: \$PLIST\" >&2; exit 1; fi
+      sudo -n launchctl bootstrap system \"\$PLIST\" 2>/dev/null || true
+      sudo -n launchctl enable \"system/\$SERVICE_LABEL\" || true
+      sudo -n launchctl kickstart -k \"system/\$SERVICE_LABEL\" || {
+        echo 'Error: starting the system LaunchDaemon requires administrator authorization.' >&2; exit 1;
+      }
+      launchctl print \"system/\$SERVICE_LABEL\" >/dev/null
+      echo \"Started \$SERVICE_LABEL\"
+    done
+    exit 0
+  fi
   UID_NUM=\"\$(id -u)\"
   DOMAIN=''
   if launchctl print \"gui/\$UID_NUM\" >/dev/null 2>&1; then
@@ -149,8 +169,17 @@ if command -v launchctl >/dev/null 2>&1; then
 
     launchctl bootout \"gui/\$UID_NUM/\$SERVICE_LABEL\" 2>/dev/null || true
     launchctl bootout \"user/\$UID_NUM/\$SERVICE_LABEL\" 2>/dev/null || true
+    sleep 1
 
-    launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"
+    if ! launchctl bootstrap \"\$DOMAIN\" \"\$PLIST\"; then
+      echo \"Retrying \$SERVICE_LABEL with launchctl's user-agent compatibility path\"
+      loaded=0
+      for attempt in 1 2 3; do
+        if launchctl load -w \"\$PLIST\"; then loaded=1; break; fi
+        sleep 1
+      done
+      if [[ \"\$loaded\" -ne 1 ]]; then exit 1; fi
+    fi
     launchctl enable \"\$DOMAIN/\$SERVICE_LABEL\" || true
     launchctl kickstart -k \"\$DOMAIN/\$SERVICE_LABEL\"
 

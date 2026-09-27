@@ -154,6 +154,11 @@
     {
         "name": "train-track-api",
         "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
+        "node_binary": "/home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node",
+        "rsync_excludes": [
+            "/resources/timetable_full/",
+            "/var/planner/"
+        ],
         "start_command": "npm start",
         "startup_port": 3012,
         "metrics_port": 3012,
@@ -164,7 +169,72 @@
             "prepare_command": "node /Users/mwagstaff/dev/train-track-uk/tools/railway-backgrounds/publish.mjs"
         },
         "static_env": {
-            "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds"
+            "RAILWAY_BACKGROUNDS_ROOT": "/home/mwagstaff/.local/share/train-track-api/railway-backgrounds",
+            "PLANNER_HOST_ID": "sky",
+            "PLANNER_DEFAULT_TARGET": "mini",
+            "PLANNER_TARGETS_FILE": "/home/mwagstaff/.local/share/train-track-api/planner-targets.json",
+            "PLANNER_LEGACY_TARGET": "mini",
+            "PLANNER_EMBEDDED_ENABLED": "false",
+            "PLANNER_ENABLED": "false",
+            "PLANNER_INGESTION_ENABLED": "false",
+            "DISRUPTION_MONITOR_MODE": "off"
+        }
+    },
+    {
+        "name": "train-track-journey-planner",
+        "aliases": [
+            "journey-planner",
+            "train-track-planner"
+        ],
+        "path": "/Users/mwagstaff/dev/train-track-uk/api/train-track-api",
+        "remote_dir": "/Users/mwagstaff/dev/train-track-planner",
+        "node_binary": "/Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node",
+        "rsync_excludes": [
+            "/resources/timetable_full/",
+            "/var/planner/"
+        ],
+        "sync_env_local": false,
+        "bw_remote_env_file_name": ".bw-secrets.planner.env.sh",
+        "required_bitwarden_env": [
+            "MONGODB_URI_JOURNEY_PLANNER",
+            "PLANNER_SERVICE_TOKEN",
+            "TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_ACCESS_KEY",
+            "TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_SECRET_ACCESS_KEY",
+            "LIVE_DEPARTURE_BOARD_API_KEY",
+            "LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY",
+            "SERVICE_DETAILS_API_KEY"
+        ],
+        "entry_file": "planner-server.js",
+        "startup_port": 3014,
+        "metrics_port": false,
+        "healthcheck_path": "/healthcheck",
+        "service_scope": "system",
+        "launchd_admin_helper": "/usr/local/sbin/train-track-boot-service-admin",
+        "service_label": "com.train-track-planner.api",
+        "service_description": "TrainTrack Journey Planner",
+        "services": [
+            {
+                "name": "api",
+                "service_label": "com.train-track-planner.api",
+                "service_description": "TrainTrack Journey Planner",
+                "entry_file": "planner-server.js",
+                "startup_port": 3014,
+                "log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.log",
+                "error_log_file": "/Users/mwagstaff/Library/Logs/train-track-planner/service.error.log"
+            }
+        ],
+        "static_env": {
+            "NODE_ENV": "production",
+            "PORT": "3014",
+            "PLANNER_LISTEN_HOST": "127.0.0.1",
+            "PLANNER_HOST_ID": "mikes-mac-mini",
+            "PLANNER_RAPTOR_ONLY": "true",
+            "PLANNER_PERSISTENCE_MODE": "mongo",
+            "PLANNER_INGESTION_ENABLED": "true",
+            "PLANNER_TUBETRACK_ENABLED": "true",
+            "PLANNER_WORKERS": "auto",
+            "PLANNER_DATA_DIR": "/Users/mwagstaff/.local/share/train-track-planner/planner",
+            "PROMETHEUS_SERVICE_NAME": "train-track-planner"
         }
     },
     {
@@ -176,8 +246,14 @@
         "healthcheck_path": "/healthcheck",
         "static_env": {
             "PORT": "3018",
-            "NODE_OPTIONS": "--max-old-space-size=192"
-        }
+            "NODE_OPTIONS": "--max-old-space-size=192",
+            "APNS_AUTH_KEY_PATH": "/home/mwagstaff/dev/tube-track-api/certs/APNS_AuthKey_SkyNoLimit_SandboxAndProd.p8"
+        },
+        "required_bitwarden_env": [
+            "APNS_KEY_ID",
+            "APNS_TEAM_ID",
+            "TUBETRACK_UK_TFL_UNIFIED_API_KEY"
+        ]
     },
     {
         "name": "train-loading-service",
@@ -201,9 +277,22 @@
     },
     {
         "name": "bromley-bins",
-        "path": "/home/mwagstaff/dev/server-tooling/bromley-bins",
+        "aliases": [
+            "bromley-bins-api"
+        ],
+        "path": "/Users/mwagstaff/dev/bromley-bins/api",
+        "remote_dir": "~/dev/bromley-bins-api",
+        "sync_env_local": false,
         "start_command": "npm start",
-        "metrics_port": 3010
+        "startup_port": 3040,
+        "metrics_port": 3040,
+        "healthcheck_path": "/healthcheck",
+        "service_label": "com.bromley-bins.api",
+        "service_description": "Bromley Bins API Service",
+        "static_env": {
+            "PORT": "3040",
+            "TZ": "Europe/London"
+        }
     },
     {
         "name": "kidsplorers-api",

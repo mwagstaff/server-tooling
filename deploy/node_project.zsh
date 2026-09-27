@@ -11,6 +11,41 @@ set -euo pipefail
 # - Supports asset-only deploys without syncing or restarting the application
 # - Can reuse an explicitly pre-published asset bundle during asset-only deploys
 # - Applies Bitwarden-managed credentials only when requested with bw/--bw
+# - A Bitwarden flag skips asset bundle preparation by default (override with --optimize-images)
+# - Defaults to a quick deploy that tails stderr afterwards (equivalent to -q -e);
+#   override with --full / --no-tail
+# - Deploys to the project's default host when no host is given (see PROJECT_DEFAULT_HOSTS)
+
+# ---- Default deploy hosts (edit freely) ----
+# Host used when no target host is given on the command line, keyed by the
+# project name from config/node_projects.json. Projects not listed here fall
+# back to DEFAULT_DEPLOY_HOST.
+DEFAULT_DEPLOY_HOST="sky"
+typeset -A PROJECT_DEFAULT_HOSTS=(
+  healthcheck            sky
+  bikespot-london        sky
+  top-scores             sky
+  top-scores-web         sky
+  goal-guesser           sky
+  sky-no-limit-web       sky
+  train-track-api        sky
+  train-track-planner    mini
+  train-track-journey-planner mini
+  tube-track-api         sky
+  train-loading-service  sky
+  bromley-bins           sky
+  kidsplorers-api        sky
+  kidsplorers-web        sky
+)
+
+get_project_default_host() {
+  echo "${PROJECT_DEFAULT_HOSTS[$1]:-$DEFAULT_DEPLOY_HOST}"
+}
+
+# Prometheus, Grafana and Alertmanager run on this host only. Apps deployed
+# elsewhere are scraped from it over their public route rather than getting
+# their own stack; see monitoring/README.md.
+MONITORING_HOST="${MONITORING_HOST:-sky}"
 
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
@@ -27,10 +62,10 @@ BW_SYNC_TTL_SECONDS="${BW_SYNC_TTL_SECONDS:-900}"
 BW_SYNC_CACHE_FILE="${BW_SYNC_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/server-tooling/bitwarden-last-sync}"
 BW_FORCE_SYNC="${BW_FORCE_SYNC:-0}"
 BW_SKIP_SYNC="${BW_SKIP_SYNC:-0}"
-QUICK_MODE=0
+QUICK_MODE=""       # resolved after switch parsing; defaults to quick unless overridden
 OPTIMIZE_IMAGES=0
-TAIL_MODE=0
-TAIL_ERRORS_ONLY=0
+TAIL_MODE=""        # resolved after switch parsing; defaults to tailing stderr only
+TAIL_ERRORS_ONLY=""
 DISABLE_MODE=0
 ASSETS_ONLY_MODE=0
 SKIP_ASSET_PREPARE=0
@@ -67,7 +102,8 @@ get_project_path() {
 # Function to get project metrics port by name
 get_project_metrics_port() {
   local project_name="$1"
-  jq -r --arg name "$project_name" '.[] | select(.name == $name) | .metrics_port // 3010' "$CONFIG_FILE"
+  jq -r --arg name "$project_name" '.[] | select(.name == $name) |
+    if .metrics_port == false then empty else .metrics_port // 3010 end' "$CONFIG_FILE"
 }
 
 # Function to get project startup port by name (falls back to metrics port)
@@ -84,6 +120,22 @@ get_project_healthcheck_path() {
 get_project_build_command() {
   local project_name="$1"
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
+}
+
+get_project_node_binary() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .node_binary // empty' "$CONFIG_FILE"
+}
+
+get_project_service_scope() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .service_scope // "user"' "$CONFIG_FILE"
+}
+
+get_project_launchd_admin_helper() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .launchd_admin_helper // empty' "$CONFIG_FILE"
+}
+
+get_project_rsync_excludes() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | (.rsync_excludes // [])[]' "$CONFIG_FILE"
 }
 
 get_project_asset_bundle() {
@@ -469,6 +521,7 @@ ensure_remote_port_available() {
   local host="$1"
   local port="$2"
   local service_label="${3:-}"
+  local restart_mode="${4:-full}"
 
   if [[ -z "$port" || "$port" == "null" ]]; then
     echo "==> Startup port not configured; skipping port cleanup."
@@ -480,6 +533,7 @@ ensure_remote_port_available() {
     set -eu
     TARGET_PORT='$port'
     SERVICE_LABEL='$service_label'
+    RESTART_MODE='$restart_mode'
     SERVICE_UNIT=''
     if [[ -n \"\$SERVICE_LABEL\" ]]; then
       SERVICE_UNIT=\"\$SERVICE_LABEL.service\"
@@ -568,6 +622,33 @@ ensure_remote_port_available() {
       systemctl --user status \"\$SERVICE_UNIT\" --no-pager >&2 || true
       return 1
     }
+
+    if [[ -n \"\$SERVICE_LABEL\" ]] && command -v launchctl >/dev/null 2>&1; then
+      UID_NUM=\"\$(id -u)\"
+      LAUNCHD_DOMAIN=''
+      for candidate in \"gui/\$UID_NUM\" \"user/\$UID_NUM\" system; do
+        if launchctl print \"\$candidate/\$SERVICE_LABEL\" >/dev/null 2>&1; then
+          LAUNCHD_DOMAIN=\"\$candidate\"
+          break
+        fi
+      done
+      if [[ -n \"\$LAUNCHD_DOMAIN\" ]]; then
+        if [[ \"\$RESTART_MODE\" == quick ]]; then
+          echo \"Launchd manages \$SERVICE_LABEL; kickstart will replace its listener.\"
+          exit 0
+        fi
+        echo \"Stopping launchd service \$SERVICE_LABEL before freeing port \$TARGET_PORT...\"
+        if [[ \"\$LAUNCHD_DOMAIN\" == system ]]; then
+          sudo -n launchctl bootout \"system/\$SERVICE_LABEL\" || exit 1
+        else
+          launchctl bootout \"\$LAUNCHD_DOMAIN/\$SERVICE_LABEL\" || exit 1
+        fi
+        if wait_for_listener_exit 15; then
+          echo \"Port \$TARGET_PORT was released after stopping the service.\"
+          exit 0
+        fi
+      fi
+    fi
 
     PIDS=\"\$(get_listening_pids)\"
     if [[ -z \"\$PIDS\" ]]; then
@@ -705,6 +786,14 @@ candidate_is_configured_ssh_host() {
   return 1
 }
 
+positional_args_include_ssh_host() {
+  local arg
+  for arg in "$@"; do
+    candidate_is_configured_ssh_host "$arg" && return 0
+  done
+  return 1
+}
+
 project_query_has_wildcard() {
   local query="$1"
 
@@ -791,6 +880,7 @@ tail_with_redeploy_controls() {
   redeploy_cmd+=("${tail_flags[@]}")
 
   local -a full_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
+  full_redeploy_cmd+=("--full")
   full_redeploy_cmd+=("${tail_flags[@]}")
 
   local -a bitwarden_sync_redeploy_cmd=("zsh" "$SCRIPT_PATH" "$PROJECT_NAME" "$HOST")
@@ -802,8 +892,22 @@ tail_with_redeploy_controls() {
   echo ""
 
   TAIL_SHOW_CONTROLS=0 zsh "$tail_script" "${tail_args[@]}" < /dev/null &
-  local tail_pid=$!
+  # Not local: the EXIT trap can run after this function's scope is gone.
+  TAIL_CHILD_PID=$!
+  local tail_pid=$TAIL_CHILD_PID
   local key=""
+
+  # Background jobs ignore SIGINT, so Ctrl+C would otherwise orphan the tail
+  # (and its ssh), which keeps writing remote log lines to the terminal.
+  cleanup_tail() {
+    [[ -n "${TAIL_CHILD_PID:-}" ]] || return 0
+    kill "$TAIL_CHILD_PID" 2>/dev/null || true
+    wait "$TAIL_CHILD_PID" 2>/dev/null || true
+    TAIL_CHILD_PID=""
+  }
+  trap 'cleanup_tail; exit 130' INT
+  trap 'cleanup_tail; exit 143' TERM
+  trap cleanup_tail EXIT
 
   while kill -0 "$tail_pid" 2>/dev/null; do
     if read -r -k 1 -s -t 0.2 key; then
@@ -834,9 +938,11 @@ tail_with_redeploy_controls() {
   done
 
   if wait "$tail_pid"; then
+    trap - INT TERM EXIT
     return 0
   else
     local tail_status="$?"
+    trap - INT TERM EXIT
     echo "Error: log tail exited with status ${tail_status}" >&2
     return "$tail_status"
   fi
@@ -845,13 +951,12 @@ tail_with_redeploy_controls() {
 run_remote_pnpm_install() {
   local -a install_args=("$@")
 
-  ssh "$HOST" "bash -s" -- "$REMOTE_DIR" "${install_args[@]}" <<'REMOTE_SCRIPT'
+  ssh "$HOST" "bash -s" -- "$REMOTE_DIR" "$REMOTE_NODE_PATH" "${install_args[@]}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-
 remote_dir="$1"
-shift
+export PATH="$2"
+shift 2
 
 case "$remote_dir" in
   "~")
@@ -1209,7 +1314,11 @@ run_parallel_deployments() {
 
   if [[ "$QUICK_MODE" == "1" ]]; then
     child_switch_args+=("--quick")
+  else
+    child_switch_args+=("--full")
   fi
+  # Children never tail; the parent tails all projects together afterwards.
+  child_switch_args+=("--no-tail")
   if [[ "$OPTIMIZE_IMAGES" == "1" ]]; then
     child_switch_args+=("--optimize-images")
   fi
@@ -1266,6 +1375,32 @@ run_parallel_deployments() {
   exit 0
 }
 
+usage() {
+  echo "Usage: $0 [PROJECT_QUERY... [HOST]] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--full|full|--no-quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only] [--no-tail]" >&2
+  echo "  If no parameters provided, interactive mode will be used" >&2
+  echo "  Manual mode supports either: [PROJECT_QUERY... [HOST]] or [HOST PROJECT_QUERY...]" >&2
+  echo "  Defaults: quick deploy tailing stderr afterwards (-q -e, new lines only; TAIL_LINES=N to include history); HOST defaults to the project's entry in PROJECT_DEFAULT_HOSTS" >&2
+  echo "  Example: $0 train-track-api   (same as: $0 -q -e train-track-api $(get_project_default_host train-track-api))" >&2
+  echo "  Example: $0 top web sky --quick" >&2
+  echo "  Example: $0 sky --quick top web" >&2
+  echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
+  echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
+  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
+  echo "  --full/full/--no-quick: run a full deploy instead of the default quick deploy (implied by Bitwarden, assets-only and disable modes)" >&2
+  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys or when a Bitwarden flag is set" >&2
+  echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
+  echo "  --skip-asset-prepare: skip asset bundle preparation/optimisation and reuse what's already local (implied by --assets-only reusing a standalone publisher run, or by a Bitwarden flag)" >&2
+  echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
+  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials (also skips asset bundle preparation by default; override with --optimize-images)" >&2
+  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first (also skips asset bundle preparation by default; override with --optimize-images)" >&2
+  echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
+  echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
+  echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
+  echo "  --no-tail: do not tail remote logs after deploy" >&2
+  echo "" >&2
+  list_projects >&2
+}
+
 # Parse switches before positional args.
 typeset -a POSITIONAL_ARGS=()
 for arg in "$@"; do
@@ -1275,6 +1410,16 @@ for arg in "$@"; do
       ;;
     quick|--quick|-q)
       QUICK_MODE=1
+      ;;
+    full|--full|--no-quick)
+      QUICK_MODE=0
+      ;;
+    --no-tail)
+      TAIL_MODE=0
+      ;;
+    help|--help|-h)
+      usage
+      exit 0
       ;;
     --optimize-images|--optimise-images)
       OPTIMIZE_IMAGES=1
@@ -1313,9 +1458,29 @@ if [[ $# -gt 0 ]]; then
   set -- "${POSITIONAL_ARGS[@]}"
 fi
 
-if [[ "$TAIL_ERRORS_ONLY" == "1" && "$TAIL_MODE" == "0" ]]; then
+# Default switches: quick deploy (-q) and tail stderr afterwards (-e) unless
+# overridden with --full / --no-tail, or the mode makes them meaningless.
+# Quick mode skips Bitwarden syncs, so a Bitwarden flag implies a full deploy.
+if [[ -z "$QUICK_MODE" ]]; then
+  if [[ "$BW_ENV_SYNC" == "1" || "$ASSETS_ONLY_MODE" == "1" || "$DISABLE_MODE" == "1" ]]; then
+    QUICK_MODE=0
+  else
+    QUICK_MODE=1
+  fi
+fi
+if [[ -z "$TAIL_MODE" && -z "$TAIL_ERRORS_ONLY" ]]; then
+  if [[ "$ASSETS_ONLY_MODE" == "1" || "$DISABLE_MODE" == "1" ]]; then
+    TAIL_MODE=0
+  else
+    TAIL_MODE=1
+    TAIL_ERRORS_ONLY=1
+  fi
+fi
+TAIL_ERRORS_ONLY="${TAIL_ERRORS_ONLY:-0}"
+if [[ "$TAIL_ERRORS_ONLY" == "1" && -z "$TAIL_MODE" ]]; then
   TAIL_MODE=1
 fi
+TAIL_MODE="${TAIL_MODE:-0}"
 
 if [[ "$ASSETS_ONLY_MODE" == "1" && (
   "$QUICK_MODE" == "1"
@@ -1327,9 +1492,25 @@ if [[ "$ASSETS_ONLY_MODE" == "1" && (
   exit 1
 fi
 
-if [[ "$SKIP_ASSET_PREPARE" == "1" && "$ASSETS_ONLY_MODE" != "1" ]]; then
-  echo "Error: --skip-asset-prepare can only be used with --assets-only." >&2
-  exit 1
+# A Bitwarden flag implies skipping asset bundle preparation by default, since it's
+# most often used to push updated credentials without re-optimising unrelated assets.
+# --optimize-images overrides this and forces preparation to run anyway.
+if [[ "$BW_ENV_SYNC" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
+  SKIP_ASSET_PREPARE=1
+fi
+
+# No host given: every positional argument names a project and none is a
+# configured SSH host, so deploy them all to their configured default host.
+if [[ $# -ge 2 ]] && ! positional_args_include_ssh_host "$@" \
+  && NO_HOST_PROJECT_NAMES=("${(@f)$(resolve_project_args "$@")}"); then
+  NO_HOST_TARGET="$(get_project_default_host "${NO_HOST_PROJECT_NAMES[1]}")"
+  for project_name in "${NO_HOST_PROJECT_NAMES[@]}"; do
+    if [[ "$(get_project_default_host "$project_name")" != "$NO_HOST_TARGET" ]]; then
+      echo "Error: These projects have different default hosts; pass the target host explicitly." >&2
+      exit 1
+    fi
+  done
+  run_parallel_deployments "$NO_HOST_TARGET" "${NO_HOST_PROJECT_NAMES[@]}"
 fi
 
 if [[ $# -ge 3 ]]; then
@@ -1403,12 +1584,12 @@ if [[ $# -eq 0 ]]; then
     PROJECT_NAME="$project_input"
   fi
 
-  echo ""
-  read "?Enter target hostname [default: sky]: " HOST
-
-  if [[ -z "$HOST" ]]; then
-    HOST="sky"
+  if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
+    exit 1
   fi
+
+  echo ""
+  read "?Enter target hostname [default: $(get_project_default_host "$PROJECT_NAME")]: " HOST
 elif [[ $# -ge 2 ]]; then
   # Support both PROJECT... HOST and HOST PROJECT... forms.
   HOST_FIRST_CANDIDATE="${argv[1]}"
@@ -1492,30 +1673,21 @@ elif [[ $# -ge 2 ]]; then
     HOST="$HOST_LAST_CANDIDATE"
   fi
 else
-  echo "Usage: $0 [PROJECT_QUERY... HOST] [--assets-only|-a|--static-assets|assets] [--skip-asset-prepare] [--quick|-q|quick] [--optimize-images|--optimise-images] [--disable|-d|disable] [bw|--bw|--bitwarden] [-b|--force-bitwarden-sync] [--tail|-t|tail] [--errors-only|-e|errors-only]" >&2
-  echo "  If no parameters provided, interactive mode will be used" >&2
-  echo "  Manual mode supports either: [PROJECT_QUERY... HOST] or [HOST PROJECT_QUERY...]" >&2
-  echo "  Example: $0 top web sky --quick" >&2
-  echo "  Example: $0 sky --quick top web" >&2
-  echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
-  echo "  Wildcard example: $0 sky 'kid*' --quick" >&2
-  echo "  --quick/-q/quick: sync files, reconcile dependencies incrementally, and restart services (skip image optimisation, Bitwarden, healthcheck, Grafana)" >&2
-  echo "  --optimize-images/--optimise-images: explicitly prepare and optimise configured asset bundles, including during quick deploys" >&2
-  echo "  --assets-only/-a/--static-assets/assets: prepare, validate, and activate the configured asset bundle without syncing or restarting the application" >&2
-  echo "  --skip-asset-prepare: with --assets-only, reuse a bundle produced by a successful standalone publisher run" >&2
-  echo "  --disable/-d/disable: stop and disable the deployment services on the target host, then exit" >&2
-  echo "  bw/--bw/--bitwarden: sync and apply Bitwarden-managed environment credentials" >&2
-  echo "  -b/--force-bitwarden-sync/--force-bw-sync: sync/apply Bitwarden credentials and force a vault refresh first" >&2
-  echo "  --tail/-t/tail: tail remote stdout/stderr log files after deploy completes" >&2
-  echo "  --errors-only/-e/errors-only: when tailing, only follow remote stderr log" >&2
-  echo "  --tail-errors/tail-errors: shorthand for --tail --errors-only" >&2
-  echo "" >&2
-  list_projects >&2
-  exit 1
+  # Single project with no host: deploy to its configured default host.
+  if candidate_is_configured_ssh_host "$1" && ! project_query_is_exact_match "$1"; then
+    echo "Error: '$1' looks like a host; specify a project to deploy." >&2
+    usage
+    exit 1
+  fi
+  PROJECT_NAME="$1"
+  HOST=""
 fi
 
 if ! PROJECT_NAME="$(project_match_resolve_name "$CONFIG_FILE" "$PROJECT_NAME")"; then
   exit 1
+fi
+if [[ -z "$HOST" ]]; then
+  HOST="$(get_project_default_host "$PROJECT_NAME")"
 fi
 
 # Get project configuration from config file
@@ -1524,6 +1696,38 @@ METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
 HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
+NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME")
+SERVICE_SCOPE=$(get_project_service_scope "$PROJECT_NAME")
+if [[ "$SERVICE_SCOPE" != "user" && "$SERVICE_SCOPE" != "system" ]]; then
+  echo "Error: service_scope must be 'user' or 'system'" >&2
+  exit 1
+fi
+LAUNCHD_ADMIN_HELPER=$(get_project_launchd_admin_helper "$PROJECT_NAME")
+if [[ -n "$LAUNCHD_ADMIN_HELPER" && ("$SERVICE_SCOPE" != "system" || ! "$LAUNCHD_ADMIN_HELPER" =~ '^/[A-Za-z0-9_./-]+$' || "$LAUNCHD_ADMIN_HELPER" == *'/../'* || "$LAUNCHD_ADMIN_HELPER" == *'/./'*) ]]; then
+  echo "Error: launchd_admin_helper requires system scope and an absolute path without spaces or shell syntax" >&2
+  exit 1
+fi
+REMOTE_NODE_PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+if [[ -n "$NODE_BINARY" ]]; then
+  # Restrict the interpolated remote path to literal path characters. Naming
+  # the executable node ensures npm/pnpm shebangs use this runtime via PATH too.
+  if [[ ! "$NODE_BINARY" =~ '^/[A-Za-z0-9_./-]+/node$' || "$NODE_BINARY" == *'/../'* || "$NODE_BINARY" == *'/./'* ]]; then
+    echo "Error: node_binary must be an absolute path ending in /node, without spaces or shell syntax" >&2
+    exit 1
+  fi
+  REMOTE_NODE_PATH="${NODE_BINARY:h}:$REMOTE_NODE_PATH"
+fi
+if ! jq -e --arg name "$PROJECT_NAME" '
+  .[] | select(.name == $name) | (.rsync_excludes // []) |
+  type == "array" and all(.[]; type == "string" and length > 0 and (explode | all(. >= 32 and . != 127)))
+' "$CONFIG_FILE" >/dev/null; then
+  echo "Error: rsync_excludes must be an array of non-empty patterns without control characters" >&2
+  exit 1
+fi
+RSYNC_PROJECT_RULES=()
+for project_exclude in "${(@f)$(get_project_rsync_excludes "$PROJECT_NAME")}"; do
+  [[ -n "$project_exclude" ]] && RSYNC_PROJECT_RULES+=(--exclude "$project_exclude")
+done
 SERVICE_LABEL=$(get_project_service_label "$PROJECT_NAME")
 SERVICE_DESCRIPTION=$(get_project_service_description "$PROJECT_NAME")
 LEGACY_SERVICE_LABELS=("${(@f)$(get_project_legacy_service_labels "$PROJECT_NAME")}")
@@ -1618,8 +1822,11 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - path: absolute local path to the project directory" >&2
   echo "  - start_command: startup command (for documentation; script auto-detects server.js/server.mjs/index.js/index.mjs)" >&2
   echo "  - build_command: optional build command to run on the remote host before restart" >&2
+  echo "  - node_binary: optional absolute remote executable path ending in /node" >&2
+  echo "  - rsync_excludes: optional array of additional application-sync exclude patterns" >&2
   echo "  - service_label: optional service identifier for launchd/systemd" >&2
   echo "  - service_description: optional service description for launchd/systemd" >&2
+  echo "  - launchd_admin_helper: optional allowlisted sudo helper for system-scoped launchd services" >&2
   echo "  - legacy_service_labels: optional array of old service labels to remove during full deploy" >&2
   echo "  - startup_port: app HTTP port used for the post-deploy healthcheck (optional; defaults to metrics_port)" >&2
   echo "  - healthcheck_path: optional health endpoint path (defaults to /healthcheck)" >&2
@@ -1728,6 +1935,16 @@ if [[ "$ASSETS_ONLY_MODE" == "1" && -z "$ASSET_BUNDLE_JSON" ]]; then
   exit 1
 fi
 
+if [[ -n "$NODE_BINARY" && "$ASSETS_ONLY_MODE" == "0" ]]; then
+  # Fail before asset preparation, rsync, environment writes or service changes.
+  echo "==> Checking pinned Node runtime on $HOST..."
+  if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "test -x '$NODE_BINARY' && '$NODE_BINARY' -p 'process.versions.node'"; then
+    echo "Error: configured node_binary is unavailable on $HOST: $NODE_BINARY" >&2
+    exit 1
+  fi
+fi
+
 if project_uses_vite "$LOCAL_DIR"; then
   PROJECT_IS_VITE=1
 fi
@@ -1746,10 +1963,20 @@ if project_build_runs_prepare_assets "$LOCAL_DIR"; then
 fi
 
 if [[ -n "$ASSET_BUNDLE_PREPARE_COMMAND" ]]; then
-  if [[ "$QUICK_MODE" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
+  if [[ "$OPTIMIZE_IMAGES" == "1" ]]; then
+    echo "==> Preparing persistent asset bundle..."
+    (
+      cd "$LOCAL_DIR"
+      zsh -lc "$ASSET_BUNDLE_PREPARE_COMMAND"
+    )
+  elif [[ "$QUICK_MODE" == "1" ]]; then
     echo "==> Quick mode enabled; skipping persistent asset image optimisation."
   elif [[ "$SKIP_ASSET_PREPARE" == "1" ]]; then
-    echo "==> Reusing the previously prepared persistent asset bundle..."
+    if [[ "$BW_ENV_SYNC" == "1" ]]; then
+      echo "==> Bitwarden flag enabled; skipping persistent asset image optimisation."
+    else
+      echo "==> Reusing the previously prepared persistent asset bundle..."
+    fi
   else
     echo "==> Preparing persistent asset bundle..."
     (
@@ -1806,6 +2033,7 @@ if [[ "$ASSETS_ONLY_MODE" == "0" ]]; then
     --exclude '.next' \
     --exclude '.turbo' \
     --exclude '*.local' \
+    "${RSYNC_PROJECT_RULES[@]}" \
     "$LOCAL_DIR/" \
     "${HOST}:${REMOTE_DIR}/"
 fi
@@ -1928,11 +2156,11 @@ if [[ "$QUICK_MODE" == "1" ]]; then
       run_remote_pnpm_install --prod --prefer-offline
     fi
   elif [[ "$PROJECT_IS_VITE" == "1" && -n "$BUILD_COMMAND" ]]; then
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       npm install --prefer-offline --no-audit --no-fund"
   else
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       npm install --omit=dev --prefer-offline --no-audit --no-fund"
   fi
@@ -1941,7 +2169,7 @@ if [[ "$QUICK_MODE" == "1" ]]; then
     echo "==> Quick mode: rebuilding Vite assets on server..."
     ssh "$HOST" "
       set -e
-      export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+      export PATH='$REMOTE_NODE_PATH'
       cd $REMOTE_DIR
 
       if [[ '$PROJECT_HAS_PREPARE_ASSETS' == '1' && '$PROJECT_BUILD_RUNS_PREPARE_ASSETS' != '1' ]]; then
@@ -1960,7 +2188,7 @@ else
       run_remote_pnpm_install --prod
     fi
   elif [[ -n "$BUILD_COMMAND" ]]; then
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       if [[ -f package-lock.json ]]; then
         npm ci
@@ -1968,7 +2196,7 @@ else
         npm install
       fi"
   else
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       if [[ -f package-lock.json ]]; then
         npm ci --omit=dev
@@ -1979,13 +2207,13 @@ else
 
   if [[ -n "$BUILD_COMMAND" ]]; then
     echo "==> Running build command on server..."
-    ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+    ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
       cd $REMOTE_DIR && \
       $BUILD_COMMAND"
 
     if [[ "$PROJECT_IS_PNPM" != "1" ]]; then
       echo "==> Pruning dev dependencies on server..."
-      ssh "$HOST" "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'; \
+      ssh "$HOST" "export PATH='$REMOTE_NODE_PATH'; \
         cd $REMOTE_DIR && \
         npm prune --omit=dev"
     fi
@@ -2063,6 +2291,11 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
       echo "   Normalized env var name '$item_name' -> '$env_var_name'"
     fi
 
+    if (( ${matched_env_var_names[(Ie)$env_var_name]} > 0 )); then
+      echo "Error: Duplicate Bitwarden env var '$env_var_name' for '$PROJECT_NAME'; remote secrets were not replaced." >&2
+      exit 1
+    fi
+
     printf 'export %s=%q\n' "$env_var_name" "$item_value" >> "$bw_env_file_local"
     matched_env_var_names+=("$env_var_name")
     matched_secret_count=$((matched_secret_count + 1))
@@ -2079,9 +2312,20 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
     printf '     - %s\n' "${matched_env_var_names[@]}"
   fi
 
+  required_bw_env_names=("${(@f)$(jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .required_bitwarden_env[]?' "$CONFIG_FILE")}")
+  for required_name in "${required_bw_env_names[@]}"; do
+    [[ -n "$required_name" ]] || continue
+    if (( ${matched_env_var_names[(Ie)$required_name]} == 0 )); then
+      echo "Error: Missing required Bitwarden env var '$required_name' for '$PROJECT_NAME'; remote secrets were not replaced." >&2
+      exit 1
+    fi
+  done
+
   REMOTE_BW_ENV_FILE="${REMOTE_DIR}/${BW_REMOTE_ENV_FILE_NAME}"
-  rsync -az "$bw_env_file_local" "${HOST}:${REMOTE_BW_ENV_FILE}"
-  ssh "$HOST" "chmod 600 ${REMOTE_BW_ENV_FILE}"
+  remote_incoming_name="${BW_REMOTE_ENV_FILE_NAME}.incoming.$$"
+  remote_incoming="${REMOTE_DIR}/${remote_incoming_name}"
+  rsync -az "$bw_env_file_local" "${HOST}:${remote_incoming}"
+  ssh "$HOST" "cd ${REMOTE_DIR} && chmod 600 '${remote_incoming_name}' && mv '${remote_incoming_name}' '${BW_REMOTE_ENV_FILE_NAME}'"
   echo "   Uploaded Bitwarden env file to ${HOST}:${REMOTE_BW_ENV_FILE}"
 else
   echo "==> Skipping Bitwarden env sync (BW_ENV_SYNC=${BW_ENV_SYNC})"
@@ -2091,6 +2335,7 @@ SERVICE_SETUP_REQUIRED=0
 if [[ "$QUICK_MODE" == "1" ]]; then
   service_probe="$(ssh "$HOST" "
     set -e
+    SERVICE_SCOPE='$SERVICE_SCOPE'
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     current_found=1
@@ -2103,6 +2348,15 @@ if [[ "$QUICK_MODE" == "1" ]]; then
 
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       UID_NUM=\"\$(id -u)\"
+      if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+        current_found=1
+        for CURRENT_SERVICE_LABEL in \"\${SERVICE_LABELS[@]}\"; do
+          [[ -n \"\$CURRENT_SERVICE_LABEL\" ]] || continue
+          if ! launchctl print \"system/\$CURRENT_SERVICE_LABEL\" >/dev/null 2>&1; then current_found=0; fi
+        done
+        printf '%s %s\n' \"\$current_found\" \"\$legacy_found\"
+        exit 0
+      fi
       for DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
         if ! launchctl print \"\$DOMAIN\" >/dev/null 2>&1; then
           continue
@@ -2166,17 +2420,23 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     if [[ "$current_startup_port" == "__NONE__" ]]; then
       continue
     fi
-    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}"
+    ensure_remote_port_available "$HOST" "$current_startup_port" "${SERVICE_LABELS[$idx]}" quick
   done
   ssh "$HOST" "
     set -e
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
+    NODE_EXECUTABLE='$NODE_BINARY'
+    if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
+      NODE_EXECUTABLE=\$(command -v node)
+    fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
+    SERVICE_SCOPE='$SERVICE_SCOPE'
+    LAUNCHD_ADMIN_HELPER='$LAUNCHD_ADMIN_HELPER'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2232,7 +2492,7 @@ if [[ -f \"\$start_wrapper.monitoring.sh\" ]]; then
   source \"\$start_wrapper.monitoring.sh\"
 fi
 
-exec \"\$(command -v node)\" \"\$entry_file\"
+exec \"\$NODE_EXECUTABLE\" \"\$entry_file\"
 EOF_START_WRAPPER
       chmod 700 \"\$start_wrapper\"
       printf '%s\n' \"\$start_wrapper\"
@@ -2249,7 +2509,9 @@ EOF_START_WRAPPER
         build_wrapper \"\$service_name\" \"\$entry_file\" >/dev/null
 
         DOMAIN=''
-        if launchctl print \"gui/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]] && launchctl print \"system/\$service_label\" >/dev/null 2>&1; then
+          DOMAIN='system'
+        elif launchctl print \"gui/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
           DOMAIN=\"gui/\$UID_NUM\"
         elif launchctl print \"user/\$UID_NUM/\$service_label\" >/dev/null 2>&1; then
           DOMAIN=\"user/\$UID_NUM\"
@@ -2260,7 +2522,18 @@ EOF_START_WRAPPER
           exit 1
         fi
         echo \"Using launchd domain for \$service_label: \$DOMAIN\"
-        launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+        if [[ \"\$DOMAIN\" == 'system' ]]; then
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            sudo -n \"\$LAUNCHD_ADMIN_HELPER\" restart \"\$service_label\"
+          else
+            sudo -n launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+          fi || {
+            echo 'Error: restarting the system LaunchDaemon requires administrator authorization.' >&2
+            exit 1
+          }
+        else
+          launchctl kickstart -k \"\$DOMAIN/\$service_label\"
+        fi
         sleep 1
         if ! launchctl print \"\$DOMAIN/\$service_label\" | grep -q 'state = running'; then
           echo \"Error: launchd service did not remain running: \$service_label\" >&2
@@ -2306,6 +2579,25 @@ else
   else
     echo "==> Setting up and restarting services..."
   fi
+  if [[ "$SERVICE_SCOPE" == "system" ]]; then
+    if [[ -n "$LAUNCHD_ADMIN_HELPER" ]]; then
+      ssh "$HOST" "test -x '$LAUNCHD_ADMIN_HELPER'" || {
+        echo "Error: configured launchd admin helper is not installed on $HOST: $LAUNCHD_ADMIN_HELPER" >&2
+        exit 1
+      }
+      for service_label in "${SERVICE_LABELS[@]}"; do
+        ssh "$HOST" "sudo -n '$LAUNCHD_ADMIN_HELPER' check '$service_label'" >/dev/null || {
+          echo "Error: launchd admin helper is not authorized for $service_label on $HOST." >&2
+          exit 1
+        }
+      done
+    else
+      ssh "$HOST" "sudo -n true" >/dev/null || {
+        echo "Error: system LaunchDaemon deployment requires administrator authorization on $HOST." >&2
+        exit 1
+      }
+    fi
+  fi
   for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do
     current_startup_port="${SERVICE_STARTUP_PORTS[$idx]}"
     if [[ "$current_startup_port" == "__NONE__" ]]; then
@@ -2318,12 +2610,18 @@ else
     REMOTE_DIR_EXPANDED=\$(eval echo $REMOTE_DIR)
     BW_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/${BW_REMOTE_ENV_FILE_NAME}\"
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
+    NODE_EXECUTABLE='$NODE_BINARY'
+    if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
+      NODE_EXECUTABLE=\$(command -v node)
+    fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
     SERVICE_LABELS=(${SERVICE_LABELS_SSH})
     SERVICE_ENTRY_FILES=(${SERVICE_ENTRY_FILES_SSH})
     SERVICE_LOG_FILES=(${SERVICE_LOG_FILES_SSH})
     SERVICE_ERROR_LOG_FILES=(${SERVICE_ERROR_LOG_FILES_SSH})
+    SERVICE_SCOPE='$SERVICE_SCOPE'
+    LAUNCHD_ADMIN_HELPER='$LAUNCHD_ADMIN_HELPER'
     ARRAY_OFFSET=0
     if [[ -n \"\${ZSH_VERSION:-}\" ]]; then
       ARRAY_OFFSET=1
@@ -2379,7 +2677,7 @@ if [[ -f \"\$start_wrapper.monitoring.sh\" ]]; then
   source \"\$start_wrapper.monitoring.sh\"
 fi
 
-exec \"\$(command -v node)\" \"\$entry_file\"
+exec \"\$NODE_EXECUTABLE\" \"\$entry_file\"
 EOF_START_WRAPPER
       chmod 700 \"\$start_wrapper\"
       printf '%s\n' \"\$start_wrapper\"
@@ -2389,6 +2687,25 @@ EOF_START_WRAPPER
     if [[ \"\$OSTYPE\" == \"darwin\"* ]] || command -v launchctl >/dev/null 2>&1; then
       echo \"==> Using launchd (macOS)\"
       UID_NUM=\"\$(id -u)\"
+      USER_NAME=\"\$(id -un)\"
+      if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+        if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+          if [[ ! -x \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            echo \"Error: configured launchd admin helper is not installed: \$LAUNCHD_ADMIN_HELPER\" >&2
+            exit 1
+          fi
+          for SERVICE_LABEL_TO_CHECK in \"\${SERVICE_LABELS[@]}\"; do
+            if ! sudo -n \"\$LAUNCHD_ADMIN_HELPER\" check \"\$SERVICE_LABEL_TO_CHECK\" >/dev/null 2>&1; then
+              echo \"Error: launchd admin helper is not authorized for \$SERVICE_LABEL_TO_CHECK.\" >&2
+              exit 1
+            fi
+          done
+        elif ! sudo -n true >/dev/null 2>&1; then
+          echo 'Error: installing the system LaunchDaemon requires administrator authorization.' >&2
+          echo 'Run the deployment from an administrator-authorized session, or install the reviewed plist separately.' >&2
+          exit 1
+        fi
+      fi
       DOMAIN=''
       HAVE_GUI_DOMAIN=0
       HAVE_USER_DOMAIN=0
@@ -2398,22 +2715,34 @@ EOF_START_WRAPPER
       if launchctl print \"user/\$UID_NUM\" >/dev/null 2>&1; then
         HAVE_USER_DOMAIN=1
       fi
-      if [[ \"\$HAVE_GUI_DOMAIN\" -eq 0 && \"\$HAVE_USER_DOMAIN\" -eq 0 ]]; then
+      if [[ \"\$SERVICE_SCOPE\" != 'system' && \"\$HAVE_GUI_DOMAIN\" -eq 0 && \"\$HAVE_USER_DOMAIN\" -eq 0 ]]; then
         echo \"Error: Could not find a usable launchd domain for this user.\" >&2
         exit 1
       fi
       echo \"Detected launchd domains: gui/\$UID_NUM=\$HAVE_GUI_DOMAIN user/\$UID_NUM=\$HAVE_USER_DOMAIN\"
 
       # Create LaunchAgent directory if it doesn't exist
-      mkdir -p \"\$HOME/Library/LaunchAgents\"
+      if [[ \"\$SERVICE_SCOPE\" != 'system' ]]; then mkdir -p \"\$HOME/Library/LaunchAgents\"; fi
 
       for OLD_SERVICE_LABEL in \"\${LEGACY_SERVICE_LABELS[@]}\"; do
         [[ -n \"\$OLD_SERVICE_LABEL\" ]] || continue
         [[ \"\$OLD_SERVICE_LABEL\" == \"${SERVICE_LABEL}\" ]] && continue
         echo \"Removing legacy launchd service: \$OLD_SERVICE_LABEL\"
-        launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
-        launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
-        rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            sudo -n \"\$LAUNCHD_ADMIN_HELPER\" remove \"\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          else
+            sudo -n launchctl bootout \"system/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+            sudo -n rm -f \"/Library/LaunchDaemons/\${OLD_SERVICE_LABEL}.plist\"
+          fi
+          launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+        else
+          launchctl bootout \"gui/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$OLD_SERVICE_LABEL\" 2>/dev/null || true
+          rm -f \"\$HOME/Library/LaunchAgents/\${OLD_SERVICE_LABEL}.plist\"
+        fi
       done
 
       write_launchd_service() {
@@ -2423,6 +2752,12 @@ EOF_START_WRAPPER
         local service_error_log_file=\"\$4\"
         local start_wrapper=\"\$5\"
         local plist=\"\$HOME/Library/LaunchAgents/\${service_label}.plist\"
+        local log_file=\"\$service_log_file\"
+        local error_log_file=\"\$service_error_log_file\"
+        [[ \"\$log_file\" == /* ]] || log_file=\"\$REMOTE_DIR_EXPANDED/\$log_file\"
+        [[ \"\$error_log_file\" == /* ]] || error_log_file=\"\$REMOTE_DIR_EXPANDED/\$error_log_file\"
+        mkdir -p \"\${log_file:h}\" \"\${error_log_file:h}\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then plist=\"\$REMOTE_DIR_EXPANDED/.\${service_label}.plist\"; fi
         cat > \"\$plist\" << 'EOF_PLIST'
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -2437,10 +2772,14 @@ EOF_START_WRAPPER
   </array>
   <key>WorkingDirectory</key>
   <string>REMOTE_DIR_PLACEHOLDER</string>
+  USER_NAME_KEY_PLACEHOLDER
+  USER_NAME_VALUE_PLACEHOLDER
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>LOG_FILE_PLACEHOLDER</string>
   <key>StandardErrorPath</key>
@@ -2456,8 +2795,14 @@ EOF_PLIST
         sed -i '' \"s|REMOTE_DIR_PLACEHOLDER|\$REMOTE_DIR_EXPANDED|g\" \"\$plist\"
         sed -i '' \"s|START_WRAPPER_PLACEHOLDER|\$start_wrapper|g\" \"\$plist\"
         sed -i '' \"s|SERVICE_LABEL_PLACEHOLDER|\$service_label|g\" \"\$plist\"
-        sed -i '' \"s|LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_log_file|g\" \"\$plist\"
-        sed -i '' \"s|ERROR_LOG_FILE_PLACEHOLDER|\$REMOTE_DIR_EXPANDED/\$service_error_log_file|g\" \"\$plist\"
+        sed -i '' \"s|ERROR_LOG_FILE_PLACEHOLDER|\$error_log_file|g\" \"\$plist\"
+        sed -i '' \"s|LOG_FILE_PLACEHOLDER|\$log_file|g\" \"\$plist\"
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          sed -i '' 's|  USER_NAME_KEY_PLACEHOLDER|  <key>UserName</key>|' \"\$plist\"
+          sed -i '' \"s|  USER_NAME_VALUE_PLACEHOLDER|  <string>\$USER_NAME</string>|\" \"\$plist\"
+        else
+          sed -i '' '/USER_NAME_KEY_PLACEHOLDER/d; /USER_NAME_VALUE_PLACEHOLDER/d' \"\$plist\"
+        fi
         if command -v plutil >/dev/null 2>&1; then
           if ! plutil -lint \"\$plist\" >/dev/null 2>&1; then
             echo \"Error: launchd plist is invalid: \$plist\" >&2
@@ -2472,8 +2817,37 @@ EOF_PLIST
         local service_label=\"\$1\"
         local plist=\"\$2\"
         local bootstrap_ok=0
+        if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
+          local installed=\"/Library/LaunchDaemons/\${service_label}.plist\"
+          local old_user_plist=\"\$HOME/Library/LaunchAgents/\${service_label}.plist\"
+          launchctl bootout \"gui/\$UID_NUM/\$service_label\" 2>/dev/null || true
+          launchctl bootout \"user/\$UID_NUM/\$service_label\" 2>/dev/null || true
+          if [[ -n \"\$LAUNCHD_ADMIN_HELPER\" ]]; then
+            if ! sudo -n \"\$LAUNCHD_ADMIN_HELPER\" install \"\$service_label\" \"\$plist\"; then
+              if [[ -f \"\$old_user_plist\" && \"\$HAVE_GUI_DOMAIN\" -eq 1 ]]; then
+                launchctl bootstrap \"gui/\$UID_NUM\" \"\$old_user_plist\" 2>/dev/null || true
+              fi
+              echo \"Error: system LaunchDaemon installation failed for \$service_label; restored the previous user agent where possible.\" >&2
+              exit 1
+            fi
+          else
+            sudo -n launchctl bootout \"system/\$service_label\" 2>/dev/null || true
+            sudo -n install -o root -g wheel -m 644 \"\$plist\" \"\$installed\"
+            sudo -n launchctl bootstrap system \"\$installed\"
+            sudo -n launchctl enable \"system/\$service_label\" || true
+            sudo -n launchctl kickstart -k \"system/\$service_label\"
+          fi
+          if ! launchctl print \"system/\$service_label\" >/dev/null 2>&1; then
+            echo \"Error: system LaunchDaemon did not load: \$service_label\" >&2
+            exit 1
+          fi
+          rm -f \"\$old_user_plist\"
+          DOMAIN='system'
+          return
+        fi
         launchctl bootout \"gui/\$UID_NUM/\$service_label\" 2>/dev/null || true
         launchctl bootout \"user/\$UID_NUM/\$service_label\" 2>/dev/null || true
+        sleep 1
         for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
           if ! launchctl print \"\$TRY_DOMAIN\" >/dev/null 2>&1; then
             continue
@@ -2496,6 +2870,22 @@ EOF_PLIST
             break
           fi
         done
+        if [[ \"\$bootstrap_ok\" -ne 1 ]]; then
+          for attempt in 1 2 3; do
+            if launchctl load -w \"\$plist\" >/dev/null 2>&1; then
+              for TRY_DOMAIN in \"gui/\$UID_NUM\" \"user/\$UID_NUM\"; do
+                if launchctl print \"\$TRY_DOMAIN/\$service_label\" >/dev/null 2>&1; then
+                  bootstrap_ok=1
+                  DOMAIN=\"\$TRY_DOMAIN\"
+                  echo \"Loaded \$service_label using launchctl's user-agent compatibility path in \$DOMAIN\"
+                  break
+                fi
+              done
+            fi
+            [[ \"\$bootstrap_ok\" -eq 1 ]] && break
+            sleep 1
+          done
+        fi
         if [[ \"\$bootstrap_ok\" -ne 1 ]]; then
           echo \"Error: launchd service did not load: \$service_label\" >&2
           echo \"Plist: \$plist\" >&2
@@ -2663,7 +3053,15 @@ else
   fi
   typeset -U AUTO_PROM_METRICS_PORTS
 
-  if [[ ${#AUTO_PROM_METRICS_PORTS[@]} -gt 0 ]]; then
+  if [[ "$HOST" != "$MONITORING_HOST" ]]; then
+    # The scrape target below is derived from the deploy host's own IP, which
+    # only Prometheus running on that host can reach. Apps on other hosts are
+    # scraped from ${MONITORING_HOST} over their public route, configured
+    # separately (monitoring/configure-planner-ingestion-alerts.sh), so writing
+    # a prometheus.yml here would only create a file nothing reads.
+    echo "==> ${HOST} is not the monitoring host (${MONITORING_HOST}); skipping Prometheus scrape target and alert rules."
+    echo "   Apps on ${HOST} are scraped from ${MONITORING_HOST}; see monitoring/README.md."
+  elif [[ ${#AUTO_PROM_METRICS_PORTS[@]} -gt 0 ]]; then
     if [[ ! -f "$PROM_SCRAPE_CONFIG_SCRIPT" ]]; then
       echo "Error: Prometheus scrape configurator not found: $PROM_SCRAPE_CONFIG_SCRIPT" >&2
       exit 1
@@ -2736,6 +3134,27 @@ else
     PROM_SCRAPE_METRICS_PATH="${PROM_SCRAPE_METRICS_PATH:-/metrics}" \
       bash "$PROM_SCRAPE_CONFIG_SCRIPT"
     MONITORING_CONFIGURED=1
+
+    # Per-project alert rules: observability/prometheus/rules.yml is installed
+    # as rules/<job>.yml on the monitoring host (see monitoring/install-alerting.zsh).
+    PROM_RULES_CONFIG_SCRIPT="$SCRIPT_DIR/../monitoring/configure-prometheus-rules.sh"
+    PROJECT_PROM_RULES_FILE="${PROM_RULES_FILE:-$LOCAL_DIR/observability/prometheus/rules.yml}"
+    if [[ -f "$PROJECT_PROM_RULES_FILE" ]]; then
+      if [[ ! -f "$PROM_RULES_CONFIG_SCRIPT" ]]; then
+        echo "Error: Prometheus rules configurator not found: $PROM_RULES_CONFIG_SCRIPT" >&2
+        exit 1
+      fi
+      echo "==> Configuring Prometheus alert rules..."
+      echo "   Rules file: ${PROJECT_PROM_RULES_FILE}"
+      PROM_CONFIG_HOST="$HOST" \
+      PROM_CONFIG_FILE="${PROM_CONFIG_FILE:-${AUTO_PROM_CONFIG_FILE}}" \
+      PROM_RELOAD_URL="${PROM_RELOAD_URL:-http://localhost:9090/-/reload}" \
+      PROM_RULES_JOB_NAME="$PROMETHEUS_SCRAPE_JOB_NAME" \
+      PROM_RULES_FILE="$PROJECT_PROM_RULES_FILE" \
+        bash "$PROM_RULES_CONFIG_SCRIPT"
+    else
+      echo "==> No observability/prometheus/rules.yml in project; skipping alert rules."
+    fi
   else
     echo "==> No metrics port configured; skipping Prometheus scrape target."
   fi
@@ -2758,7 +3177,9 @@ else
     DASHBOARD_SCRIPT="$CENTRAL_DASHBOARD_SCRIPT"
   fi
 
-  if [[ -n "$DASHBOARD_SCRIPT" ]]; then
+  if [[ -z "$METRICS_PORT" ]]; then
+    echo "==> No metrics port configured; skipping Grafana dashboard import."
+  elif [[ -n "$DASHBOARD_SCRIPT" ]]; then
     if [[ ! -d "$PROJECT_DASHBOARD_DIR" ]]; then
       echo "==> Grafana dashboard directory not found (${PROJECT_DASHBOARD_DIR}), skipping..."
     else
@@ -2798,13 +3219,23 @@ else
       GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_HOST_HEADER:-}"
       GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_FORWARDED_PREFIX:-}"
       if [[ -z "$GRAFANA_IMPORT_URL" ]]; then
+        GRAFANA_REMOTE_PORT="${GRAFANA_REMOTE_PORT:-}"
+        if [[ -z "$GRAFANA_REMOTE_PORT" ]]; then
+          if [[ "$HOST" == mini ]]; then
+            GRAFANA_REMOTE_PORT=3000
+          else
+            GRAFANA_REMOTE_PORT=3001
+          fi
+        fi
         GRAFANA_TUNNEL_PORT="$(find_free_local_port)"
         GRAFANA_IMPORT_URL="http://127.0.0.1:${GRAFANA_TUNNEL_PORT}"
-        GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_IMPORT_HOST_HEADER:-api.skynolimit.dev}"
-        GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_IMPORT_FORWARDED_PREFIX:-/grafana}"
-        echo "   Grafana URL: ${GRAFANA_IMPORT_URL} (SSH tunnel to ${HOST}:127.0.0.1:3001)"
+        if [[ "$HOST" != mini ]]; then
+          GRAFANA_IMPORT_HOST_HEADER="${GRAFANA_IMPORT_HOST_HEADER:-api.skynolimit.dev}"
+          GRAFANA_IMPORT_FORWARDED_PREFIX="${GRAFANA_IMPORT_FORWARDED_PREFIX:-/grafana}"
+        fi
+        echo "   Grafana URL: ${GRAFANA_IMPORT_URL} (SSH tunnel to ${HOST}:127.0.0.1:${GRAFANA_REMOTE_PORT})"
         ssh -o ExitOnForwardFailure=yes -N \
-          -L "127.0.0.1:${GRAFANA_TUNNEL_PORT}:127.0.0.1:3001" \
+          -L "127.0.0.1:${GRAFANA_TUNNEL_PORT}:127.0.0.1:${GRAFANA_REMOTE_PORT}" \
           "$HOST" &
         GRAFANA_TUNNEL_PID="$!"
 
@@ -2880,5 +3311,7 @@ if [[ "$TAIL_MODE" == "1" ]]; then
   if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
     TAIL_ARGS+=("--errors-only")
   fi
+  # Only show log lines written after the deploy; override with TAIL_LINES=N.
+  export TAIL_LINES="${TAIL_LINES:-0}"
   tail_with_redeploy_controls "$TAIL_SCRIPT" "${TAIL_ARGS[@]}"
 fi

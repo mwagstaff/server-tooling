@@ -179,7 +179,11 @@ echo "    Project: $PROJECT_NAME"
 echo "    Remote host: $HOST"
 echo "    Logs:"
 for remote_log_file in "${REMOTE_LOG_FILES[@]}"; do
-  echo "      - ${REMOTE_DIR}/${remote_log_file}"
+  if [[ "$remote_log_file" == /* ]]; then
+    echo "      - ${remote_log_file}"
+  else
+    echo "      - ${REMOTE_DIR}/${remote_log_file}"
+  fi
 done
 echo "    Lines: $TAIL_LINES"
 echo "    Mode: $([[ "$ERRORS_ONLY" == "1" ]] && echo "errors only" || echo "stdout + stderr")"
@@ -190,7 +194,9 @@ echo ""
 
 REMOTE_LOG_FILES_SSH="${(j: :)REMOTE_LOG_FILES}"
 
-ssh -o ConnectTimeout=10 "$HOST" "
+# exec so this script's PID is the ssh process: killing the tailer stops the
+# remote tail instead of leaving ssh orphaned and still writing to the terminal.
+exec ssh -o ConnectTimeout=10 "$HOST" "
 set -eu
 
 REMOTE_DIR=\"$REMOTE_DIR\"
@@ -203,7 +209,8 @@ mkdir -p \"\$REMOTE_DIR_EXPANDED\"
 TAIL_TARGETS=()
 for log_name in \"\${REMOTE_LOG_FILES[@]}\"; do
   [[ -n \"\$log_name\" ]] || continue
-  log_path=\"\$REMOTE_DIR_EXPANDED/\$log_name\"
+  if [[ \"\$log_name\" == /* ]]; then log_path=\"\$log_name\"; else log_path=\"\$REMOTE_DIR_EXPANDED/\$log_name\"; fi
+  mkdir -p \"\$(dirname \"\$log_path\")\"
   touch \"\$log_path\"
   TAIL_TARGETS+=(\"\$log_path\")
 done
