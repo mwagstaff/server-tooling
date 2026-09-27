@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "hosts": {
+    "sky": {
+      "services": [
+        {
+          "name": "bikespot-london",
+          "directory": "~/dev/boris-bikes-api",
+          "entry": "server.js",
+          "unit": "com.boris-bikes-api.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3010,
+          "runtime_port": 19200,
+          "public_url": "https://api.skynolimit.dev/my-boris-bikes/healthcheck"
+        },
+        {
+          "name": "top-scores",
+          "directory": "~/dev/top-scores",
+          "entry": "server.js",
+          "unit": "com.top-scores.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3011,
+          "runtime_port": 19201,
+          "public_url": "https://api.skynolimit.dev/top-scores/healthcheck"
+        },
+        {
+          "name": "train-track-api",
+          "directory": "~/dev/train-track-api",
+          "entry": "index.js",
+          "unit": "com.train-track-api.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3012,
+          "runtime_port": 19202,
+          "public_url": "https://api.skynolimit.dev/train-track/healthcheck"
+        },
+        {
+          "name": "top-scores-scraper",
+          "directory": "~/dev/top-scores",
+          "entry": "scraper.js",
+          "unit": "com.top-scores.scraper",
+          "wrapper": ".start-with-bw-env-scraper.sh",
+          "metrics_path": "/metrics",
+          "port": 3013,
+          "runtime_port": 19203,
+          "public_url": null
+        },
+        {
+          "name": "top-scores-monitor",
+          "directory": "~/dev/top-scores",
+          "entry": "monitor.js",
+          "unit": "com.top-scores.monitor",
+          "wrapper": ".start-with-bw-env-monitor.sh",
+          "metrics_path": "/metrics",
+          "port": 3014,
+          "runtime_port": 19204,
+          "public_url": null
+        },
+        {
+          "name": "top-scores-audit",
+          "directory": "~/dev/top-scores",
+          "entry": "audit.js",
+          "unit": "com.top-scores.audit",
+          "wrapper": ".start-with-bw-env-audit.sh",
+          "metrics_path": "/metrics",
+          "port": 3015,
+          "runtime_port": 19205,
+          "public_url": null
+        },
+        {
+          "name": "top-scores-bsd",
+          "directory": "~/dev/top-scores",
+          "entry": "bsd_poller.js",
+          "unit": "com.top-scores.bsd",
+          "wrapper": ".start-with-bw-env-bsd.sh",
+          "metrics_path": "/metrics",
+          "port": 3016,
+          "runtime_port": 19206,
+          "public_url": null
+        },
+        {
+          "name": "train-loading-service",
+          "directory": "~/dev/train-loading-service",
+          "entry": "server.js",
+          "unit": "com.train-loading-service.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3017,
+          "runtime_port": 19207,
+          "public_url": "https://api.skynolimit.dev/train-track-loading/health/ready"
+        },
+        {
+          "name": "tube-track-api",
+          "directory": "~/dev/tube-track-api",
+          "entry": "index.js",
+          "unit": "com.tube-track-api.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3018,
+          "runtime_port": 19208,
+          "public_url": "https://api.skynolimit.dev/tube-track/healthcheck"
+        },
+        {
+          "name": "top-scores-web",
+          "directory": "~/dev/top-scores-web",
+          "entry": "server.mjs",
+          "unit": "com.top-scores.website",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": null,
+          "port": 3020,
+          "runtime_port": 19209,
+          "public_url": "https://top-scores.skynolimit.dev"
+        },
+        {
+          "name": "sky-no-limit-web",
+          "directory": "~/dev/sky-no-limit-web",
+          "entry": "server.mjs",
+          "unit": "com.sky-no-limit.website",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": null,
+          "port": 3030,
+          "runtime_port": 19210,
+          "public_url": "https://skynolimit.dev"
+        },
+        {
+          "name": "goal-guesser",
+          "directory": "~/dev/goal-guesser-web",
+          "entry": "server.mjs",
+          "unit": "com.goal-guesser.website",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": null,
+          "port": 3035,
+          "runtime_port": 19211,
+          "public_url": "https://goal-guesser.skynolimit.dev"
+        },
+        {
+          "name": "kidsplorers-api",
+          "directory": "~/dev/kidsplorers",
+          "entry": "services/api/dist/index.js",
+          "unit": "com.kidsplorers.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3100,
+          "runtime_port": 19212,
+          "public_url": "https://api.kidsplorers.com/healthcheck"
+        },
+        {
+          "name": "kidsplorers-web",
+          "directory": "~/dev/kidsplorers",
+          "entry": "apps/web/start.js",
+          "unit": "com.kidsplorers.web",
+          "wrapper": ".start-with-bw-env-web.sh",
+          "metrics_path": "/metrics",
+          "port": 3200,
+          "runtime_port": 19213,
+          "public_url": "https://kidsplorers.com"
+        },
+        {
+          "name": "healthcheck",
+          "directory": "~/dev/healthcheck",
+          "entry": "index.js",
+          "unit": "com.healthcheck.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 4000,
+          "runtime_port": 19214,
+          "public_url": null
+        }
+      ]
+    },
+    "mini": {
+      "services": [
+        {
+          "name": "train-track-planner",
+          "directory": "~/dev/train-track-planner",
+          "entry": "planner-server.js",
+          "unit": "com.train-track-planner.api",
+          "scope": "system",
+          "admin_helper": "/usr/local/sbin/train-track-boot-service-admin",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "port": 3014,
+          "metrics_path": "/internal/planner/metrics",
+          "metrics_secret": "PLANNER_SERVICE_TOKEN",
+          "runtime_port": 19200,
+          "public_url": "https://mikes-mac-mini.dog-rattlesnake.ts.net/train-track-planner/healthcheck"
+        }
+      ]
+    }
+  }
+}

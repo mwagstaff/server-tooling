@@ -2228,6 +2228,10 @@ if [[ -f \"\$BW_ENV_FILE\" ]]; then
   source \"\$BW_ENV_FILE\"
 fi
 
+if [[ -f \"\$start_wrapper.monitoring.sh\" ]]; then
+  source \"\$start_wrapper.monitoring.sh\"
+fi
+
 exec \"\$(command -v node)\" \"\$entry_file\"
 EOF_START_WRAPPER
       chmod 700 \"\$start_wrapper\"
@@ -2369,6 +2373,10 @@ fi
 if [[ -f \"\$BW_ENV_FILE\" ]]; then
   # shellcheck disable=SC1090
   source \"\$BW_ENV_FILE\"
+fi
+
+if [[ -f \"\$start_wrapper.monitoring.sh\" ]]; then
+  source \"\$start_wrapper.monitoring.sh\"
 fi
 
 exec \"\$(command -v node)\" \"\$entry_file\"
