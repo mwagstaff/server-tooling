@@ -70,6 +70,7 @@ class PlatformTests(unittest.TestCase):
                 render(root, monitor, target, '100.64.0.2', '100.64.0.1', [{'name': 'app', 'public_url': 'https://example.com'}])
                 config = json.loads((root / 'prometheus.json').read_text())
                 self.assertEqual(config['global']['external_labels']['monitor'], monitor)
+                self.assertEqual(config['global']['scrape_failure_log_file'], str(root / 'logs/scrape-failures.log'))
                 self.assertEqual(config['scrape_configs'][0]['static_configs'][0]['labels']['host'], target)
                 am = json.loads((root / 'alertmanager.json').read_text())
                 self.assertEqual(am['route']['routes'][0]['receiver'], 'silent')

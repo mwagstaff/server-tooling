@@ -87,7 +87,8 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
                                              {'target_label': '__address__', 'replacement': '127.0.0.1:19115'}]})
     for name, port in [('prometheus', 19090), ('alertmanager', 19093), ('blackbox', 19115)]:
         jobs.append({'job_name': name, 'static_configs': [{'targets': [f'127.0.0.1:{port}'], 'labels': {'host': monitor, 'kind': 'monitor', 'service': name}}]})
-    write_json(root / 'prometheus.json', {'global': {'scrape_interval': '15s', 'evaluation_interval': '15s', 'external_labels': {'monitor': monitor}},
+    write_json(root / 'prometheus.json', {'global': {'scrape_interval': '15s', 'evaluation_interval': '15s', 'external_labels': {'monitor': monitor},
+                                                   'scrape_failure_log_file': str(root / 'logs/scrape-failures.log')},
                                         'rule_files': [str(root / 'rules.json')],
                                         'alerting': {'alertmanagers': [{'static_configs': [{'targets': ['127.0.0.1:19093']}]}]}, 'scrape_configs': jobs})
     write_json(root / 'rules.json', make_rules(services, target))

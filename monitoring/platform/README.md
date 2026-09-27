@@ -236,3 +236,25 @@ journalctl --user -u com.server-tooling.monitoring.prometheus.service
 The original `monitoring/install-monitoring.zsh` and `install-alerting.zsh` still
 manage the legacy Sky stack. They must not be used to update this independent
 platform. Legacy email alerts may coexist during the migration.
+
+## Diagnosing brief scrape failures
+
+The gateway logs structured warnings for upstream failures, responses larger than
+8 MiB, downstream disconnects, and successful responses taking at least two seconds.
+Each warning includes the allowlisted route, stage, elapsed milliseconds, upstream
+HTTP status when available, response bytes, and exception/OS error codes. It never
+logs credentials, upstream URLs, raw exception messages, headers, or response bodies.
+Normal successful scrapes remain quiet. Timestamps are UTC.
+
+On Sky, inspect `journalctl --user -u com.server-tooling.monitoring.gateway.service`.
+On Mini, gateway warnings are in
+`~/.local/share/server-tooling-monitoring/logs/gateway.log`.
+
+Prometheus also records failed scrapes in
+`~/.local/share/server-tooling-monitoring/logs/scrape-failures.log` on the monitoring
+host (Mini for Sky). This captures transport, HTTP and metrics parsing errors even
+when the gateway responds successfully. Correlate the timestamp and target with
+the gateway route; the dashboard alert timestamp may be one evaluation later.
+These logs are separate from the 30-day metrics retention. When rotating the
+scrape-failure file, send Prometheus SIGHUP to reopen it. Avoid adding credentials
+or sensitive query parameters to scrape URLs, since Prometheus logs targets.
