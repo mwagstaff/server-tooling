@@ -277,9 +277,22 @@
     },
     {
         "name": "bromley-bins",
-        "path": "/home/mwagstaff/dev/server-tooling/bromley-bins",
+        "aliases": [
+            "bromley-bins-api"
+        ],
+        "path": "/Users/mwagstaff/dev/bromley-bins/api",
+        "remote_dir": "~/dev/bromley-bins-api",
+        "sync_env_local": false,
         "start_command": "npm start",
-        "metrics_port": 3010
+        "startup_port": 3040,
+        "metrics_port": 3040,
+        "healthcheck_path": "/healthcheck",
+        "service_label": "com.bromley-bins.api",
+        "service_description": "Bromley Bins API Service",
+        "static_env": {
+            "PORT": "3040",
+            "TZ": "Europe/London"
+        }
     },
     {
         "name": "kidsplorers-api",

@@ -118,7 +118,7 @@ apply_route /my-boris-bikes http://127.0.0.1:3010       || FAILURES=$((FAILURES+
 apply_route /top-scores     http://127.0.0.1:3011       || FAILURES=$((FAILURES+1))
 apply_route /train-track    http://127.0.0.1:3012       || FAILURES=$((FAILURES+1))
 apply_route /train-track-planner http://127.0.0.1:3014 || FAILURES=$((FAILURES+1))
-apply_route /bromley-bins   http://127.0.0.1:3013       || FAILURES=$((FAILURES+1))
+apply_route /bromley-bins   http://127.0.0.1:3040       || FAILURES=$((FAILURES+1))
 
 echo "Funnel configuration status:"
 # prefer non-sudo status, fall back to sudo
