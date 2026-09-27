@@ -27,10 +27,11 @@ class ReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / 'config.json'
-            config.write_text(json.dumps({'from': 'alerts@example.com', 'to': 'user@example.com'}))
+            config.write_text(json.dumps({'from': 'alerts@example.com', 'to': 'user@example.com', 'host': 'new-host'}))
             with patch('report.ROOT', root), patch('report.CONFIG', config):
                 report.queue_report('REVIEW', text)
             message = BytesParser(policy=policy.default).parsebytes(next((root / 'outbox').glob('*.eml')).read_bytes())
+        self.assertIn('new-host', message['Subject'])
         self.assertEqual(message.get_body(preferencelist=('html',)).get_content_type(), 'text/html')
         self.assertIn('RAW_LOG_ONLY', message.get_body(preferencelist=('plain',)).get_content())
         self.assertEqual(len(list(message.iter_attachments())), 1)

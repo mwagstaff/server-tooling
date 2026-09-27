@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import smtplib
+import socket
 import ssl
 import subprocess
 import time
@@ -50,12 +51,12 @@ def health():
     if code or failed:
         warnings.append('Failed system services detected' if failed else 'Could not check failed system services')
     sections.append('Failed system services:\n' + (failed or error or 'None'))
-    for unit in ['caddy', 'cloudflared', 'server-tooling-full-upgrade.timer', 'unattended-upgrades']:
+    config = json.loads(CONFIG.read_text())
+    for unit in config.get('system_units', ['caddy', 'cloudflared', 'server-tooling-full-upgrade.timer', 'unattended-upgrades']):
         code, output, error = command(['systemctl', 'is-active', unit])
         if code:
             warnings.append(unit + ' is not active')
         sections.append(unit + ': ' + (output or error))
-    config = json.loads(CONFIG.read_text())
     user_command = ['runuser', '-u', config['user'], '--', 'env', 'XDG_RUNTIME_DIR=/run/user/' + str(config['uid']), 'systemctl', '--user']
     for unit in config['units']:
         code, output, error = command(user_command + ['is-active', unit])
@@ -167,7 +168,8 @@ def build_report(state, result, validation=False):
             warnings.append('Cloudflare Tunnel encountered a shutdown timeout or service failure during the upgrade')
     status = 'FAILED' if result != 'success' else ('REVIEW' if warnings else 'OK')
     title = 'Report validation (no upgrade run)' if validation else 'Weekly upgrade'
-    text = f'{title} — sky — {status}\nCompleted: {now.isoformat()}\n'
+    hostname = json.loads(CONFIG.read_text()).get('host', socket.gethostname()) if CONFIG.exists() else socket.gethostname()
+    text = f'{title} — {hostname} — {status}\nCompleted: {now.isoformat()}\n'
     if not validation:
         text += f'Started: {datetime.datetime.fromtimestamp(started, datetime.timezone.utc).isoformat()}\nService result: {result}\n'
     text += '\nATTENTION\n' + ('\n'.join('- ' + item for item in warnings) or 'No concerns found by the checks below.')
@@ -182,11 +184,11 @@ def queue_report(status, text, validation=False):
     config = json.loads(CONFIG.read_text())
     message = EmailMessage()
     message['From'], message['To'] = config['from'], config['to']
-    message['Subject'] = f'[{status}] sky ' + ('upgrade report validation' if validation else 'weekly upgrade report')
+    message['Subject'] = f'[{status}] {config.get("host", socket.gethostname())} ' + ('upgrade report validation' if validation else 'weekly upgrade report')
     message['Date'], message['Message-ID'] = formatdate(localtime=True), make_msgid(domain=config['from'].split('@')[-1])
     message.set_content(text)
     message.add_alternative(html_report(status, text), subtype='html')
-    message.add_attachment(text, subtype='plain', filename='sky-upgrade-details.txt')
+    message.add_attachment(text, subtype='plain', filename='upgrade-details.txt')
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     outbox = ROOT / 'outbox'
     outbox.mkdir(mode=0o700, parents=True, exist_ok=True)
