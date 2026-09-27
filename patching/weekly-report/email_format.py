@@ -37,7 +37,7 @@ def html_report(status, text):
         metadata.append((key, value))
     content = '<span style="display:inline-block;padding:6px 12px;border-radius:6px;background:' + background + ';color:' + foreground + ';font-size:12px;font-weight:bold">' + escape(status) + '</span>'
     content += '<h1 style="font-size:26px;line-height:34px;margin:14px 0 8px;color:#142638">' + escape(title) + '</h1>'
-    content += paragraph('Sky · weekly maintenance') + table(['Run details', ''], metadata)
+    content += paragraph(intro.splitlines()[0].split(' — ')[1] + ' · weekly maintenance') + table(['Run details', ''], metadata)
     warnings = [line[2:] for line in attention.splitlines() if line.startswith('- ')]
     if warnings:
         content += block('Needs attention', '<ul style="margin:0;padding:16px 20px 16px 36px;background:' + background + ';border-radius:6px">'

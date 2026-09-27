@@ -1,7 +1,8 @@
 # Weekly upgrade reports and maintenance events
 
-Install from the repository (requires existing Sky upgrade service, Plunk SMTP
-credential, and passwordless sudo):
+For a new host, use the [one-line maintenance installer](../README.md).
+To update only report hooks on a host with the weekly upgrade service and
+passwordless sudo:
 
 ```bash
 python3 patching/install-upgrade-report.py sky
@@ -17,8 +18,9 @@ Existing files are backed up under `/var/backups/server-tooling/`.
 Reports go from `alerts@skynolimit.dev` to `mike.wagstaff@gmail.com` through the
 existing Plunk SMTP relay with certificate-verified STARTTLS. Override the
 recipient with `--email`. No new Bitwarden entry is needed. The installer makes
-a root-only copy of the existing Plunk credential; rerun it after rotating that
-credential. Settings live in `/etc/server-tooling/weekly-upgrade.json`.
+a root-only copy of the existing Plunk credential, or retrieves `PLUNK_SECRET_KEY`
+from Bitwarden for a new host. Supply `PLUNK_SECRET_KEY` in the controller
+environment to replace a deployed credential after rotation. Settings live in `/etc/server-tooling/weekly-upgrade.json`.
 
 Before an upgrade, record installed package versions. After the service ends
 (including failure), compare versions and report:
@@ -41,7 +43,7 @@ is reported as unknown/needs review, never a clean bill of health.
 
 Gmail displays an HTML summary with a status badge, findings, package-version
 table, security checks, and service statuses. Times are shown in Europe/London.
-Detailed logs are in the attached `sky-upgrade-details.txt`; a plain-text body
+Detailed logs are in the attached `upgrade-details.txt`; a plain-text body
 remains available to other mail clients. Dynamic content is HTML-escaped.
 
 Reports are retained root-only for 90 days in
