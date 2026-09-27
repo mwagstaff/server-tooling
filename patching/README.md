@@ -8,15 +8,15 @@ Bitwarden CLI session (the normal server-tooling cached session also works).
 
 ## One-line install
 
-While PR #1 is awaiting merge, use the published branch:
+Run the installer from `main`:
 
 ```bash
-MAINTENANCE_REF=codex/independent-monitoring bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl -fsSL "https://raw.githubusercontent.com/mwagstaff/server-tooling/$MAINTENANCE_REF/patching/bootstrap.sh" -o "$f"; bash "$f" new-host'
+MAINTENANCE_REF=main bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl -fsSL "https://raw.githubusercontent.com/mwagstaff/server-tooling/$MAINTENANCE_REF/patching/bootstrap.sh" -o "$f"; bash "$f" new-host'
 ```
 
-Replace `new-host` with an SSH alias or `user@hostname`. After merge, use `main`
-instead of `codex/independent-monitoring`. A Git commit SHA can be used to pin the
-installer. From a checkout, the equivalent is:
+Replace `new-host` with an SSH alias or `user@hostname`. A reviewed Git commit SHA
+can be used as `MAINTENANCE_REF` to pin both downloads. From a checkout, the
+equivalent is:
 
 ```bash
 python3 patching/install-maintenance.py new-host

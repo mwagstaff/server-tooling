@@ -18,7 +18,7 @@ bash monitoring/install.sh --monitor sky --target mini
 GitHub bootstrap (run from a machine with SSH access to both hosts):
 
 ```bash
-MONITORING_REF=codex/independent-monitoring bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl -fsSL "https://raw.githubusercontent.com/mwagstaff/server-tooling/$MONITORING_REF/monitoring/bootstrap.sh" -o "$f"; bash "$f" --monitor mini --target sky'
+MONITORING_REF=main bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl -fsSL "https://raw.githubusercontent.com/mwagstaff/server-tooling/$MONITORING_REF/monitoring/bootstrap.sh" -o "$f"; bash "$f" --monitor mini --target sky'
 ```
 
 For repeatable installation, set `MONITORING_REF` in the command to a reviewed
@@ -173,8 +173,8 @@ Prometheus is unavailable.
 
 A separate **Host events** table and graph annotations show weekly upgrades,
 tunnel lifecycle events and host reboots. Reboots derive from retained boot
-metrics. Install the [weekly report/event hooks](../../patching/weekly-report/README.md)
-on Sky for maintenance events and email reports. Host filters apply to events;
+metrics. Use the [host maintenance installer](../../patching/README.md) for
+weekly upgrades, email reports, maintenance events and scheduled host reboots. Host filters apply to events;
 service filters intentionally do not hide host-wide maintenance. Annotation
 queries follow the [Infinity annotation format](https://grafana.com/docs/plugins/yesoreyeram-infinity-datasource/latest/annotations/).
 
