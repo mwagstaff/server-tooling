@@ -145,7 +145,7 @@
         "service_label": "com.sky-no-limit.website",
         "service_description": "Sky No Limit website",
         "startup_port": 3030,
-        "metrics_port": 3030,
+        "metrics_port": false,
         "public_url": "https://skynolimit.dev",
         "static_env": {
             "PORT": "3030"
@@ -338,7 +338,7 @@
         "public_url": "https://kidsplorers.com",
         "static_env": {
             "PORT": "3200",
-            "HOSTNAME": "127.0.0.1",
+            "HOSTNAME": "0.0.0.0",
             "NEXT_PUBLIC_API_URL": "https://api.kidsplorers.com",
             "PUBLIC_URL": "https://kidsplorers.com",
             "INTERNAL_API_URL": "http://localhost:3100"

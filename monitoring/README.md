@@ -247,15 +247,19 @@ deploy of that project re-adds the scrape job.
 | `Watchdog` missing from Alertmanager | Prometheus is not evaluating rules or cannot reach Alertmanager: `curl localhost:9090/api/v1/alertmanagers` and `/api/v1/rules` on the host |
 | `install-alerting.zsh` hangs at "Unlocking Bitwarden vault" | Cached session expired; enter the master password, or use `--keep-secret` / `PLUNK_SECRET_KEY=...` |
 
-## Current state (2026-09-21)
+## Current state (2026-09-29)
 
 - Installed on `sky`; test alert and real `TargetDown` alerts delivered to
   `mike.wagstaff@gmail.com`.
 - Per-project rules installed for `tube-track-api`.
 - Scrape jobs removed for `kidventures-web` (retired) and `goal-guesser` (on
   hold; a full deploy re-adds it).
-- `TargetDown` silenced for 7 days for `kidsplorers-web` (binds `127.0.0.1`
-  because of `HOSTNAME: 127.0.0.1` in `node_projects.json`; set it to
-  `0.0.0.0` and redeploy) and `sky-no-limit-web` (`server.mjs` has no
-  `/metrics` route; add prom-client or set `metrics_port: false`). Both have
-  never been scraped successfully.
+- The seven-day silences for `kidsplorers-web` and `sky-no-limit-web` expired
+  on 28 September at 22:36 BST, exposing the existing scrape failures.
+- `kidsplorers-web` now binds `0.0.0.0:3200`; the existing persistent ufw
+  rules allow the Docker subnets while blocking public access to that port.
+  Prometheus successfully scrapes `/metrics`. The deployment config preserves
+  the listening address.
+- Removed the unsupported `sky-no-limit-web` scrape job and set its deployment
+  `metrics_port: false` so full deployments do not recreate it. The website
+  remains on port 3030; it has no native `/metrics` endpoint.
