@@ -1,4 +1,52 @@
-Tailscale Funnel installer
+# Tailscale configuration
+
+## Sky DNS and the Mini planner
+
+Sky must accept Tailscale DNS so the Mini's HTTPS hostname resolves to its
+private Tailscale address instead of the public Funnel ingress. On 2026-10-01,
+the public route failed with HTTPS EOF errors while the private route remained
+healthy, taking down journey planning and its Prometheus scrape.
+
+From the repository root:
+
+```bash
+./tailscale/configure-sky-dns.sh apply
+./tailscale/configure-sky-dns.sh check
+```
+
+`apply` is safe to repeat: it runs `sudo -n tailscale set --accept-dns=true`
+on the SSH host `sky`. `check` is read-only and is the default. Both verify the
+saved preference, compare system DNS with the Mini's current Tailscale IPv4
+address, and check planner HTTPS health using normal DNS and certificate
+validation. Requirements on Sky: an authenticated Tailscale installation,
+tailnet DNS/MagicDNS configured, Python 3, curl, getent, and (for apply)
+non-interactive sudo access to `tailscale set`.
+
+This accepts the tailnet's DNS configuration for Sky as a whole; it is not a
+single-host override. The planner URL, TLS hostname, and service token stay the
+same. No IP address is hard-coded and no service restart is required.
+
+Sky's `tailscaled` systemd service stores preferences in
+`/var/lib/tailscale/tailscaled.state`. They survive service and machine restarts.
+That private state contains machine identity material: do not copy it into Git
+or edit it manually. This script is the version-controlled desired setting.
+Reapply after provisioning/authenticating a replacement Sky or if DNS preferences
+are reset. It does not continuously enforce the setting.
+
+After applying, confirm the `train-track-planner` target is `up` in Prometheus;
+the `TargetDown` alert should clear on the next rule evaluation. The script's
+health check does not exercise authenticated journey searches or container DNS.
+
+To deliberately restore the previous DNS preference (which can reintroduce the
+planner outage):
+
+```bash
+ssh sky 'sudo tailscale set --accept-dns=false'
+```
+
+See [Tailscale client preferences](https://tailscale.com/docs/features/client/manage-preferences).
+
+## Tailscale Funnel installer
 
 Quick usage
 

@@ -13,7 +13,8 @@ emails them through Plunk.
 **`sky` is the only monitoring host.** `install-monitoring.zsh` and
 `install-alerting.zsh` refuse to run anywhere else: the stack is Docker +
 Debian packaging, and `mini` has neither Docker nor passwordless sudo. Apps on
-`mini` are scraped from `sky` over their public HTTPS route instead (see
+`mini` are scraped from `sky` over their HTTPS hostname, resolved through private
+Tailscale DNS (see [Sky DNS setup](../tailscale/README.md#sky-dns-and-the-mini-planner) and
 [Mini journey-planner timetable alerts](#mini-journey-planner-timetable-alerts)),
 so all scrape jobs, alert rules and Alertmanager state live in one place.
 `mini` does run its own Homebrew Prometheus + Grafana + node_exporter for
