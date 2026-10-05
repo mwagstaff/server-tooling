@@ -291,8 +291,14 @@
         "service_description": "Bromley Bins API Service",
         "static_env": {
             "PORT": "3040",
-            "TZ": "Europe/London"
-        }
+            "TZ": "Europe/London",
+            "BINS_DATA_DIR": "/home/mwagstaff/.local/share/bromley-bins-api",
+            "APNS_AUTH_KEY_PATH": "/home/mwagstaff/dev/bromley-bins-api/certs/APNS_AuthKey_SkyNoLimit_SandboxAndProd.p8"
+        },
+        "required_bitwarden_env": [
+            "APNS_KEY_ID",
+            "APNS_TEAM_ID"
+        ]
     },
     {
         "name": "kidsplorers-api",
@@ -301,6 +307,7 @@
     "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.api.env.sh",
     "entry_file": "services/api/dist/index.js",
+        "rsync_excludes": ["/apps/mobile/ios/", "/apps/mobile/android/"],
         "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/api build",
         "startup_port": 3100,
         "metrics_port": 3100,
@@ -318,6 +325,7 @@
     "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.web.env.sh",
     "entry_file": "apps/web/start.js",
+        "rsync_excludes": ["/apps/mobile/ios/", "/apps/mobile/android/"],
         "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/web build",
         "startup_port": 3200,
         "metrics_port": 3200,
