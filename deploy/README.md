@@ -43,8 +43,12 @@ installs or updates Alertmanager and the generic rules (`TargetDown`, and
 `AppCheckFailing` on the cross-app gauge `app_check_ok{check="..."}`); a full
 deploy installs a project's `observability/prometheus/rules.yml` as
 `~/monitoring/rules/<job>.yml` via `monitoring/configure-prometheus-rules.sh`.
-New apps also need a ufw rule allowing the Prometheus Docker subnet to reach
-their metrics port and must not bind `127.0.0.1` only.
+Full deployments automatically add a persistent UFW rule allowing the
+Prometheus Docker subnet to reach each metrics port when UFW is active.
+On hosts without active UFW, the existing temporary iptables fallback remains;
+those hosts need their own firewall persistence. Apps must not bind
+`127.0.0.1` only. Host-wide UFW setup is in `patching/patch_sky_host.zsh`;
+its default Docker scrape ports include Bromley Bins on 3040.
 
 ## Regression checks
 

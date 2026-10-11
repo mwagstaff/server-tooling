@@ -38,7 +38,19 @@ app /metrics ──scrape──> Prometheus ──rules──> Alertmanager ─�
 
 Ports 9090 (Prometheus) and 3001 (Grafana, public at
 `https://api.skynolimit.dev/grafana`) are exposed by the compose file;
-Alertmanager listens on `127.0.0.1:9093` only.
+Alertmanager listens on `127.0.0.1:9093` only, with private HTTPS access through
+Tailscale Serve at `https://sky.dog-rattlesnake.ts.net:8443`.
+Connect to Tailscale before opening the UI or links in new alert emails.
+Old emails still contain `localhost` and require the SSH tunnel below.
+
+Provision the persistent tailnet-only proxy once on Sky (port 8443 is reserved
+for this Alertmanager; do not enable Funnel on it):
+
+```bash
+ssh sky 'sudo tailscale serve --bg --https=8443 http://127.0.0.1:9093'
+```
+
+The installer sets the URL used in emails; it does not provision the proxy.
 
 ## Install or update Alertmanager
 
@@ -72,6 +84,7 @@ Settings are environment variables with these defaults:
 | `PLUNK_SMTP_HOST` / `PLUNK_SMTP_PORT` | `next-smtp.useplunk.com` / `2587` | STARTTLS submission port (Plunk → Settings → SMTP) |
 | `PLUNK_BW_ITEM_NAME` | `PLUNK_SECRET_KEY` | Bitwarden item holding the project secret key |
 | `ALERTMANAGER_HOST_PORT` | `9093` | Bound to 127.0.0.1 |
+| `ALERTMANAGER_EXTERNAL_URL` | `https://sky.dog-rattlesnake.ts.net:8443` | Reachable UI URL used in emails; provision the proxy above first. Override for a different monitoring host. |
 
 Routing lives in `alertmanager.yml` (rendered by the script, so edit the
 heredoc in `install-alerting.zsh`, not the file on the host): one `email`

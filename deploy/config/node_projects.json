@@ -359,6 +359,7 @@
     "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.events-worker.env.sh",
     "entry_file": "services/events-worker/dist/index.js",
+    "node_binary": "/opt/homebrew/bin/node",
         "rsync_excludes": ["/apps/mobile/ios/", "/apps/mobile/android/"],
         "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/events-worker build",
         "startup_port": 3310,

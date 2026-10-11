@@ -46,6 +46,9 @@ fi
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/monitoring}"
 ALERTMANAGER_IMAGE="${ALERTMANAGER_IMAGE:-prom/alertmanager:latest}"
 ALERTMANAGER_HOST_PORT="${ALERTMANAGER_HOST_PORT:-9093}"
+# The default stack runs on Sky; provision its private Tailscale Serve proxy
+# as documented in monitoring/README.md before using this URL.
+ALERTMANAGER_EXTERNAL_URL="${ALERTMANAGER_EXTERNAL_URL:-https://sky.dog-rattlesnake.ts.net:8443}"
 
 ALERT_EMAIL_TO="${ALERT_EMAIL_TO:-mike.wagstaff@gmail.com}"
 ALERT_EMAIL_FROM="${ALERT_EMAIL_FROM:-alerts@skynolimit.dev}"
@@ -279,7 +282,7 @@ cat > "\$BLOCK_FILE" <<'BLOCK'
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
-      - "--web.external-url=http://localhost:${ALERTMANAGER_HOST_PORT}"
+      - "--web.external-url=${ALERTMANAGER_EXTERNAL_URL}"
     ports:
       - "127.0.0.1:${ALERTMANAGER_HOST_PORT}:9093"
     restart: unless-stopped
@@ -403,5 +406,5 @@ if [[ "${SEND_TEST_ALERT}" == "1" ]]; then
   echo "   Sent; the email should arrive within ~1 minute (group_wait 30s). A resolved email follows a few minutes later."
 fi
 
-echo "==> Done. Alertmanager UI: ssh -L ${ALERTMANAGER_HOST_PORT}:localhost:${ALERTMANAGER_HOST_PORT} ${TARGET_HOST}  then http://localhost:${ALERTMANAGER_HOST_PORT}"
+echo "==> Done. Alertmanager UI (connect to Tailscale): ${ALERTMANAGER_EXTERNAL_URL}"
 EOF

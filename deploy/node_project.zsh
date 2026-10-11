@@ -1252,7 +1252,7 @@ tail_parallel_deploy_logs() {
   trap cleanup_parallel_tails INT TERM EXIT
 
   for project_name in "${project_names[@]}"; do
-    tail_args=("$project_name" "$host")
+    tail_args=("$project_name" "${host:-$(get_project_default_host "$project_name")}")
     if [[ "$TAIL_ERRORS_ONLY" == "1" ]]; then
       tail_args+=("--errors-only")
     fi
@@ -1289,8 +1289,7 @@ run_parallel_deployments() {
   local -a project_names=("$@")
   local -a child_switch_args=()
   local -a child_pids=()
-  local -a child_projects=()
-  local project_name pid deploy_status failed_count
+  local project_name deploy_status failed_count
 
   if [[ "$QUICK_MODE" == "1" ]]; then
     child_switch_args+=("--quick")
@@ -1317,30 +1316,56 @@ run_parallel_deployments() {
     child_switch_args+=("--bw")
   fi
 
-  echo "==> Deploying ${#project_names[@]} projects in parallel to $host:"
-  printf '    - %s\n' "${project_names[@]}"
+  # An empty host deploys each project to its own default host.
+  if [[ -n "$host" ]]; then
+    echo "==> Deploying ${#project_names[@]} projects in parallel to $host:"
+    printf '    - %s\n' "${project_names[@]}"
+  else
+    echo "==> Deploying ${#project_names[@]} projects in parallel to their default hosts:"
+    for project_name in "${project_names[@]}"; do
+      echo "    - $project_name ($(get_project_default_host "$project_name"))"
+    done
+  fi
   echo ""
 
+  # Projects sharing a host and remote dir (e.g. one monorepo) deploy one after
+  # another; concurrent rsync --delete runs into the same tree clobber each other.
+  local group_key target_host
+  local -a group_keys=()
+  local -A group_projects=()
   for project_name in "${project_names[@]}"; do
+    target_host="${host:-$(get_project_default_host "$project_name")}"
+    group_key="$target_host:$(get_project_remote_dir "$project_name")"
+    if (( ! ${+group_projects[$group_key]} )); then
+      group_keys+=("$group_key")
+      group_projects[$group_key]=""
+    fi
+    group_projects[$group_key]+="$project_name "
+  done
+
+  for group_key in "${group_keys[@]}"; do
     (
-      "$SCRIPT_PATH" "$project_name" "$host" "${child_switch_args[@]}"
-    ) > >(prefix_parallel_output "$project_name") 2> >(prefix_parallel_output "$project_name" >&2) &
-    pid="$!"
-    child_pids+=("$pid")
-    child_projects+=("$project_name")
+      group_failed=0
+      for project_name in ${=group_projects[$group_key]}; do
+        if (
+          "$SCRIPT_PATH" "$project_name" "${group_key%%:*}" "${child_switch_args[@]}"
+        ) > >(prefix_parallel_output "$project_name") 2> >(prefix_parallel_output "$project_name" >&2); then
+          echo "==> Parallel deploy finished: $project_name"
+        else
+          deploy_status="$?"
+          echo "❌ Parallel deploy failed for $project_name (exit $deploy_status)" >&2
+          group_failed=$((group_failed + 1))
+        fi
+      done
+      exit "$group_failed"
+    ) &
+    child_pids+=("$!")
   done
 
   failed_count=0
-  for ((idx = 1; idx <= ${#child_pids[@]}; idx++)); do
-    pid="${child_pids[$idx]}"
-    project_name="${child_projects[$idx]}"
-    if wait "$pid"; then
-      echo "==> Parallel deploy finished: $project_name"
-    else
-      deploy_status="$?"
-      echo "❌ Parallel deploy failed for $project_name (exit $deploy_status)" >&2
-      failed_count=$((failed_count + 1))
-    fi
+  for pid in "${child_pids[@]}"; do
+    wait "$pid" && deploy_status=0 || deploy_status="$?"
+    failed_count=$((failed_count + deploy_status))
   done
 
   if (( failed_count > 0 )); then
@@ -1480,17 +1505,10 @@ if [[ "$BW_ENV_SYNC" == "1" && "$OPTIMIZE_IMAGES" != "1" ]]; then
 fi
 
 # No host given: every positional argument names a project and none is a
-# configured SSH host, so deploy them all to their configured default host.
+# configured SSH host, so deploy each one to its own configured default host.
 if [[ $# -ge 2 ]] && ! positional_args_include_ssh_host "$@" \
   && NO_HOST_PROJECT_NAMES=("${(@f)$(resolve_project_args "$@")}"); then
-  NO_HOST_TARGET="$(get_project_default_host "${NO_HOST_PROJECT_NAMES[1]}")"
-  for project_name in "${NO_HOST_PROJECT_NAMES[@]}"; do
-    if [[ "$(get_project_default_host "$project_name")" != "$NO_HOST_TARGET" ]]; then
-      echo "Error: These projects have different default hosts; pass the target host explicitly." >&2
-      exit 1
-    fi
-  done
-  run_parallel_deployments "$NO_HOST_TARGET" "${NO_HOST_PROJECT_NAMES[@]}"
+  run_parallel_deployments "" "${NO_HOST_PROJECT_NAMES[@]}"
 fi
 
 if [[ $# -ge 3 ]]; then
@@ -2409,7 +2427,10 @@ if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
     NODE_EXECUTABLE='$NODE_BINARY'
     if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
-      NODE_EXECUTABLE=\$(command -v node)
+      NODE_EXECUTABLE=\$(command -v node) || {
+        echo \"Error: node not found on PATH for non-interactive ssh; set node_binary for ${PROJECT_NAME} in config/node_projects.json\" >&2
+        exit 1
+      }
     fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
@@ -2592,7 +2613,10 @@ else
     STATIC_CONFIG_ENV_FILE=\"\$REMOTE_DIR_EXPANDED/.static-config-${PROJECT_NAME}.env.sh\"
     NODE_EXECUTABLE='$NODE_BINARY'
     if [[ -z \"\$NODE_EXECUTABLE\" ]]; then
-      NODE_EXECUTABLE=\$(command -v node)
+      NODE_EXECUTABLE=\$(command -v node) || {
+        echo \"Error: node not found on PATH for non-interactive ssh; set node_binary for ${PROJECT_NAME} in config/node_projects.json\" >&2
+        exit 1
+      }
     fi
     LEGACY_SERVICE_LABELS=(${LEGACY_SERVICE_LABELS_SSH})
     SERVICE_NAMES=(${SERVICE_NAMES_SSH})
@@ -2754,6 +2778,8 @@ EOF_START_WRAPPER
   <string>REMOTE_DIR_PLACEHOLDER</string>
   USER_NAME_KEY_PLACEHOLDER
   USER_NAME_VALUE_PLACEHOLDER
+  SESSION_TYPE_KEY_PLACEHOLDER
+  SESSION_TYPE_VALUE_PLACEHOLDER
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -2780,8 +2806,12 @@ EOF_PLIST
         if [[ \"\$SERVICE_SCOPE\" == 'system' ]]; then
           sed -i '' 's|  USER_NAME_KEY_PLACEHOLDER|  <key>UserName</key>|' \"\$plist\"
           sed -i '' \"s|  USER_NAME_VALUE_PLACEHOLDER|  <string>\$USER_NAME</string>|\" \"\$plist\"
+          sed -i '' '/SESSION_TYPE_KEY_PLACEHOLDER/d; /SESSION_TYPE_VALUE_PLACEHOLDER/d' \"\$plist\"
         else
           sed -i '' '/USER_NAME_KEY_PLACEHOLDER/d; /USER_NAME_VALUE_PLACEHOLDER/d' \"\$plist\"
+          # Background lets the agent bootstrap into user/<uid> on a headless Mac with no GUI login.
+          sed -i '' 's|  SESSION_TYPE_KEY_PLACEHOLDER|  <key>LimitLoadToSessionType</key>|' \"\$plist\"
+          sed -i '' 's|  SESSION_TYPE_VALUE_PLACEHOLDER|  <array><string>Aqua</string><string>Background</string></array>|' \"\$plist\"
         fi
         if command -v plutil >/dev/null 2>&1; then
           if ! plutil -lint \"\$plist\" >/dev/null 2>&1; then
@@ -3102,7 +3132,13 @@ else
     if [[ -n "$AUTO_PROM_SUBNET" ]]; then
       for AUTO_PROM_SCRAPE_PORT in "${AUTO_PROM_METRICS_PORTS[@]}"; do
         echo "   Ensuring firewall allows ${AUTO_PROM_SUBNET} -> tcp/${AUTO_PROM_SCRAPE_PORT}"
-        ssh "$HOST" "sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT"
+        # UFW rules survive reboot; raw iptables rules do not. Preserve the
+        # existing fallback on hosts that do not use an active UFW firewall.
+        ssh "$HOST" "if sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+          sudo ufw allow from \"$AUTO_PROM_SUBNET\" to any port \"$AUTO_PROM_SCRAPE_PORT\" proto tcp comment 'Prometheus Docker metrics'
+        else
+          sudo iptables -C INPUT -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 1 -p tcp -s \"$AUTO_PROM_SUBNET\" --dport \"$AUTO_PROM_SCRAPE_PORT\" -j ACCEPT
+        fi"
       done
     fi
 

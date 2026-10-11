@@ -52,15 +52,17 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
                    project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
-                   launchd_admin_helper=None, remote_dir="/srv/test-project"):
+                   launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
+                   share_remote_dir=False):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         deploy = root / "deploy"
         (deploy / "config").mkdir(parents=True)
         (deploy / "lib").mkdir()
-        shutil.copyfile(DEPLOY / "node_project.zsh", deploy / "node_project.zsh")
+        shutil.copy(DEPLOY / "node_project.zsh", deploy / "node_project.zsh")
         shutil.copyfile(DEPLOY / "lib/project_name_matcher.zsh", deploy / "lib/project_name_matcher.zsh")
+        shutil.copyfile(DEPLOY / "lib/project_default_hosts.zsh", deploy / "lib/project_default_hosts.zsh")
         # Stub the log tailer so post-deploy tailing is recorded instead of run.
         tail = deploy / "tail_node_project.zsh"
         tail.write_text(TAIL_STUB)
@@ -97,7 +99,9 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["log_file"] = log_file
         if error_log_file is not None:
             config["error_log_file"] = error_log_file
-        (deploy / "config/node_projects.json").write_text(json.dumps([config]))
+        configs = [config] + [dict(config, name=name, remote_dir=remote_dir if share_remote_dir else f"/srv/{name}")
+                              for name in (extra_project_names or [])]
+        (deploy / "config/node_projects.json").write_text(json.dumps(configs))
         binaries = root / "bin"
         binaries.mkdir()
         for name in ["ssh", "rsync", "say", "afplay", "osascript"]:
@@ -204,6 +208,31 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             self.assertFalse(any("test-host" in arg for arg in call["args"]), call)
         tails = [call for call in calls if call["name"] == "tail"]
         self.assertEqual([call["args"] for call in tails], [["test-project", "sky", "--errors-only"]])
+
+    def test_omitted_host_deploys_each_project_to_its_own_default_host(self):
+        result, calls = self.run_deploy(project_arg="kids*", host=None, project_name="kidsplorers-api",
+                                        remote_dir="/srv/kidsplorers-api",
+                                        extra_project_names=["kidsplorers-events-worker"],
+                                        switches=["--no-tail"])
+        self.assert_success(result)
+        self.assertIn("kidsplorers-api (sky)", result.stdout)
+        self.assertIn("kidsplorers-events-worker (mini)", result.stdout)
+        rsync_targets = {arg for call in calls if call["name"] == "rsync" for arg in call["args"]
+                         if arg.startswith(("sky:", "mini:"))}
+        self.assertEqual(rsync_targets, {"sky:/srv/kidsplorers-api/", "mini:/srv/kidsplorers-events-worker/"})
+
+    def test_projects_sharing_a_remote_dir_deploy_sequentially(self):
+        result, calls = self.run_deploy(project_arg="kids*", host=None, project_name="kidsplorers-api",
+                                        extra_project_names=["kidsplorers-web"], share_remote_dir=True,
+                                        switches=["--no-tail"])
+        self.assert_success(result)
+        rsyncs = [call for call in calls if call["name"] == "rsync"]
+        self.assertEqual(len(rsyncs), 2)
+        self.assertIn("Parallel deploy finished: kidsplorers-api", result.stdout)
+        self.assertIn("Parallel deploy finished: kidsplorers-web", result.stdout)
+        # The second project's first remote call starts only after the first project finished.
+        self.assertLess(result.stdout.index("Parallel deploy finished: kidsplorers-api"),
+                        result.stdout.index("[kidsplorers-web] ==> Deploying project"))
 
     def test_journey_planner_alias_defaults_to_mini(self):
         projects = json.loads((DEPLOY / "config/node_projects.json").read_text())

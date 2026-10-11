@@ -23,7 +23,7 @@ set -euo pipefail
 #   --compose-dirs DIRS       Comma-separated remote dirs where docker compose pull/up runs, default ~/monitoring
 #   --allow-ports PORTS       Comma-separated UFW TCP ports to allow, default 80,443
 #   --docker-host-scrape-ports PORTS
-#                             UFW TCP port/range Docker networks may scrape on host, default 3010:3015
+#                             UFW TCP ports/ranges Docker networks may scrape on host, default 3010:3015,3040
 #   --skip-stack-updates      Skip npm/docker/cloudflared/tailscale update attempts
 #   --skip-livepatch          Skip canonical-livepatch snap install
 #   --skip-ssh-hardening      Do not enforce SSH hardening drop-in
@@ -40,7 +40,7 @@ FULL_UPGRADE_TIME="${PATCH_FULL_UPGRADE_TIME:-Sun 04:00}"
 NPM_PROJECT_ROOTS="${PATCH_NPM_PROJECT_ROOTS:-${PATCH_NPM_PROJECT_DIRS:-~/dev}}"
 COMPOSE_DIRS="${PATCH_COMPOSE_DIRS:-~/monitoring}"
 ALLOW_PORTS="${PATCH_ALLOW_PORTS:-80,443}"
-DOCKER_HOST_SCRAPE_PORTS="${PATCH_DOCKER_HOST_SCRAPE_PORTS:-3010:3015}"
+DOCKER_HOST_SCRAPE_PORTS="${PATCH_DOCKER_HOST_SCRAPE_PORTS:-3010:3015,3040}"
 SKIP_STACK_UPDATES=0
 SKIP_LIVEPATCH=0
 SKIP_SSH_HARDENING=0
@@ -70,7 +70,7 @@ Options:
   --compose-dirs DIRS       Comma-separated remote dirs where docker compose pull/up runs, default ~/monitoring
   --allow-ports PORTS       Comma-separated UFW TCP ports to allow, default 80,443
   --docker-host-scrape-ports PORTS
-                            UFW TCP port/range Docker networks may scrape on host, default 3010:3015
+                            UFW TCP ports/ranges Docker networks may scrape on host, default 3010:3015,3040
   --skip-stack-updates      Skip npm/docker/cloudflared/tailscale update attempts
   --skip-livepatch          Skip canonical-livepatch snap install
   --skip-ssh-hardening      Do not enforce SSH hardening drop-in
@@ -590,7 +590,7 @@ FULL_UPGRADE_TIME="${FULL_UPGRADE_TIME:-Sun 04:00}"
 NPM_PROJECT_ROOTS="${NPM_PROJECT_ROOTS:-~/dev}"
 COMPOSE_DIRS="${COMPOSE_DIRS:-~/monitoring}"
 ALLOW_PORTS="${ALLOW_PORTS:-80,443}"
-DOCKER_HOST_SCRAPE_PORTS="${DOCKER_HOST_SCRAPE_PORTS:-3010:3015}"
+DOCKER_HOST_SCRAPE_PORTS="${DOCKER_HOST_SCRAPE_PORTS:-3010:3015,3040}"
 SKIP_STACK_UPDATES="${SKIP_STACK_UPDATES:-0}"
 SKIP_LIVEPATCH="${SKIP_LIVEPATCH:-0}"
 SKIP_SSH_HARDENING="${SKIP_SSH_HARDENING:-0}"
