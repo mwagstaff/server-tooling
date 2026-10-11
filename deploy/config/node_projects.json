@@ -351,5 +351,28 @@
             "PUBLIC_URL": "https://kidsplorers.com",
             "INTERNAL_API_URL": "http://localhost:3100"
         }
+    },
+    {
+        "name": "kidsplorers-events-worker",
+        "aliases": ["kv-worker", "kidsplorers-worker", "events-worker"],
+        "path": "/Users/mwagstaff/dev/kidsplorers",
+    "remote_dir": "~/dev/kidsplorers",
+    "bw_remote_env_file_name": ".bw-secrets.events-worker.env.sh",
+    "entry_file": "services/events-worker/dist/index.js",
+        "rsync_excludes": ["/apps/mobile/ios/", "/apps/mobile/android/"],
+        "build_command": "pnpm exec turbo build --filter @kidsplorers/shared-types && pnpm --filter @kidsplorers/events-worker build",
+        "startup_port": 3310,
+        "metrics_port": false,
+        "service_label": "com.kidsplorers.events-worker",
+        "service_description": "kidsplorers Events Worker",
+        "log_file": "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.log",
+        "error_log_file": "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.error.log",
+        "required_bitwarden_env": ["EVENTS_INGEST_TOKEN"],
+        "static_env": {
+            "PORT": "3310",
+            "OLLAMA_URL": "http://127.0.0.1:11434",
+            "OLLAMA_MODEL": "qwen3.5:9b",
+            "EVENTS_RUN_AT": "01:00"
+        }
     }
 ]

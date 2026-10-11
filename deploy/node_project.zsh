@@ -16,32 +16,6 @@ set -euo pipefail
 #   override with --full / --no-tail
 # - Deploys to the project's default host when no host is given (see PROJECT_DEFAULT_HOSTS)
 
-# ---- Default deploy hosts (edit freely) ----
-# Host used when no target host is given on the command line, keyed by the
-# project name from config/node_projects.json. Projects not listed here fall
-# back to DEFAULT_DEPLOY_HOST.
-DEFAULT_DEPLOY_HOST="sky"
-typeset -A PROJECT_DEFAULT_HOSTS=(
-  healthcheck            sky
-  bikespot-london        sky
-  top-scores             sky
-  top-scores-web         sky
-  goal-guesser           sky
-  sky-no-limit-web       sky
-  train-track-api        sky
-  train-track-planner    mini
-  train-track-journey-planner mini
-  tube-track-api         sky
-  train-loading-service  sky
-  bromley-bins           sky
-  kidsplorers-api        sky
-  kidsplorers-web        sky
-)
-
-get_project_default_host() {
-  echo "${PROJECT_DEFAULT_HOSTS[$1]:-$DEFAULT_DEPLOY_HOST}"
-}
-
 # Prometheus, Grafana and Alertmanager run on this host only. Apps deployed
 # elsewhere are scraped from it over their public route rather than getting
 # their own stack; see monitoring/README.md.
@@ -52,6 +26,7 @@ SCRIPT_DIR="${0:a:h}"
 SCRIPT_PATH="${0:a}"
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
 PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
+source "$SCRIPT_DIR/lib/project_default_hosts.zsh"
 BW_FOLDER_ID="${BW_FOLDER_ID:-7a5cbc24-a5c4-4d07-bbf3-b3f600e24660}"
 BW_APPS_FIELD_NAME="${BW_APPS_FIELD_NAME:-Apps}"
 BW_REMOTE_ENV_FILE_NAME="${BW_REMOTE_ENV_FILE_NAME:-.bw-secrets.env.sh}"
@@ -69,6 +44,11 @@ TAIL_ERRORS_ONLY=""
 DISABLE_MODE=0
 ASSETS_ONLY_MODE=0
 SKIP_ASSET_PREPARE=0
+
+# Warn early if Tailscale is down; hosts like mini are only reachable through it
+if [[ "$(tailscale status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null)" != "Running" ]]; then
+  printf '\n\e[1;33m⚠️  WARNING: Tailscale is not running — hosts reached via Tailscale (e.g. mini) will be unreachable\e[0m\n\n' >&2
+fi
 
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then

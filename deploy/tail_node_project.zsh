@@ -19,6 +19,7 @@ if [[ ! -f "$PROJECT_MATCHER_LIB" ]]; then
   exit 1
 fi
 source "$PROJECT_MATCHER_LIB"
+source "$SCRIPT_DIR/lib/project_default_hosts.zsh"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq is required but not found in PATH" >&2
@@ -28,7 +29,7 @@ fi
 usage() {
   echo "Usage: $SCRIPT_NAME [PROJECT_NAME [HOST]] [--lines N|-n N] [--errors-only|-e]" >&2
   echo "  If no parameters are provided, interactive mode is used." >&2
-  echo "  HOST defaults to 'sky' when omitted." >&2
+  echo "  HOST defaults to the project's default host when omitted." >&2
 }
 
 list_projects() {
@@ -138,13 +139,10 @@ if [[ $# -eq 0 ]]; then
   fi
 
   echo ""
-  read "?Enter target hostname [default: sky]: " HOST
-  if [[ -z "$HOST" ]]; then
-    HOST="sky"
-  fi
+  read "?Enter target hostname [default: project default]: " HOST
 elif [[ $# -eq 1 ]]; then
   PROJECT_NAME="$1"
-  HOST="sky"
+  HOST=""
 elif [[ $# -eq 2 ]]; then
   PROJECT_NAME="$1"
   HOST="$2"
@@ -164,6 +162,10 @@ if ! project_exists "$PROJECT_NAME"; then
   echo ""
   list_projects >&2
   exit 1
+fi
+
+if [[ -z "$HOST" ]]; then
+  HOST="$(get_project_default_host "$PROJECT_NAME")"
 fi
 
 CONFIGURED_REMOTE_DIR="$(get_project_remote_dir "$PROJECT_NAME")"
