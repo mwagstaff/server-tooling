@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>AIOps · Incident console</title>
+<link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body>
+<header><a class="brand" href="/">AIOps<span>Incident console</span></a><div class="header-actions"><span id="host-label"></span><button id="theme" aria-label="Change colour theme">Theme: system</button><button id="logout" hidden>Sign out</button></div></header>
+<main>
+<section id="login" class="login"><p class="eyebrow">PRIVATE OPERATIONS</p><h1>Your services,<br>under observation.</h1><p>Sign in to inspect incidents and control recovery.</p>
+<form id="login-form"><label for="password">Console password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary">Sign in</button></form></section>
+<p id="error" role="alert" hidden></p>
+<div id="console" hidden>
+<section class="intro"><div><p class="eyebrow">SERVICE OPERATIONS</p><h1>Incident desk</h1><p id="summary">Connecting to the responder…</p></div><div class="controls"><button id="refresh">Refresh</button><button id="pause">Pause recovery</button></div></section>
+<div id="status-strip" class="status-strip" aria-live="polite"></div>
+<section class="fleet" aria-labelledby="fleet-title">
+<div class="section-title"><h2 id="fleet-title">Service status</h2><label>Refresh every <select id="refresh-interval"><option value="30000" selected>30 seconds</option><option value="60000">1 minute</option><option value="120000">2 minutes</option></select></label></div>
+<p class="meta">All registered services on Mini and Sky · Process, local endpoint and public endpoint where configured · Unhealthy services first</p>
+<div id="fleet-summary" class="fleet-summary" role="status">Loading current service checks…</div>
+<ul id="fleet-services" class="fleet-services"></ul>
+</section>
+<div class="workspace">
+<section class="incident-list"><div class="section-title"><h2>Incidents</h2><label>Show <select id="filter"><option value="all">All statuses</option><option value="attention">Needs attention</option><option value="resolved">Recovered / healthy</option></select></label></div><div id="incidents"></div></section>
+<aside id="detail" aria-live="polite"><div class="empty"><h2>Select an incident</h2><p>Review the evidence, recovery attempts and final checks here.</p></div></aside>
+</div>
+<section class="settings"><div><p class="eyebrow">RECOVERY POLICY</p><h2>Controls & connections</h2><p>Changes apply to the responder on this host.</p></div><div>
+<form id="settings-form"><label class="toggle"><input id="automatic" type="checkbox"> Allow approved automatic procedures</label><label for="budget">Cloud budget per incident (USD)</label><div class="inline"><input id="budget" type="number" min="0" max="100" step="0.1" required><button>Save policy</button></div></form>
+<div id="connections"></div></div></section>
+<section><div class="section-title"><h2>Service coverage</h2><span>Pause individual services without stopping alert collection</span></div><div id="services"></div></section>
+<footer><span id="updated"></span><span>Times shown in Europe/London · Evidence before action</span></footer>
+</div>
+</main></body></html>

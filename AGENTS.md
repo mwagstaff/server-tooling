@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+## Alerting and AIOps
+
+Before adding or changing service alerts, monitoring, notification producers or
+recovery procedures, read [monitoring/ALERTING.md](monitoring/ALERTING.md).
+It is the canonical guide for the active Mini/Sky platform, required AIOps
+routing, service registration and end-to-end acceptance checks.
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.

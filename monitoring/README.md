@@ -1,5 +1,10 @@
 # Monitoring and alerting
 
+**Adding or changing alerts? Read [the alerting and AIOps guide](ALERTING.md)
+first.** It is the canonical onboarding workflow for Mini/Sky. The legacy
+instructions below are historical reference; do not use them to configure new
+alerts in the active estate.
+
 For independent monitoring between `mini` and `sky`, use the new
 [portable monitoring platform](platform/README.md). It includes Pushover,
 private Tailscale metrics, host/runtime dashboards and optional external

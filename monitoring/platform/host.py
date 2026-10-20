@@ -76,12 +76,26 @@ def service(name, argv, refresh=True):
             installed = plistlib.loads(system_file.read_bytes())
             if installed['ProgramArguments'] != current['ProgramArguments']:
                 raise RuntimeError('Boot service executable changed. Apply staged update with enable-boot.sh: ' + label)
+            # Retired login agents can race the system daemon for the same port.
+            for domain in (f'gui/{os.getuid()}', f'user/{os.getuid()}'):
+                if subprocess.run(['launchctl', 'print', domain + '/' + label],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                    run(['launchctl', 'bootout', domain + '/' + label])
+            legacy = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
+            if legacy.exists():
+                saved = ROOT / 'backups/retired-login-agents' / legacy.name
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(legacy), str(saved))
             if not refresh:
                 return
             # The daemon runs as this user; restarting its process needs no privilege.
             # launchd's KeepAlive starts it again with the same reviewed arguments.
-            state = subprocess.check_output(['launchctl', 'print', 'system/' + label], text=True)
-            match = re.search(r'^\s*pid = (\d+)$', state, re.M)
+            for _ in range(20):
+                state = subprocess.check_output(['launchctl', 'print', 'system/' + label], text=True)
+                match = re.search(r'^\s*pid = (\d+)$', state, re.M)
+                if match:
+                    break
+                time.sleep(1)
             if match:
                 os.kill(int(match[1]), signal.SIGHUP if name in ('prometheus', 'alertmanager', 'blackbox') else signal.SIGTERM)
             else:
@@ -227,6 +241,9 @@ def target(config):
                 if not Path(route['token_file']).exists():
                     raise RuntimeError('Missing app metrics token: ' + item['metrics_secret'])
             routes['/app/' + name] = route
+    if (Path.home()/'.local/share/aiops/webhook-token').exists():
+        routes['/aiops'] = {'url':'http://127.0.0.1:19444/metrics',
+                            'token_file':str(Path.home()/'.local/share/aiops/webhook-token')}
     write_json(ROOT / 'gateway.json', {'listen': config['ip'], 'allowed': config['allowed'], 'routes': routes,
                                       'history': (ROOT / 'prometheus.json').exists()})
     shutil.copy2(SOURCE / 'gateway.py', ROOT / 'gateway.py')
@@ -242,6 +259,8 @@ def monitor(config):
     with tempfile.TemporaryDirectory(dir=ROOT, prefix='candidate-') as directory:
         candidate = Path(directory)
         shutil.copytree(ROOT / 'secrets', candidate / 'secrets')
+        if (ROOT / 'aiops.json').exists():
+            shutil.copy2(ROOT / 'aiops.json', candidate / 'aiops.json')
         render(candidate, config['monitor'], config['target'], config['target_ip'], config['ip'], config['services'], watchdog,
                hostname=config.get('hostname'), target_os=config.get('target_os'))
         run([prometheus.parent / 'promtool', 'check', 'config', '--lint-fatal', candidate / 'prometheus.json'])

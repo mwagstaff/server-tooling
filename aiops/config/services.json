@@ -1,0 +1,387 @@
+[
+  {
+    "name": "bikespot-london",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.boris-bikes-api.api",
+    "directory": "/home/mwagstaff/dev/boris-bikes-api",
+    "logs": [
+      "/home/mwagstaff/dev/boris-bikes-api/bikespot-london.log",
+      "/home/mwagstaff/dev/boris-bikes-api/bikespot-london.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3010/healthcheck",
+    "publicUrl": "https://api.skynolimit.dev/my-boris-bikes/healthcheck",
+    "runtimePort": 19200,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "bikespot-london"
+  },
+  {
+    "name": "top-scores",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.api",
+    "directory": "/home/mwagstaff/dev/top-scores",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores/top-scores.log",
+      "/home/mwagstaff/dev/top-scores/top-scores.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3011/healthcheck",
+    "publicUrl": "https://api.skynolimit.dev/top-scores/healthcheck",
+    "runtimePort": 19201,
+    "dependencies": [],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-api"
+  },
+  {
+    "name": "train-track-api",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.train-track-api.api",
+    "directory": "/home/mwagstaff/dev/train-track-api",
+    "logs": [
+      "/home/mwagstaff/dev/train-track-api/train-track-api.log",
+      "/home/mwagstaff/dev/train-track-api/train-track-api.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3012/healthcheck",
+    "publicUrl": "https://api.skynolimit.dev/train-track/healthcheck",
+    "runtimePort": 19202,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "train-track-api"
+  },
+  {
+    "name": "top-scores-scraper",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.scraper",
+    "directory": "/home/mwagstaff/dev/top-scores",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores/top-scores-scraper.log",
+      "/home/mwagstaff/dev/top-scores/top-scores-scraper.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3013/healthcheck",
+    "publicUrl": null,
+    "runtimePort": 19203,
+    "dependencies": [],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-api"
+  },
+  {
+    "name": "top-scores-monitor",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.monitor",
+    "directory": "/home/mwagstaff/dev/top-scores",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores/top-scores-monitor.log",
+      "/home/mwagstaff/dev/top-scores/top-scores-monitor.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3014/healthcheck",
+    "publicUrl": null,
+    "runtimePort": 19204,
+    "dependencies": [],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-api"
+  },
+  {
+    "name": "top-scores-audit",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.audit",
+    "directory": "/home/mwagstaff/dev/top-scores",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores/top-scores-audit.log",
+      "/home/mwagstaff/dev/top-scores/top-scores-audit.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3015/healthcheck",
+    "publicUrl": null,
+    "runtimePort": 19205,
+    "dependencies": [],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-api"
+  },
+  {
+    "name": "top-scores-bsd",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.bsd",
+    "directory": "/home/mwagstaff/dev/top-scores",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores/top-scores-bsd.log",
+      "/home/mwagstaff/dev/top-scores/top-scores-bsd.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3016/health",
+    "publicUrl": null,
+    "runtimePort": 19206,
+    "dependencies": [],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-api"
+  },
+  {
+    "name": "train-loading-service",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.train-loading-service.api",
+    "directory": "/home/mwagstaff/dev/train-loading-service",
+    "logs": [
+      "/home/mwagstaff/dev/train-loading-service/train-loading-service.log",
+      "/home/mwagstaff/dev/train-loading-service/train-loading-service.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3017/health/ready",
+    "publicUrl": "https://api.skynolimit.dev/train-track-loading/health/ready",
+    "runtimePort": 19207,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "train-loading-service"
+  },
+  {
+    "name": "tube-track-api",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.tube-track-api.api",
+    "directory": "/home/mwagstaff/dev/tube-track-api",
+    "logs": [
+      "/home/mwagstaff/dev/tube-track-api/tube-track-api.log",
+      "/home/mwagstaff/dev/tube-track-api/tube-track-api.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3018/healthcheck",
+    "publicUrl": "https://api.skynolimit.dev/tube-track/healthcheck",
+    "runtimePort": 19208,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "tube-track-api"
+  },
+  {
+    "name": "top-scores-web",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.top-scores.website",
+    "directory": "/home/mwagstaff/dev/top-scores-web",
+    "logs": [
+      "/home/mwagstaff/dev/top-scores-web/top-scores-web.log",
+      "/home/mwagstaff/dev/top-scores-web/top-scores-web.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3020/",
+    "publicUrl": "https://top-scores.skynolimit.dev",
+    "runtimePort": 19209,
+    "dependencies": [
+      "top-scores"
+    ],
+    "autoActions": [
+      "restart",
+      "redeploy"
+    ],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "top-scores-web",
+    "dependencyProbes": {
+      "top-scores": "http://127.0.0.1:3011/healthcheck"
+    }
+  },
+  {
+    "name": "sky-no-limit-web",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.sky-no-limit.website",
+    "directory": "/home/mwagstaff/dev/sky-no-limit-web",
+    "logs": [
+      "/home/mwagstaff/dev/sky-no-limit-web/sky-no-limit-web.log",
+      "/home/mwagstaff/dev/sky-no-limit-web/sky-no-limit-web.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3030/",
+    "publicUrl": "https://skynolimit.dev",
+    "runtimePort": 19210,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "sky-no-limit-web"
+  },
+  {
+    "name": "goal-guesser",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.goal-guesser.website",
+    "directory": "/home/mwagstaff/dev/goal-guesser-web",
+    "logs": [
+      "/home/mwagstaff/dev/goal-guesser-web/goal-guesser.log",
+      "/home/mwagstaff/dev/goal-guesser-web/goal-guesser.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3035/",
+    "publicUrl": "https://goal-guesser.skynolimit.dev",
+    "runtimePort": 19211,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "goal-guesser"
+  },
+  {
+    "name": "kidsplorers-api",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.kidsplorers.api",
+    "directory": "/home/mwagstaff/dev/kidsplorers",
+    "logs": [
+      "/home/mwagstaff/dev/kidsplorers/kidsplorers-api.log",
+      "/home/mwagstaff/dev/kidsplorers/kidsplorers-api.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3100/healthcheck",
+    "publicUrl": "https://api.kidsplorers.com/healthcheck",
+    "runtimePort": 19212,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "kidsplorers-api"
+  },
+  {
+    "name": "kidsplorers-web",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.kidsplorers.web",
+    "directory": "/home/mwagstaff/dev/kidsplorers",
+    "logs": [
+      "/home/mwagstaff/dev/kidsplorers/kidsplorers-web.log",
+      "/home/mwagstaff/dev/kidsplorers/kidsplorers-web.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3200/",
+    "publicUrl": "https://kidsplorers.com",
+    "runtimePort": 19213,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "kidsplorers-web"
+  },
+  {
+    "name": "healthcheck",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.healthcheck.api",
+    "directory": "/home/mwagstaff/dev/healthcheck",
+    "logs": [
+      "/home/mwagstaff/dev/healthcheck/healthcheck.log",
+      "/home/mwagstaff/dev/healthcheck/healthcheck.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:4000/healthcheck",
+    "publicUrl": null,
+    "runtimePort": 19214,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "healthcheck"
+  },
+  {
+    "name": "bromley-bins",
+    "host": "sky",
+    "owner": "mini",
+    "unit": "com.bromley-bins.api",
+    "directory": "/home/mwagstaff/dev/bromley-bins-api",
+    "logs": [
+      "/home/mwagstaff/dev/bromley-bins-api/bromley-bins.log",
+      "/home/mwagstaff/dev/bromley-bins-api/bromley-bins.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3040/healthcheck",
+    "publicUrl": "https://api.skynolimit.dev/bromley-bins/healthcheck",
+    "runtimePort": 19215,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "bromley-bins"
+  },
+  {
+    "name": "train-track-planner",
+    "host": "mini",
+    "owner": "sky",
+    "unit": "com.train-track-planner.api",
+    "directory": "/Users/mwagstaff/dev/train-track-planner",
+    "logs": [
+      "/Users/mwagstaff/dev/train-track-planner/train-track-planner.log",
+      "/Users/mwagstaff/dev/train-track-planner/train-track-planner.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3014/healthcheck",
+    "publicUrl": "https://mikes-mac-mini.dog-rattlesnake.ts.net/train-track-planner/healthcheck",
+    "runtimePort": 19200,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "train-track-planner",
+    "scope": "system",
+    "adminHelper": "/usr/local/sbin/train-track-boot-service-admin"
+  },
+  {
+    "name": "kidsplorers-events-worker",
+    "host": "mini",
+    "owner": "sky",
+    "unit": "com.kidsplorers.events-worker",
+    "directory": "/Users/mwagstaff/dev/kidsplorers",
+    "logs": [
+      "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.log",
+      "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3310/healthcheck",
+    "publicUrl": null,
+    "runtimePort": 19201,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "kidsplorers-events-worker"
+  }
+]

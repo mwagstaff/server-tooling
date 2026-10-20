@@ -1,6 +1,7 @@
 """Shared Prometheus, Alertmanager and Grafana configuration (JSON is valid YAML)."""
 import json
 from pathlib import Path
+from application_rules import application_rules
 
 
 def write_json(path, value):
@@ -17,7 +18,7 @@ def alert(name, expr, duration, summary, severity='warning'):
                              'runbook_url': 'https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts'})
 
 
-def make_rules(services, target):
+def make_rules(services, target, aiops=False, monitor=None):
     rules = [dict(alert='MonitoringWatchdog', expr='vector(1)', labels={'severity': 'none'})]
     rules += [
         alert('MetricsAccessUnavailable', 'up{kind="host"} == 0', '3m', 'Cannot collect host metrics from {{ $labels.host }}', 'critical'),
@@ -43,6 +44,25 @@ def make_rules(services, target):
         alert('MonitoringNotificationFailures', 'increase(alertmanager_notifications_failed_total[10m]) > 0', '5m', 'Monitoring notification delivery failing', 'critical'),
         alert('MonitoringComponentUnavailable', 'up{kind="monitor"} == 0', '3m', 'Monitoring component {{ $labels.job }} unavailable', 'critical'),
     ]
+    rules += application_rules(services, target, alert)
+    if aiops:
+        rules.append(dict(alert='AIOpsPipelineCanary', expr='vector(1)', labels={'severity':'none','host':monitor,'service':'aiops'}))
+        for name, expr, duration, summary in [
+            ('AIOpsUnavailable', 'up{kind="aiops"} == 0', '2m', 'AIOps responder unavailable'),
+            ('AIOpsWebhookStalled', 'time() - aiops_webhook_canary_timestamp_seconds > 180', '3m', 'Alertmanager to AIOps delivery canary missing'),
+            ('AIOpsEmailIntakeStalled', '(time() - aiops_queue_poll_timestamp_seconds > 120) and on(host,service) aiops_email_enabled == 1', '3m', 'AIOps cannot poll its email queue'),
+            ('AIOpsEmailCanaryMissing', '(time() - aiops_email_canary_timestamp_seconds > 900) and on(host,service) aiops_email_enabled == 1', '5m', 'Cloudflare to AIOps queue canary missing'),
+            ('AIOpsReconciliationStalled', 'time() - aiops_reconcile_timestamp_seconds > 180', '3m', 'AIOps cannot reconcile current alerts'),
+            ('AIOpsProcessingStalled', 'aiops_incident_oldest_seconds > 1200', '5m', 'AIOps incidents have waited over twenty minutes'),
+            ('AIOpsNotificationFailures', 'aiops_notifications_failed > 0', '5m', 'AIOps summary delivery is failing'),
+            ('AIOpsNotificationBacklog', 'aiops_notifications_pending > 0', '15m', 'AIOps summaries remain undelivered'),
+            ('ServiceHealthFailing', 'aiops_service_healthy == 0', '3m', '{{ $labels.service }} dashboard health checks are failing'),
+            ('ServiceHealthStale', 'time() - aiops_service_checked_timestamp_seconds > 90', '3m', '{{ $labels.service }} health checks are stale'),
+        ]:
+            rules.append(alert(name, expr, duration, summary, 'critical'))
+        missing = alert('AIOpsTargetMissing', 'absent(up{kind="aiops"})', '3m', 'AIOps disappeared from monitoring', 'critical')
+        missing['labels'].update(host=target, service='aiops')
+        rules.append(missing)
     for service in services:
         labels = '{host="' + target + '",service="' + service['name'] + '",kind="runtime"}'
         missing = alert('RuntimeTargetMissing', 'absent(up' + labels + ')', '5m', service['name'] + ' disappeared from scrape inventory', 'critical')
@@ -60,8 +80,12 @@ def make_rules(services, target):
     ]
     for quantile in [90, 95, 99]:
         records.append((f'monitoring:http_p{quantile}_seconds', f'histogram_quantile({quantile / 100}, sum by(host,service,le) (rate(monitoring_http_request_duration_seconds_bucket[5m])))'))
-    return {'groups': [{'name': 'monitoring-recordings', 'rules': [dict(record=k, expr=v) for k, v in records]},
+    result = {'groups': [{'name': 'monitoring-recordings', 'rules': [dict(record=k, expr=v) for k, v in records]},
                        {'name': 'monitoring-alerts', 'rules': rules}]}
+    auxiliary = Path(__file__).with_name('auxiliary-' + str(monitor) + '.json')
+    if auxiliary.exists():
+        result['groups'] += json.loads(auxiliary.read_text())['groups']
+    return result
 
 
 def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=False, hostname=None, target_os=None):
@@ -85,13 +109,19 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
                          'relabel_configs': [{'source_labels': ['__address__'], 'target_label': '__param_target'},
                                              {'source_labels': ['__param_target'], 'target_label': 'instance'},
                                              {'target_label': '__address__', 'replacement': '127.0.0.1:19115'}]})
+    if (root / 'aiops.json').exists():
+        scrape('aiops', 'aiops', 'aiops', endpoint, '/aiops')
+        del jobs[-1]['static_configs'][0]['labels']['service']
     for name, port in [('prometheus', 19090), ('alertmanager', 19093), ('blackbox', 19115)]:
         jobs.append({'job_name': name, 'static_configs': [{'targets': [f'127.0.0.1:{port}'], 'labels': {'host': monitor, 'kind': 'monitor', 'service': name}}]})
+    auxiliary = Path(__file__).with_name('auxiliary-' + monitor + '.json')
+    if auxiliary.exists():
+        jobs += json.loads(auxiliary.read_text())['scrape_configs']
     write_json(root / 'prometheus.json', {'global': {'scrape_interval': '15s', 'evaluation_interval': '15s', 'external_labels': {'monitor': monitor},
                                                    'scrape_failure_log_file': str(root / 'logs/scrape-failures.log')},
                                         'rule_files': [str(root / 'rules.json')],
                                         'alerting': {'alertmanagers': [{'static_configs': [{'targets': ['127.0.0.1:19093']}]}]}, 'scrape_configs': jobs})
-    write_json(root / 'rules.json', make_rules(services, target))
+    write_json(root / 'rules.json', make_rules(services, target, (root / 'aiops.json').exists(), monitor))
     write_json(root / 'blackbox.json', {'modules': {'http_2xx': {'prober': 'http', 'timeout': '8s', 'http': {'preferred_ip_protocol': 'ip4', 'follow_redirects': True, 'headers': {'User-Agent': 'ServerToolingMonitoring/1.0'}}}}})
     receivers = [{'name': 'silent'}, {'name': 'pushover', 'pushover_configs': [{
         'user_key_file': str(root / 'secrets/PUSHOVER_USER_KEY'),
@@ -106,10 +136,26 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
     routes.append({'matchers': ['alertname="SharedPublicOutage"'], 'receiver': 'pushover', 'group_by': ['host', 'alertname'], 'group_wait': '0s', 'group_interval': '1m'})
     if watchdog:
         receivers.append({'name': 'watchdog', 'webhook_configs': [{'url_file': str(root / 'secrets' / ('HEALTHCHECKS_PING_URL_' + monitor.upper())), 'send_resolved': False}]})
+    # Optional private responder; original Pushover/watchdog delivery stays intact.
+    if (root / 'aiops.json').exists():
+        aiops = json.loads((root / 'aiops.json').read_text())
+        receivers.append({'name': 'aiops', 'webhook_configs': [{
+            'url': aiops['url'], 'send_resolved': True, 'timeout': '10s',
+            'http_config': {'authorization': {'credentials_file': aiops['token_file']}}
+        }]})
+        routes.insert(0, {'receiver': 'aiops', 'matchers': ['alertname!~"MonitoringWatchdog|AIOpsPipelineCanary"'],
+                          'continue': True, 'group_wait': '0s', 'group_interval': '1m',
+                          'repeat_interval': '4h'})
+        routes.insert(0, {'receiver':'aiops', 'matchers':['alertname="AIOpsPipelineCanary"'],
+                          'group_wait':'0s', 'group_interval':'1m', 'repeat_interval':'1m'})
+    routes.append({'receiver': 'pushover'})
     write_json(root / 'alertmanager.json', {'global': {'resolve_timeout': '5m'},
         'route': {'receiver': 'pushover', 'group_by': ['host', 'service', 'alertname'], 'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h', 'routes': routes},
         'receivers': receivers,
         'inhibit_rules': [
+            {'source_matchers': ['alertname=~"RuntimeUnavailable|PublicEndpointUnavailable|ServiceHealthStale"'], 'target_matchers': ['alertname="ServiceHealthFailing"'], 'equal': ['host', 'service']},
+            {'source_matchers': ['alertname="AppCheckFailingLong"'], 'target_matchers': ['alertname="AppCheckFailing"'], 'equal': ['host', 'service', 'check']},
+            {'source_matchers': ['alertname="TubeTrackLiveCacheStaleCritical"'], 'target_matchers': ['alertname="TubeTrackLiveCacheStale"'], 'equal': ['host', 'service']},
             {'source_matchers': ['alertname="SharedPublicOutage"'], 'target_matchers': ['alertname="PublicEndpointUnavailable"'], 'equal': ['host']},
             {'source_matchers': ['alertname="MetricsAccessUnavailable"'], 'target_matchers': ['alertname=~"RuntimeUnavailable|AppMetricsUnavailable"'], 'equal': ['host']},
             {'source_matchers': ['alertname="HeapCritical"'], 'target_matchers': ['alertname="HeapPressure"'], 'equal': ['host', 'service']},

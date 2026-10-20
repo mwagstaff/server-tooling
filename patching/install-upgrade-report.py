@@ -18,7 +18,7 @@ from install import get_secret, vault_items, run, ssh
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('host')
-    parser.add_argument('--email', default='mike.wagstaff@gmail.com')
+    parser.add_argument('--email', default='alerts@skynolimit.dev')
     parser.add_argument('--from-email', default='alerts@skynolimit.dev')
     parser.add_argument('--user-unit', action='append', default=None,
                         help='User service to check; repeat for each service (defaults to known inventory)')

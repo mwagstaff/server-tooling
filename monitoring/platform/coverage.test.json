@@ -1,0 +1,490 @@
+{
+  "rule_files": [
+    "rules.json"
+  ],
+  "evaluation_interval": "15s",
+  "tests": [
+    {
+      "name": "PlannerTimetableUpdateFailed detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "timetable_ingestion_last_result{service=\"train-track-planner\",result=\"error\"}",
+          "values": "1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"PlannerTimetableUpdateFailed\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PlannerTimetableCheckOverdue detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "timetable_ingestion_last_check_timestamp_seconds{service=\"train-track-planner\"}",
+          "values": "-8000x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"PlannerTimetableCheckOverdue\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PlannerTimetableStateUnreadable detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "timetable_ingestion_state_readable{service=\"train-track-planner\"}",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"PlannerTimetableStateUnreadable\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PlannerTimetableIngestionDisabled detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "timetable_ingestion_enabled{service=\"train-track-planner\"}",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"PlannerTimetableIngestionDisabled\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PlannerTimetableRunAbandoned detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "timetable_ingestion_abandoned_run{service=\"train-track-planner\"}",
+          "values": "1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"PlannerTimetableRunAbandoned\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackLiveCacheStale detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_live_cache_age_seconds{service=\"tube-track-api\"}",
+          "values": "2000x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackLiveCacheStale\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackLiveCacheStaleCritical detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_live_cache_age_seconds{service=\"tube-track-api\"}",
+          "values": "2000x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackLiveCacheStaleCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackLiveRefreshFailing detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_live_refreshes_total{service=\"tube-track-api\",status=\"failure\"}",
+          "values": "0+1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackLiveRefreshFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackPushSendFailing detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_push_sent_total{service=\"tube-track-api\",result=\"retryable\"}",
+          "values": "0+1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackPushSendFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackPushStoreWriteFailing detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_push_store_write_failures_total{service=\"tube-track-api\"}",
+          "values": "0+1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackPushStoreWriteFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackPushBudgetExhausted detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_push_suppressed_total{service=\"tube-track-api\"}",
+          "values": "0+10x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackPushBudgetExhausted\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TubeTrackPushRegistrationFlood detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "tube_track_push_rate_limited_total{service=\"tube-track-api\"}",
+          "values": "0+20x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TubeTrackPushRegistrationFlood\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TopScoresBSDUpstreamErrors detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",status_code=\"500\"}",
+          "values": "0+1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AIOpsUnavailable detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "up{kind=\"aiops\"}",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AIOpsUnavailable\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AIOpsWebhookStalled detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_webhook_canary_timestamp_seconds",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AIOpsWebhookStalled\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AIOpsProcessingStalled detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_incident_oldest_seconds",
+          "values": "1800x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AIOpsProcessingStalled\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AIOpsNotificationFailures detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_notifications_failed",
+          "values": "1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AIOpsNotificationFailures\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AIOpsNotificationBacklog detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_notifications_pending",
+          "values": "1x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AIOpsNotificationBacklog\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ServiceHealthStale detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_service_checked_timestamp_seconds{service=\"worker\"}",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"ServiceHealthStale\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AppCheckFailing detects failure",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "app_check_ok{service=\"app\",check=\"database\"}",
+          "values": "0x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"AppCheckFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "50m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dashboard failure persistence and recovery",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "aiops_service_healthy{service=\"worker\",host=\"mini\"}",
+          "values": "1 1 0 0 0 0 0 1 1 1 1"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"ServiceHealthFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "3m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "expr": "count(ALERTS{alertname=\"ServiceHealthFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "6m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "expr": "count(ALERTS{alertname=\"ServiceHealthFailing\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

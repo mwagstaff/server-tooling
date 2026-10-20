@@ -1,0 +1,205 @@
+{
+  "checkedAt": "2026-10-20T11:39:50.124107+00:00",
+  "hosts": {
+    "mini": {
+      "targets": 52,
+      "unhealthyTargets": [],
+      "rules": 74,
+      "ruleErrors": [],
+      "activeFailureAlerts": [],
+      "applicationHealth": [
+        {
+          "service": "bikespot-london",
+          "healthy": true
+        },
+        {
+          "service": "top-scores",
+          "healthy": true
+        },
+        {
+          "service": "train-track-api",
+          "healthy": true
+        },
+        {
+          "service": "top-scores-scraper",
+          "healthy": true
+        },
+        {
+          "service": "top-scores-monitor",
+          "healthy": true
+        },
+        {
+          "service": "top-scores-audit",
+          "healthy": true
+        },
+        {
+          "service": "top-scores-bsd",
+          "healthy": true
+        },
+        {
+          "service": "train-loading-service",
+          "healthy": true
+        },
+        {
+          "service": "tube-track-api",
+          "healthy": true
+        },
+        {
+          "service": "top-scores-web",
+          "healthy": true
+        },
+        {
+          "service": "sky-no-limit-web",
+          "healthy": true
+        },
+        {
+          "service": "goal-guesser",
+          "healthy": true
+        },
+        {
+          "service": "kidsplorers-api",
+          "healthy": true
+        },
+        {
+          "service": "kidsplorers-web",
+          "healthy": true
+        },
+        {
+          "service": "healthcheck",
+          "healthy": true
+        },
+        {
+          "service": "bromley-bins",
+          "healthy": true
+        }
+      ],
+      "deliveryHealth": {
+        "monitor:queue_poll": 24.4,
+        "monitor:reconcile": 24.4,
+        "monitor:webhook_canary": 65.9,
+        "monitor:email_canary": 260.7
+      },
+      "pendingNotifications": 0,
+      "validationIncidents": [
+        {
+          "id": "6c521d80-15bb-41da-b5f2-b6b509d86ccc",
+          "host": "sky",
+          "source": "alertmanager",
+          "resolvedAt": "2026-10-20T11:33:42.381Z",
+          "status": "needs_review",
+          "actions": 0,
+          "spent": 0,
+          "notifications": [
+            [
+              "pushover",
+              1
+            ],
+            [
+              "email",
+              1
+            ]
+          ]
+        },
+        {
+          "id": "37d39479-15d2-44c5-8893-1ca9e988d3c8",
+          "host": "sky",
+          "source": "email",
+          "resolvedAt": null,
+          "status": "needs_review",
+          "actions": 0,
+          "spent": 0,
+          "notifications": [
+            [
+              "pushover",
+              1
+            ],
+            [
+              "email",
+              1
+            ]
+          ]
+        }
+      ],
+      "routes": {
+        "bikespot-london": "aiops,pushover",
+        "top-scores": "aiops,pushover",
+        "train-track-api": "aiops,pushover",
+        "top-scores-scraper": "aiops,pushover",
+        "top-scores-monitor": "aiops,pushover",
+        "top-scores-audit": "aiops,pushover",
+        "top-scores-bsd": "aiops,pushover",
+        "train-loading-service": "aiops,pushover",
+        "tube-track-api": "aiops,pushover",
+        "top-scores-web": "aiops,pushover",
+        "sky-no-limit-web": "aiops,pushover",
+        "goal-guesser": "aiops,pushover",
+        "kidsplorers-api": "aiops,pushover",
+        "kidsplorers-web": "aiops,pushover",
+        "healthcheck": "aiops,pushover",
+        "bromley-bins": "aiops,pushover"
+      },
+      "sourceHashes": {
+        "server.ts": "de24454b7b3f5bc29a5a42a6f308082d346accdaa570af314c1049421485c0ed",
+        "lib/metrics.ts": "4565c4a669d0a094f4ee84a44ce30e54a691874bf20783efc13d2b9f7266bf79",
+        "config/services.json": "d46aae69d787f4121f0f30506ec8db6629146520130d698c7ea9c8423e74bb4e"
+      },
+      "legacyPrometheusStopped": true
+    },
+    "sky": {
+      "targets": 10,
+      "unhealthyTargets": [],
+      "rules": 52,
+      "ruleErrors": [],
+      "activeFailureAlerts": [],
+      "applicationHealth": [
+        {
+          "service": "train-track-planner",
+          "healthy": true
+        },
+        {
+          "service": "kidsplorers-events-worker",
+          "healthy": true
+        }
+      ],
+      "deliveryHealth": {
+        "monitor:queue_poll": 13.1,
+        "monitor:reconcile": 13.1,
+        "monitor:webhook_canary": 111.7,
+        "monitor:email_canary": 262.0
+      },
+      "pendingNotifications": 0,
+      "validationIncidents": [
+        {
+          "id": "651df863-432b-47e2-9b11-43735e4274e8",
+          "host": "mini",
+          "source": "alertmanager",
+          "resolvedAt": "2026-10-20T11:32:59.091Z",
+          "status": "needs_review",
+          "actions": 0,
+          "spent": 0,
+          "notifications": [
+            [
+              "pushover",
+              1
+            ],
+            [
+              "email",
+              1
+            ]
+          ]
+        }
+      ],
+      "routes": {
+        "train-track-planner": "aiops,pushover",
+        "kidsplorers-events-worker": "aiops,pushover"
+      },
+      "sourceHashes": {
+        "server.ts": "de24454b7b3f5bc29a5a42a6f308082d346accdaa570af314c1049421485c0ed",
+        "lib/metrics.ts": "4565c4a669d0a094f4ee84a44ce30e54a691874bf20783efc13d2b9f7266bf79",
+        "config/services.json": "d46aae69d787f4121f0f30506ec8db6629146520130d698c7ea9c8423e74bb4e"
+      },
+      "legacyContainers": true,
+      "maintenanceRecipient": "alerts@skynolimit.dev"
+    }
+  }
+}

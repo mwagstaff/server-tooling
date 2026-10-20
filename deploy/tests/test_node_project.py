@@ -25,6 +25,8 @@ with open(os.environ["DEPLOY_TEST_LOG"], "a") as log:
     log.write(json.dumps({"name": name, "args": sys.argv[1:], "stdin": body}) + "\n")
 command = " ".join(sys.argv[1:])
 if name == "ssh":
+    if "test -f" in command and "server-tooling-monitoring/gateway.json" in command:
+        sys.exit(0 if os.environ.get("DEPLOY_TEST_PLATFORM") == "1" else 1)
     if "process.versions.node" in command:
         if os.environ.get("DEPLOY_TEST_NODE_MISSING") == "1": sys.exit(1)
         print("24.21.0")
@@ -53,7 +55,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
                    project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
                    launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
-                   share_remote_dir=False):
+                   share_remote_dir=False, pin_by_host=None, platform=False):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -75,6 +77,12 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             package["scripts"]["build"] = "vite build"
         (project / "package.json").write_text(json.dumps(package))
         (project / "index.js").write_text("// Synthetic deployment fixture\n")
+        if platform:
+            dashboard=project/'observability/grafana'
+            (dashboard/'dashboards').mkdir(parents=True)
+            script=dashboard/'import-dashboards.sh'
+            script.write_text('#!/bin/sh\nexit 99\n')
+            script.chmod(0o755)
         (project / ("pnpm-lock.yaml" if pnpm else "package-lock.json")).write_text("{}")
         config = {"name": project_name, "path": str(project),
                   "remote_dir": remote_dir, "startup_port": "", "metrics_port": "",
@@ -87,6 +95,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["metrics_port"] = metrics_port
         if pin is not None:
             config["node_binary"] = pin
+        if pin_by_host is not None:
+            config["node_binary_by_host"] = pin_by_host
         if excludes is not None:
             config["rsync_excludes"] = excludes
         if build:
@@ -117,6 +127,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         ssh_config.write_text("Host test-host\n  HostName example.invalid\n")
         env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}",
                    DEPLOY_TEST_LOG=str(log), SSH_CONFIG_FILE=str(ssh_config), BW_ENV_SYNC="0")
+        env["DEPLOY_TEST_PLATFORM"] = "1" if platform else "0"
         if bw_items is not None:
             env.update(BW_ENV_SYNC="1", BW_SESSION="test-session", BW_SKIP_SYNC="1",
                        DEPLOY_TEST_BW_ITEMS=json.dumps(bw_items))
@@ -392,10 +403,26 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         self.assertIn('launchctl load -w', service_setup)
         self.assertIn('launchctl print', service_setup)
 
+    def test_existing_cross_host_monitoring_is_not_replaced_by_legacy_config(self):
+        result, calls = self.run_deploy(platform=True, metrics_port=3010)
+        self.assert_success(result)
+        self.assertIn('Cross-host monitoring is installed', result.stdout)
+        self.assertIn('skipping legacy Grafana import', result.stdout)
+        self.assertFalse(any('docker inspect prometheus' in ' '.join(c['args']) for c in calls))
+
     def test_false_metrics_port_disables_monitoring_for_isolated_project(self):
-        result, calls = self.run_deploy(metrics_port=False)
+        result, calls = self.run_deploy(metrics_port=False, host="sky")
         self.assert_success(result)
         self.assertIn('No metrics port configured; skipping Prometheus scrape target.', result.stdout)
+
+    def test_host_specific_runtime_overrides_default_and_rejects_unsafe_paths(self):
+        selected = "/opt/aiops/runtime/node"
+        result, calls = self.run_deploy(quick=True, pin_by_host={"test-host": selected})
+        self.assert_success(result)
+        self.assertTrue(any(selected in " ".join(call["args"]) for call in calls if call["name"] == "ssh"))
+        result, calls = self.run_deploy(quick=True, pin_by_host={"test-host": "/tmp/$(touch bad)/node"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

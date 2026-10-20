@@ -97,6 +97,27 @@ class PlatformTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_aiops_receiver_survives_regeneration_without_replacing_notifications(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = {'url': 'http://127.0.0.1:19444/webhooks/alertmanager',
+                      'token_file': '/private/aiops/webhook-token'}
+            (root/'aiops.json').write_text(json.dumps(marker))
+            for _ in range(2):
+                render(root, 'mini', 'sky', '100.64.0.2', '100.64.0.1', [], watchdog=True)
+                am = json.loads((root/'alertmanager.json').read_text())
+                self.assertEqual(am['route']['receiver'], 'pushover')
+                route = next(r for r in am['route']['routes'] if r.get('continue'))
+                self.assertEqual(route['receiver'], 'aiops')
+                self.assertIn('alertname!~"MonitoringWatchdog|AIOpsPipelineCanary"', route['matchers'])
+                self.assertEqual(am['route']['routes'][-1], {'receiver':'pushover'})
+                self.assertEqual(am['route']['routes'][0]['matchers'], ['alertname="AIOpsPipelineCanary"'])
+                self.assertEqual(sum(r['name']=='aiops' for r in am['receivers']), 1)
+                self.assertTrue(any(r['name']=='watchdog' for r in am['receivers']))
+                receiver = next(r for r in am['receivers'] if r['name']=='aiops')
+                self.assertEqual(receiver['webhook_configs'][0]['http_config']['authorization']['credentials_file'],
+                                 marker['token_file'])
+
     def test_dashboard_hostname_and_host_metrics_scope(self):
         for target_os in ('linux', 'darwin'):
             with tempfile.TemporaryDirectory() as directory:

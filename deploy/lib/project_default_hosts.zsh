@@ -4,6 +4,7 @@
 # back to DEFAULT_DEPLOY_HOST.
 DEFAULT_DEPLOY_HOST="sky"
 typeset -A PROJECT_DEFAULT_HOSTS=(
+  aiops                 mini
   healthcheck            sky
   bikespot-london        sky
   top-scores             sky

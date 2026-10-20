@@ -44,11 +44,33 @@ or the Grafana/Prometheus stack; see [monitoring](../monitoring/README.md) for t
 - Weekly reboot **Saturday 04:00 Europe/London**, automatically following BST/GMT.
   The installer enables only the timer; it does not reboot the host.
 
-Automatic update-triggered reboots are disabled so that the Saturday timer owns
+By default, automatic update-triggered reboots are disabled so that the Saturday timer owns
 reboots. Updates that need a reboot may wait until Saturday to become fully
 active; the report highlights outstanding restarts. Saturday is before the
 Sunday upgrade, so a Sunday kernel update can wait six days unless you reboot
 manually. You can still perform an urgent manual restart at any time.
+
+### Conditional reboots after patching
+
+For an already configured Ubuntu host, enable a reboot check after each successful
+daily security update or weekly upgrade:
+
+```bash
+python3 patching/install-update-reboots.py sky
+```
+
+This is enabled on `sky`. The check runs after the upgrade service finishes,
+including its report, and reboots only if `/run/reboot-required` exists or
+`needrestart` detects an outdated kernel, microcode, services, containers or user
+sessions. Failed maintenance runs do not trigger it. Package lock checks and
+shutdown inhibitors still apply; failed assessments do not reboot the host.
+The existing Saturday reboot remains enabled. Installation does not run updates
+or reboot immediately. This installer is for Ubuntu; it does not configure macOS.
+
+To disable the post-update checks, remove `60-reboot.conf` from
+`/etc/systemd/system/apt-daily-upgrade.service.d/` and
+`/etc/systemd/system/server-tooling-full-upgrade.service.d/`, then run
+`sudo systemctl daemon-reload`.
 
 An active package install delays the scheduled reboot for up to 30 minutes. If it
 remains busy, or a shutdown inhibitor blocks the reboot, the service fails and

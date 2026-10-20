@@ -23,6 +23,37 @@ reports = load('report_installer', 'install-upgrade-report.py')
 
 
 class MaintenanceTests(unittest.TestCase):
+    def test_reboot_required_flag(self):
+        with patch.object(reboot.Path, 'exists', return_value=True), patch.object(reboot.subprocess, 'run') as run:
+            self.assertTrue(reboot.reboot_needed())
+            run.assert_not_called()
+
+    def test_restart_assessment(self):
+        for output, expected in [('NEEDRESTART-KSTA: 1\n', False),
+                                 ('NEEDRESTART-KSTA: 2\n', True),
+                                 ('NEEDRESTART-KSTA: 3\n', True),
+                                 ('NEEDRESTART-SVC: dbus.service\n', True),
+                                 ('NEEDRESTART-SESS: user @ manager\n', True),
+                                 ('NEEDRESTART-CONT: container\n', True),
+                                 ('NEEDRESTART-UCSTA: 2\n', True)]:
+            with self.subTest(output=output), patch.object(reboot.Path, 'exists', return_value=False), \
+                 patch.object(reboot.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output)):
+                self.assertEqual(reboot.reboot_needed(), expected)
+
+    def test_conditional_reboot_and_failed_assessment(self):
+        for needed in (False, True, subprocess.CalledProcessError(1, 'needrestart')):
+            with self.subTest(needed=needed), tempfile.TemporaryDirectory() as directory:
+                with patch.object(reboot, 'LOCKS', [str(Path(directory) / 'dpkg')]), \
+                     patch.object(reboot, 'record'), patch.object(reboot.subprocess, 'run') as run, \
+                     patch.object(reboot, 'reboot_needed', side_effect=[needed]):
+                    if isinstance(needed, Exception):
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            reboot.main(required_only=True)
+                        run.assert_not_called()
+                    else:
+                        reboot.main(required_only=True)
+                        self.assertEqual(run.call_count, int(needed))
+
     def test_busy_package_lock_defers_reboot_and_releases_before_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             locks = [str(Path(directory) / 'frontend'), str(Path(directory) / 'dpkg')]

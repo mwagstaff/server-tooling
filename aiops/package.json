@@ -1,0 +1,21 @@
+{
+  "name": "server-tooling-aiops",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.ts",
+    "test": "node --test test/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.2",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "nodemailer": "^10.1.7"
+  }
+}

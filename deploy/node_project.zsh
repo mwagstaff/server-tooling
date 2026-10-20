@@ -45,11 +45,6 @@ DISABLE_MODE=0
 ASSETS_ONLY_MODE=0
 SKIP_ASSET_PREPARE=0
 
-# Warn early if Tailscale is down; hosts like mini are only reachable through it
-if [[ "$(tailscale status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null)" != "Running" ]]; then
-  printf '\n\e[1;33m⚠️  WARNING: Tailscale is not running — hosts reached via Tailscale (e.g. mini) will be unreachable\e[0m\n\n' >&2
-fi
-
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Error: Config file not found: $CONFIG_FILE" >&2
@@ -103,7 +98,8 @@ get_project_build_command() {
 }
 
 get_project_node_binary() {
-  jq -r --arg name "$1" '.[] | select(.name == $name) | .node_binary // empty' "$CONFIG_FILE"
+  jq -r --arg name "$1" --arg host "$2" '.[] | select(.name == $name) |
+    .node_binary_by_host[$host] // .node_binary // empty' "$CONFIG_FILE"
 }
 
 get_project_service_scope() {
@@ -1688,13 +1684,18 @@ if [[ -z "$HOST" ]]; then
   HOST="$(get_project_default_host "$PROJECT_NAME")"
 fi
 
+# Warn early if Tailscale is down; mini is only reachable through it
+if [[ "$HOST" == "mini" && "$(tailscale status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null)" != "Running" ]]; then
+  printf '\n\e[1;33m⚠️  WARNING: Tailscale is not running — hosts reached via Tailscale (e.g. mini) will be unreachable\e[0m\n\n' >&2
+fi
+
 # Get project configuration from config file
 LOCAL_DIR=$(get_project_path "$PROJECT_NAME")
 METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
 HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
-NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME")
+NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME" "$HOST")
 SERVICE_SCOPE=$(get_project_service_scope "$PROJECT_NAME")
 if [[ "$SERVICE_SCOPE" != "user" && "$SERVICE_SCOPE" != "system" ]]; then
   echo "Error: service_scope must be 'user' or 'system'" >&2
@@ -3050,6 +3051,7 @@ else
   PROMETHEUS_PROJECT_SLUG="${GRAFANA_PROJECT_SLUG:-$(sanitize_grafana_slug "$PROMETHEUS_PROJECT_NAME")}"
   PROMETHEUS_SCRAPE_JOB_NAME="${GRAFANA_PROM_SCRAPE_JOB_NAME:-$PROMETHEUS_PROJECT_SLUG}"
   MONITORING_CONFIGURED=0
+  CROSS_HOST_MONITORING=0
 
   AUTO_PROM_METRICS_PORTS=()
   for current_metrics_port in "${SERVICE_METRICS_PORTS[@]}"; do
@@ -3063,7 +3065,11 @@ else
   fi
   typeset -U AUTO_PROM_METRICS_PORTS
 
-  if [[ "$HOST" != "$MONITORING_HOST" ]]; then
+  if ssh "$HOST" 'test -f "$HOME/.local/share/server-tooling-monitoring/gateway.json"'; then
+    CROSS_HOST_MONITORING=1
+    echo "==> Cross-host monitoring is installed; preserving its inventory and rules."
+    echo "   Update coverage with monitoring/platform/install.py; legacy configuration is skipped."
+  elif [[ "$HOST" != "$MONITORING_HOST" ]]; then
     # The scrape target below is derived from the deploy host's own IP, which
     # only Prometheus running on that host can reach. Apps on other hosts are
     # scraped from ${MONITORING_HOST} over their public route, configured
@@ -3193,7 +3199,9 @@ else
     DASHBOARD_SCRIPT="$CENTRAL_DASHBOARD_SCRIPT"
   fi
 
-  if [[ -z "$METRICS_PORT" ]]; then
+  if [[ "$CROSS_HOST_MONITORING" == "1" ]]; then
+    echo "==> Dashboards are managed by the cross-host platform; skipping legacy Grafana import."
+  elif [[ -z "$METRICS_PORT" ]]; then
     echo "==> No metrics port configured; skipping Grafana dashboard import."
   elif [[ -n "$DASHBOARD_SCRIPT" ]]; then
     if [[ ! -d "$PROJECT_DASHBOARD_DIR" ]]; then

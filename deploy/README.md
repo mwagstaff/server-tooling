@@ -1,5 +1,10 @@
 # Per-project Node runtime and persistent data
 
+Projects deployed to multiple operating systems can set `node_binary_by_host`
+to an object mapping SSH host names to absolute Node executable paths. The
+selected host's entry takes precedence over `node_binary`; the same runtime
+validation and preflight apply. AIOps uses this for its Mini and Sky runtimes.
+
 `config/node_projects.json` supports two optional settings:
 
 ```json

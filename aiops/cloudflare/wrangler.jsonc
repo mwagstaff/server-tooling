@@ -1,0 +1,20 @@
+{
+  "name": "aiops-alert-email",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-20",
+  "workers_dev": false,
+  "vars": {
+    "ALERT_ADDRESS": "alerts@skynolimit.dev",
+    "FORWARD_TO": "mike.wagstaff@gmail.com",
+    "ALLOWED_SENDERS": "alerts@skynolimit.dev,healthchecks.io@healthchecks.io",
+    "MINI_SERVICES": "train-track-planner,kidsplorers-events-worker"
+  },
+  "triggers": {"crons": ["*/5 * * * *"]},
+  "queues": {
+    "producers": [
+      {"binding": "MINI_QUEUE", "queue": "aiops-mini-alerts"},
+      {"binding": "SKY_QUEUE", "queue": "aiops-sky-alerts"}
+    ]
+  },
+  "observability": {"enabled": false}
+}

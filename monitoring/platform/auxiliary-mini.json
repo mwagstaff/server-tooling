@@ -1,0 +1,237 @@
+{
+  "scrape_configs": [
+    {
+      "job_name": "aux-blackbox_exporter-0",
+      "metrics_path": "/metrics",
+      "params": {},
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9115"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "blackbox_exporter"
+          }
+        }
+      ]
+    },
+    {
+      "job_name": "aux-dns-1",
+      "metrics_path": "/probe",
+      "params": {
+        "module": [
+          "dns_fritz"
+        ],
+        "target": [
+          "192.168.178.1"
+        ]
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9115"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "dns"
+          }
+        }
+      ]
+    },
+    {
+      "job_name": "aux-node-2",
+      "metrics_path": "/metrics",
+      "params": {},
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9100"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "node"
+          }
+        }
+      ],
+      "metric_relabel_configs": [
+        {
+          "source_labels": [
+            "__name__"
+          ],
+          "regex": "mac_.*",
+          "action": "keep"
+        }
+      ]
+    },
+    {
+      "job_name": "aux-outbound_https-3",
+      "metrics_path": "/probe",
+      "params": {
+        "module": [
+          "http_2xx"
+        ],
+        "target": [
+          "https://www.google.com"
+        ]
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9115"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "outbound_https"
+          }
+        }
+      ]
+    },
+    {
+      "job_name": "aux-ping-4",
+      "metrics_path": "/probe",
+      "params": {
+        "module": [
+          "icmp"
+        ],
+        "target": [
+          "1.1.1.1"
+        ]
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9115"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "ping"
+          }
+        }
+      ]
+    },
+    {
+      "job_name": "aux-ping-5",
+      "metrics_path": "/probe",
+      "params": {
+        "module": [
+          "icmp"
+        ],
+        "target": [
+          "8.8.8.8"
+        ]
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "127.0.0.1:9115"
+          ],
+          "labels": {
+            "host": "mini",
+            "service": "host",
+            "kind": "auxiliary",
+            "check": "ping"
+          }
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "name": "mini-connectivity-power",
+      "rules": [
+        {
+          "alert": "PingDown",
+          "expr": "max(probe_success{check=\"ping\",kind=\"auxiliary\"}) == 0",
+          "for": "60s",
+          "labels": {
+            "layer": "isp",
+            "severity": "critical",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "Both ICMP targets unreachable \u2014 outbound Internet down"
+          }
+        },
+        {
+          "alert": "DnsDown",
+          "expr": "probe_success{check=\"dns\",kind=\"auxiliary\"} == 0",
+          "for": "60s",
+          "labels": {
+            "layer": "router",
+            "severity": "warning",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "Fritz!Box DNS not resolving"
+          }
+        },
+        {
+          "alert": "OutboundHttpsDown",
+          "expr": "probe_success{check=\"outbound_https\",kind=\"auxiliary\"} == 0",
+          "for": "60s",
+          "labels": {
+            "layer": "outbound",
+            "severity": "critical",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "HTTPS to google.com failing"
+          }
+        },
+        {
+          "alert": "MacSleptRecently",
+          "expr": "mac_sleep_events_24h > 0",
+          "for": "0s",
+          "labels": {
+            "layer": "power",
+            "severity": "warning",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "Mac Mini entered sleep in the last 24h ({{ $value }} times)"
+          }
+        },
+        {
+          "alert": "SleepSettingReverted",
+          "expr": "mac_pmset_setting{name=\"sleep\"} != 0",
+          "for": "0s",
+          "labels": {
+            "layer": "power",
+            "severity": "critical",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "pmset sleep is no longer 0 \u2014 machine will sleep when idle"
+          }
+        },
+        {
+          "alert": "AuxiliaryCollectorUnavailable",
+          "expr": "up{kind=\"auxiliary\"} == 0",
+          "for": "3m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "{{ $labels.host }} {{ $labels.check }} collector unavailable"
+          }
+        }
+      ]
+    }
+  ]
+}

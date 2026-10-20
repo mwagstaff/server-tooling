@@ -167,6 +167,17 @@
           "port": 4000,
           "runtime_port": 19214,
           "public_url": null
+        },
+        {
+          "name": "bromley-bins",
+          "directory": "~/dev/bromley-bins-api",
+          "entry": "index.js",
+          "unit": "com.bromley-bins.api",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": "/metrics",
+          "port": 3040,
+          "runtime_port": 19215,
+          "public_url": "https://api.skynolimit.dev/bromley-bins/healthcheck"
         }
       ]
     },
@@ -185,6 +196,17 @@
           "metrics_secret": "PLANNER_SERVICE_TOKEN",
           "runtime_port": 19200,
           "public_url": "https://mikes-mac-mini.dog-rattlesnake.ts.net/train-track-planner/healthcheck"
+        },
+        {
+          "name": "kidsplorers-events-worker",
+          "directory": "~/dev/kidsplorers",
+          "entry": "services/events-worker/dist/index.js",
+          "unit": "com.kidsplorers.events-worker",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": null,
+          "port": 3310,
+          "runtime_port": 19201,
+          "public_url": null
         }
       ]
     }

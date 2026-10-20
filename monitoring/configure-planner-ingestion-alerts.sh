@@ -7,6 +7,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MONITOR_HOST="${1:-sky}"
 
+# The cross-host platform owns these rules after migration. Never revive the
+# retired Docker Prometheus as a side effect of a planner deployment.
+if ssh -o BatchMode=yes "$MONITOR_HOST" 'test -f "$HOME/.local/share/server-tooling-monitoring/prometheus.json"'; then
+  exec python3 "$SCRIPT_DIR/platform/install.py" --monitor "$MONITOR_HOST" --target mini --keep-secrets --skip-target
+fi
+
 ssh -o BatchMode=yes "$MONITOR_HOST" bash -s <<'REMOTE'
 set -euo pipefail
 monitoring_dir="$HOME/monitoring"

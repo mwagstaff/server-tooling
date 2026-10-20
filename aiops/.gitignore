@@ -1,0 +1,7 @@
+node_modules/
+*.sqlite*
+.env*
+coverage/
+__pycache__/
+test/__pycache__/
+cloudflare/.wrangler/

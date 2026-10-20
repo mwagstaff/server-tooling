@@ -1,5 +1,23 @@
 [
     {
+        "name": "aiops",
+        "node_binary_by_host": {
+            "mini": "/opt/homebrew/bin/node",
+            "sky": "/home/mwagstaff/.local/share/aiops/runtime/node"
+        },
+        "path": "/Users/mwagstaff/dev/server-tooling/aiops",
+        "remote_dir": "~/dev/aiops",
+        "entry_file": "server.mjs",
+        "sync_env_local": false,
+        "startup_port": 19444,
+        "healthcheck_path": "/healthcheck",
+        "metrics_port": false,
+        "service_label": "com.aiops.api",
+        "service_description": "Private AIOps incident responder",
+        "rsync_excludes": ["/test/", "/cloudflare/", "/__pycache__/"],
+        "static_env": {"NODE_ENV": "production"}
+    },
+    {
         "name": "healthcheck",
         "path": "/Users/mwagstaff/dev/healthcheck",
         "start_command": "npm start",

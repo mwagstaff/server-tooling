@@ -1,5 +1,9 @@
 # Independent monitoring
 
+For adding services or alert rules, start with the
+[alerting and AIOps integration guide](../ALERTING.md). It defines the maintained
+configuration sources, target labels, recovery-policy review and delivery checks.
+
 Prometheus, Grafana, Alertmanager and Blackbox Exporter on one host monitor
 another host directly over Tailscale. Pushover receives grouped warning,
 critical and recovery notifications. Optional Healthchecks.io watchdogs check
