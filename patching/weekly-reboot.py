@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """Reboot at the scheduled time, allowing package transactions up to 30 minutes to finish."""
 from contextlib import ExitStack
+from datetime import datetime
 import fcntl
 from pathlib import Path
 import subprocess
 import sys
 import time
+from zoneinfo import ZoneInfo
 
 from events import record
 
 LOCKS = ['/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock']
+
+def in_reboot_window(now=None):
+    """Keep every automatic reboot inside 04:00–05:00 UK time, including DST."""
+    local = (now or datetime.now(ZoneInfo('Europe/London'))).astimezone(ZoneInfo('Europe/London'))
+    return local.hour == 4
 
 
 def reboot_needed():
@@ -33,6 +40,9 @@ def main(required_only=False):
     deadline = time.monotonic() + 30 * 60
     deferred = False
     while True:
+        if not in_reboot_window():
+            record('scheduled-reboot', reason + ' deferred: outside 04:00–05:00 Europe/London; next check at 04:00')
+            return
         with ExitStack() as stack:
             try:
                 for name in LOCKS:
@@ -44,6 +54,10 @@ def main(required_only=False):
                     deferred = True
             else:
                 if required_only and not reboot_needed():
+                    return
+                # Assessments and package lock waits may cross the window boundary.
+                if not in_reboot_window():
+                    record('scheduled-reboot', reason + ' deferred: maintenance window ended; next check at 04:00')
                     return
                 record('scheduled-reboot', reason + ' requested')
                 subprocess.run(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True)

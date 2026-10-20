@@ -59,18 +59,32 @@ daily security update or weekly upgrade:
 python3 patching/install-update-reboots.py sky
 ```
 
-This is enabled on `sky`. The check runs after the upgrade service finishes,
-including its report, and reboots only if `/run/reboot-required` exists or
+This is enabled on `sky`. Automatic reboots are restricted to **04:00–05:00
+Europe/London**, following BST/GMT. Checks run after the upgrade service finishes
+and daily at 04:00 using `server-tooling-update-reboot.timer` (`Persistent=false`).
+Daytime requests are recorded as deferred; the next daily check assesses the
+current need, without replaying a stale reboot request. Within the window,
+the check reboots only if `/run/reboot-required` exists or
 `needrestart` detects an outdated kernel, microcode, services, containers or user
-sessions. Failed maintenance runs do not trigger it. Package lock checks and
+sessions. Failed maintenance runs do not trigger an immediate check. Package lock checks and
 shutdown inhibitors still apply; failed assessments do not reboot the host.
-The existing Saturday reboot remains enabled. Installation does not run updates
+The window is checked again after assessment/lock waits, and also applies to the
+existing Saturday reboot. Installation does not run updates
 or reboot immediately. This installer is for Ubuntu; it does not configure macOS.
 
 To disable the post-update checks, remove `60-reboot.conf` from
 `/etc/systemd/system/apt-daily-upgrade.service.d/` and
 `/etc/systemd/system/server-tooling-full-upgrade.service.d/`, then run
-`sudo systemctl daemon-reload`.
+`sudo systemctl disable --now server-tooling-update-reboot.timer` and
+`sudo systemctl daemon-reload`. The Saturday reboot remains enabled.
+
+Verify with `systemctl list-timers 'server-tooling-*'` and
+`journalctl -u server-tooling-update-reboot.service`. Installation saves prior
+files under `/var/backups/server-tooling/update-reboots-*`; to roll back, disable
+the new timer, restore those files and reload systemd. Do not start the reboot
+service to test it inside the window. Unit tests mock reboot execution and cover
+daytime deferral, window boundaries and BST/GMT transitions. Alert routes and
+AIOps recovery permissions are unchanged.
 
 An active package install delays the scheduled reboot for up to 30 minutes. If it
 remains busy, or a shutdown inhibitor blocks the reboot, the service fails and

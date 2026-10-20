@@ -37,16 +37,23 @@ def put(path,text,mode=0o644):
  temp=path.with_suffix(path.suffix+'.new'); temp.write_text(text); temp.chmod(mode); temp.replace(path)
 put('/usr/local/lib/server-tooling/weekly-reboot.py',pathlib.Path(sys.argv[1]).read_text(),0o755)
 put(root/'server-tooling-update-reboot.service',
- '[Unit]\\nDescription=Reboot after updates only when required\\n'
+ '[Unit]\\nDescription=Reboot when required within 04:00-05:00 UK time\\n'
  'After=apt-daily-upgrade.service server-tooling-full-upgrade.service\\n'
  '[Service]\\nType=oneshot\\n'
  'ExecStart=/usr/bin/python3 /usr/local/lib/server-tooling/weekly-reboot.py --if-needed\\n'
  'TimeoutStartSec=35min\\n')
+put(root/'server-tooling-update-reboot.timer',
+ '[Unit]\\nDescription=Check pending update reboots daily at 04:00 UK time\\n'
+ '[Timer]\\nOnCalendar=*-*-* 04:00:00 Europe/London\\n'
+ 'AccuracySec=1s\\nRandomizedDelaySec=0\\nPersistent=false\\n'
+ '[Install]\\nWantedBy=timers.target\\n')
 for unit in units:
  put(root/(unit+'.d')/'60-reboot.conf','[Unit]\\nOnSuccess=server-tooling-update-reboot.service\\n')
 subprocess.run(['systemctl','daemon-reload'],check=True)
-subprocess.run(['systemd-analyze','verify',str(root/'server-tooling-update-reboot.service'),*units],check=True)
-print('Conditional post-update reboots enabled. No update or reboot was run. Backups:',backup)
+subprocess.run(['systemd-analyze','verify',str(root/'server-tooling-update-reboot.service'),str(root/'server-tooling-update-reboot.timer'),*units],check=True)
+subprocess.run(['systemctl','enable','--now','server-tooling-update-reboot.timer'],check=True)
+subprocess.run(['systemctl','restart','server-tooling-update-reboot.timer'],check=True)
+print('Conditional reboots restricted to 04:00-05:00 UK time; daily 04:00 check enabled. No update or reboot was run. Backups:',backup)
 '''
         ssh(args.host, ['sudo', '-n', 'python3', '-c', code, stage + '/weekly-reboot.py'])
     finally:

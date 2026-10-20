@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,29 @@ reports = load('report_installer', 'install-upgrade-report.py')
 
 
 class MaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        window = patch.object(reboot, 'in_reboot_window', return_value=True)
+        self.window = window.start()
+        self.addCleanup(window.stop)
+
+    def test_daytime_request_does_not_assess_or_reboot(self):
+        self.window.return_value = False
+        with patch.object(reboot, 'record') as record, patch.object(reboot, 'reboot_needed') as needed, \
+             patch.object(reboot.subprocess, 'run') as run:
+            reboot.main(required_only=True)
+            needed.assert_not_called()
+            run.assert_not_called()
+            self.assertIn('deferred', record.call_args.args[1])
+
+    def test_assessment_cannot_run_reboot_past_window(self):
+        self.window.side_effect = [True, False]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(reboot, 'LOCKS', [str(Path(directory) / 'dpkg')]), \
+             patch.object(reboot, 'reboot_needed', return_value=True), \
+             patch.object(reboot, 'record'), patch.object(reboot.subprocess, 'run') as run:
+            reboot.main(required_only=True)
+            run.assert_not_called()
+
     def test_reboot_required_flag(self):
         with patch.object(reboot.Path, 'exists', return_value=True), patch.object(reboot.subprocess, 'run') as run:
             self.assertTrue(reboot.reboot_needed())
@@ -105,6 +129,17 @@ class MaintenanceTests(unittest.TestCase):
             installer.main()
         self.assertTrue(any('install-upgrade-report.py' in str(args) for args in commands))
         self.assertFalse(any('configure-caddy-updates.py' in str(args) for args in commands))
+
+
+class RebootWindowTests(unittest.TestCase):
+    def test_uk_window_in_summer_winter_and_dst_transition_days(self):
+        for day, start in [('2026-10-20', 3), ('2026-12-20', 4),
+                           ('2026-03-29', 3), ('2026-10-25', 4)]:
+            for hour, minute, expected in [(start - 1, 59, False), (start, 0, True),
+                                            (start, 59, True), (start + 1, 0, False)]:
+                with self.subTest(day=day, hour=hour, minute=minute):
+                    now = datetime.fromisoformat(day).replace(hour=hour, minute=minute, tzinfo=timezone.utc)
+                    self.assertEqual(reboot.in_reboot_window(now), expected)
 
 
 if __name__ == '__main__':
