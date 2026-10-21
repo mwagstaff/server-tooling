@@ -112,13 +112,11 @@ apply_route() {
 echo "Applying Funnel routes..."
 
 FAILURES=0
-apply_route /grafana        http://127.0.0.1:3000/grafana || FAILURES=$((FAILURES+1))
-apply_route /healthcheck    http://127.0.0.1:4000       || FAILURES=$((FAILURES+1))
-apply_route /my-boris-bikes http://127.0.0.1:3010       || FAILURES=$((FAILURES+1))
-apply_route /top-scores     http://127.0.0.1:3011       || FAILURES=$((FAILURES+1))
-apply_route /train-track    http://127.0.0.1:3012       || FAILURES=$((FAILURES+1))
+# Only Mini-hosted services. Sky's APIs are served via api.skynolimit.dev, and
+# monitoring Grafana is tailnet-only on :13000. set-path never removes routes,
+# so retire a stale path with: tailscale funnel --https=443 --set-path <path> off
 apply_route /train-track-planner http://127.0.0.1:3014 || FAILURES=$((FAILURES+1))
-apply_route /bromley-bins   http://127.0.0.1:3040       || FAILURES=$((FAILURES+1))
+apply_route /iphone-duo     http://127.0.0.1:3015       || FAILURES=$((FAILURES+1))
 
 echo "Funnel configuration status:"
 # prefer non-sudo status, fall back to sudo
