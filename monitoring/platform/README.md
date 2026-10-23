@@ -150,6 +150,28 @@ failure suppresses individual runtime/native scrape alerts, while public probes
 remain independent. `up=0` means metrics cannot be collected, not necessarily
 that the machine is powered off. Missing inventory is checked separately.
 
+### Mini sleep metrics collector
+
+Mini's auxiliary `aux-node-2` job scrapes the Homebrew node exporter on
+`127.0.0.1:9100`. It is separate from the managed host exporter on port 19100.
+The `sh.brew.node_exporter` user LaunchAgent reads
+`/opt/homebrew/etc/node_exporter.args`, which enables the textfile collector at
+`/opt/homebrew/var/lib/node_exporter/textfile`. The `com.mike.sleep-metrics`
+LaunchAgent updates `mac_sleep.prom` there every minute. Keep both agents when
+retiring legacy monitoring services: the `MacSleptRecently` and
+`SleepSettingReverted` rules depend on these metrics.
+
+If `mini node collector unavailable` fires, check port 9100 and
+`launchctl print user/$(id -u)/sh.brew.node_exporter` on Mini. A saved copy of
+the agent is at
+`~/.local/share/server-tooling/retired-launchagents-20261021/sh.brew.node_exporter.plist`.
+Restore it to `~/Library/LaunchAgents/` and bootstrap it in the user domain if
+the agent is missing. Verify `node_textfile_scrape_error == 0` at the exporter
+endpoint, then `up{job="aux-node-2"} == 1` and the presence of
+`mac_sleep_events_24h` and `mac_pmset_setting{name="sleep"}` in Mini's active
+Prometheus. The exporter alert detects failed scrapes; it does not detect a stale
+or missing textfile while the exporter itself remains reachable.
+
 P90/p95/p99 are calculated from HTTP histograms, excluding quiet windows with no
 requests. Latency paging starts only when an explicit `latency_p95_seconds` is
 set for a service after 7–14 days of representative traffic. Use
