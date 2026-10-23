@@ -243,6 +243,25 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         tails = [call for call in calls if call["name"] == "tail"]
         self.assertEqual([call["args"] for call in tails], [["test-project", "sky", "--errors-only"]])
 
+    def test_abbreviated_targets_with_default_and_explicit_hosts(self):
+        for query in ("top-web", "t-web"):
+            for host in (None, "test-host"):
+                with self.subTest(query=query, host=host):
+                    result, calls = self.run_deploy(
+                        project_arg=query, host=host, project_name="top-scores-web",
+                        extra_project_names=["sky-no-limit-web"], switches=[])
+                    self.assert_success(result)
+                    tails = [call["args"] for call in calls if call["name"] == "tail"]
+                    self.assertEqual(tails, [["top-scores-web", host or "sky", "--errors-only"]])
+
+    def test_ambiguous_abbreviated_target_does_not_deploy(self):
+        result, calls = self.run_deploy(
+            project_arg="t-web", host=None, project_name="top-scores-web",
+            extra_project_names=["train-web"], switches=[])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ambiguous", result.stderr)
+        self.assertFalse(any(call["name"] in ("ssh", "rsync") for call in calls))
+
     def test_omitted_host_deploys_each_project_to_its_own_default_host(self):
         result, calls = self.run_deploy(project_arg="kids*", host=None, project_name="kidsplorers-api",
                                         remote_dir="/srv/kidsplorers-api",

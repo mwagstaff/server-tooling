@@ -1383,6 +1383,7 @@ usage() {
   echo "  Defaults: quick deploy tailing stderr afterwards (-q -e, new lines only; TAIL_LINES=N to include history); HOST defaults to the project's entry in PROJECT_DEFAULT_HOSTS" >&2
   echo "  Example: $0 train-track-api   (same as: $0 -q -e train-track-api $(get_project_default_host train-track-api))" >&2
   echo "  Example: $0 top web sky --quick" >&2
+  echo "  Abbreviations: $0 top-web or $0 t-web (matches top-scores-web; exact names/aliases take priority)" >&2
   echo "  Example: $0 sky --quick top web" >&2
   echo "  Parallel example: $0 kidsplorers kidsplorers-web sky --quick" >&2
   echo "  Wildcard example: $0 sky 'kid*' --quick" >&2

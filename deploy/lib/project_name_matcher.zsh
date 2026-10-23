@@ -3,10 +3,12 @@
 # Shared project-name resolution helpers for deploy scripts.
 # Resolution order:
 # 1) Exact canonical name or alias match (case-insensitive).
-# 2) Tokenized, case-insensitive fuzzy match across name, aliases, and path.
+# 2) Hyphen-separated word prefixes in order, allowing skipped words
+#    (top-web / t-web -> top-scores-web), across name, aliases, and path.
+# 3) Tokenized, case-insensitive fuzzy match across name, aliases, and path.
 #    Each token must match at least one candidate field exactly, or by
 #    substring when the token length is >= 3.
-# 3) If no match is found, return the original input so callers can handle "not found".
+# 4) If no match is found, return the original input so callers can handle "not found".
 project_match_list_candidates() {
   local config_file="$1"
   local input_name="$2"
@@ -29,15 +31,32 @@ project_match_list_candidates() {
       ($candidate == $token)
       or (($token | length) >= 3 and ($candidate | contains($token)));
 
-    [
-      .[]
-      | . as $project
-      | (([.name] + (.aliases // []) + [.path // ""]) | map(ascii_downcase)) as $candidates
-      | select(
-          ($tokens | all(. as $token | any($candidates[]; token_matches($token; .))))
-        )
-      | $project.name
-    ] | unique[]
+    def abbreviation_matches($token; $candidate):
+      ($token | split("-")) as $parts
+      | ($parts | length) as $count
+      | ($count > 1 and all($parts[]; length > 0))
+        and ((reduce ($candidate | splits("[-_./[:space:]]+")) as $word
+          (0; . as $index
+            | if $index < $count and ($word | startswith($parts[$index]))
+              then . + 1 else . end)) == $count);
+
+    def matching_projects($prefer_prefixes):
+      [
+        .[]
+        | . as $project
+        | (([.name] + (.aliases // []) + [.path // ""]) | map(ascii_downcase)) as $candidates
+        | select($tokens | all(. as $token | any($candidates[];
+            if $prefer_prefixes and ($token | contains("-"))
+            then abbreviation_matches($token; .)
+            else token_matches($token; .)
+            end)))
+        | $project.name
+      ];
+
+    # Prefer word boundaries over incidental substrings such as t-web in limit-web.
+    matching_projects(true) as $preferred
+    | (if ($preferred | length) > 0 then $preferred else matching_projects(false) end)
+    | unique[]
   ' "$config_file"
 }
 

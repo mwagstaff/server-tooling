@@ -32,6 +32,15 @@ TrainTrack's live validated timetable belongs in Mini's `/Users/mwagstaff/.local
 
 ## Default hosts and switches
 
+Project queries accept hyphen-separated word prefixes in order, with words skipped:
+`./deploy/node_project.zsh top-web` and `./deploy/node_project.zsh t-web` both select
+`top-scores-web` with the current configuration (or `d top-web` / `d t-web` using
+the deployment shortcut). Matching is case-insensitive across names, aliases,
+and paths. Exact names and aliases take priority, followed by word prefixes,
+then the existing substring matching. Ambiguous queries prompt for a selection
+in a terminal and fail without deploying in noninteractive use. Start, stop,
+and tail commands use the same shared matcher.
+
 `node_project.zsh` defaults to a quick deploy that tails stderr afterwards (`-q -e`); use `--full` / `--no-tail` to opt out. Bitwarden, assets-only and disable modes imply a full deploy.
 
 When no host is given, each project deploys to its entry in `PROJECT_DEFAULT_HOSTS` at the top of `node_project.zsh` (falling back to `DEFAULT_DEPLOY_HOST`). Edit that mapping to move a project to another host. So `./deploy/node_project.zsh train-track-api` is equivalent to `./deploy/node_project.zsh -q -e train-track-api sky`.
