@@ -393,5 +393,27 @@
             "OLLAMA_MODEL": "qwen3.5:9b",
             "EVENTS_RUN_AT": "01:00"
         }
+    },
+    {
+        "name": "bha-website",
+        "aliases": ["bha", "beckenham-historical-association"],
+        "path": "/Users/mwagstaff/dev/bha-website",
+        "remote_dir": "~/dev/bha-website",
+        "node_binary": "/opt/homebrew/bin/node",
+        "sync_env_local": false,
+        "start_command": "npm start",
+        "startup_port": 3050,
+        "healthcheck_path": "/healthcheck",
+        "metrics_port": false,
+        "service_label": "com.bha-website.web",
+        "service_description": "Beckenham & Bromley Historical Association website (preview)",
+        "public_url": "https://bha-preview.skynolimit.dev",
+        "rsync_excludes": ["/var/"],
+        "required_bitwarden_env": ["BHA_EDITOR_USERNAME", "BHA_EDITOR_PASSWORD"],
+        "static_env": {
+            "PORT": "3050",
+            "NODE_ENV": "production",
+            "BHA_DATA_DIR": "/Users/mwagstaff/.local/share/bha-website"
+        }
     }
 ]

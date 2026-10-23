@@ -63,3 +63,10 @@ python3 -m unittest discover -s deploy/tests -v
 ```
 
 Tests run the actual quick/full control flow with mock SSH, rsync and notification commands. They make no network connections and do not run remote service-management commands.
+
+## Planned downtime alert suppression
+
+See [deployment and reboot maintenance windows](../monitoring/ALERTING.md#planned-deployment-and-reboot-windows)
+for automatic expiring silences, duration overrides, failure behaviour and external
+watchdog limitations. Deployments default to three minutes; configured Ubuntu
+reboot hooks request ten minutes.

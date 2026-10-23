@@ -16,7 +16,7 @@ export function metrics(config:Config,store:Store,health:HealthMonitor,now=Date.
   emit('aiops_email_enabled',config.queue?1:0);
   const active=store.db.prepare("SELECT data FROM incidents WHERE json_extract(data,'$.status') IN ('queued','investigating','acting','verifying')").all();
   const queue=active.map(r=>JSON.parse(r.data as string)).filter(i=>
-    !store.setting('paused',false) && !store.setting(`paused:${i.service}`,false));
+    !store.maintenance(i.host,i.service,now) && !store.setting('paused',false) && !store.setting(`paused:${i.service}`,false));
   emit('aiops_incident_oldest_seconds',queue.length?Math.max(...queue.map(i=>(now-Date.parse(i.created))/1000)):0);
   const pending=store.db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE delivered=0').get();
   const failed=store.db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE delivered=0 AND attempts>0').get();

@@ -69,6 +69,9 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         tail = deploy / "tail_node_project.zsh"
         tail.write_text(TAIL_STUB)
         tail.chmod(0o755)
+        monitoring = root / 'monitoring'
+        monitoring.mkdir()
+        (monitoring / 'maintenance.py').write_text("import json, os, sys\nwith open(os.environ['DEPLOY_TEST_LOG'], 'a') as f: f.write(json.dumps({'name':'maintenance','args':sys.argv[1:],'stdin':''})+'\\n')\n")
         project = root / "app"
         project.mkdir()
         package = {"name": "test-project", "scripts": {}}
@@ -147,6 +150,26 @@ class NodeProjectDeploymentTests(unittest.TestCase):
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+
+    def test_maintenance_covers_quick_and_full_restarts_after_build(self):
+        for quick in [True, False]:
+            with self.subTest(quick=quick):
+                result, calls = self.run_deploy(quick=quick, build=True, host='sky')
+                self.assert_success(result)
+                maintenance = [i for i, call in enumerate(calls) if call['name'] == 'maintenance']
+                self.assertEqual(len(maintenance), 1)
+                index = maintenance[0]
+                self.assertIn('com.test-project.api', calls[index]['args'])
+                self.assertIn('180', calls[index]['args'])
+                build = [i for i, call in enumerate(calls) if call['name']=='ssh' and 'npm run build' in ' '.join(call['args'])]
+                self.assertTrue(build and max(build)<index)
+                restart = [i for i, call in enumerate(calls) if call['name']=='ssh' and 'systemctl --user restart' in ' '.join(call['args'])]
+                self.assertTrue(restart and min(restart)>index)
+
+    def test_disable_does_not_create_temporary_maintenance(self):
+        result, calls = self.run_deploy(host='sky', switches=['--disable', '--no-tail'])
+        self.assert_success(result)
+        self.assertFalse(any(call['name']=='maintenance' for call in calls))
 
     def test_quick_and_full_pin_npm_builds_and_generated_wrappers(self):
         for quick in [True, False]:

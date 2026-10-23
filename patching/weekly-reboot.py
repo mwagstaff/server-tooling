@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 from datetime import datetime
 import fcntl
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -35,6 +36,19 @@ def reboot_needed():
     return False
 
 
+def begin_alert_maintenance():
+    config_file = Path('/etc/server-tooling/aiops-maintenance.json')
+    if not config_file.exists():
+        return
+    try:
+        config = json.loads(config_file.read_text())
+        subprocess.run(['/usr/bin/python3', '/usr/local/lib/server-tooling/alert-maintenance.py',
+                        '--state-dir', config['stateDir'], '--host-wide', '--seconds', '600',
+                        '--reason', 'Scheduled host reboot'], check=True, timeout=60)
+    except Exception:
+        record('scheduled-reboot', 'Alert maintenance unavailable; reboot will proceed with monitoring enabled')
+
+
 def main(required_only=False):
     reason = 'Post-update reboot' if required_only else 'Weekly reboot'
     deadline = time.monotonic() + 30 * 60
@@ -58,6 +72,10 @@ def main(required_only=False):
                 # Assessments and package lock waits may cross the window boundary.
                 if not in_reboot_window():
                     record('scheduled-reboot', reason + ' deferred: maintenance window ended; next check at 04:00')
+                    return
+                begin_alert_maintenance()
+                if not in_reboot_window():
+                    record('scheduled-reboot', reason + ' deferred: maintenance window ended')
                     return
                 record('scheduled-reboot', reason + ' requested')
                 subprocess.run(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True)

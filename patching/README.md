@@ -126,3 +126,10 @@ Tests (no host restarts):
 python3 -m unittest discover -s patching -p 'test_*.py'
 python3 -m unittest discover -s patching/weekly-report -p 'test_*.py'
 ```
+
+## Planned downtime alert suppression
+
+See [deployment and reboot maintenance windows](../monitoring/ALERTING.md#planned-deployment-and-reboot-windows)
+for automatic expiring silences, duration overrides, failure behaviour and external
+watchdog limitations. Deployments default to three minutes; configured Ubuntu
+reboot hooks request ten minutes.

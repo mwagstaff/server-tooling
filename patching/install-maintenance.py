@@ -28,6 +28,7 @@ def main():
     try:
         for name in ['maintenance-host.py', 'weekly-reboot.py']:
             run(['scp', '-q', source / name, args.host + ':' + remote + '/' + name])
+        run(['scp', '-q', source.parent / 'monitoring/maintenance.py', args.host + ':' + remote + '/alert-maintenance.py'])
         ssh(args.host, ['sudo', '-n', 'python3', remote + '/maintenance-host.py', remote])
         report_args = [sys.executable, source / 'install-upgrade-report.py', args.host,
                        '--email', args.email, '--from-email', args.from_email]

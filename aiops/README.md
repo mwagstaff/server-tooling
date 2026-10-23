@@ -207,8 +207,43 @@ Persistent host files under `~/.local/share/aiops/`:
 Dashboard settings override their corresponding configuration defaults. Provider
 order is the order of entries in `config.json.providers`; restart the responder
 after editing it. Secrets are read from the private environment file on startup.
-After changing the repository's service registry or runner, reprovision the hosts
-as well as deploying the application.
+After changing the repository's service registry, reprovision the hosts as well
+as deploying the application. For a runner-only fix, atomically replace the reviewed
+`runner.py` in both `~/dev/aiops/` and `~/.local/share/aiops/` on the affected hosts,
+keeping the private copy mode `0700`. Each check/action starts a fresh runner, so
+this needs no application restart, credential rotation or full reprovisioning.
+
+### Kidsplorers events worker: process check on a headless Mini
+
+`kidsplorers-events-worker` runs on Mini as `com.kidsplorers.events-worker`,
+with Sky owning its incidents. It crawls nightly at 01:00 London time and polls
+the inbox every five minutes. Health is at `http://127.0.0.1:3310/healthcheck`;
+logs are `~/Library/Logs/kidsplorers-events-worker/worker{,.error}.log`.
+Dashboard checks require a running process, a responding endpoint, a daily run
+started within 28 hours, completion within four hours and successful source results.
+`ServiceHealthFailing` fires after three minutes of failing dashboard health.
+These checks do not verify every published event or downstream discovery task.
+
+On a headless Mac the LaunchAgent can be loaded in `user/<uid>` rather than
+`gui/<uid>`. The runner checks both service targets, preferring the GUI target
+when loaded, and restarts the target it actually finds. A system-scoped daemon
+continues to use `system/` and its restricted admin helper for recovery.
+If HTTP and job checks pass but the process check fails, inspect both targets
+with `launchctl print` before concluding the worker stopped. A genuine restart
+still requires approval; this fix adds no automatic recovery permission.
+After deploying a runner fix, verify `health_all`, the fresh dashboard checks on
+both hosts, `aiops_service_healthy{host="mini",service="kidsplorers-events-worker"}`
+on Sky's Prometheus (port 19090), and Alertmanager/AIOps source resolution.
+
+Verified 22 October 2026: deployed the runner alone to Mini and Sky; TypeScript
+checking, 39 Node tests and 18 Python tests passed. Both dashboards reported all
+five worker checks healthy, Sky scraped health `1` and runtime `up=1`, and the
+alert rule was inactive with no active worker alert in Alertmanager. Incident
+`0f026e9c-b652-483d-9cc2-08504e9a3798` recorded source resolution at 14:09:49 UTC;
+its historical `still_failing` status retains the previous failed action outcome.
+Notification queues were empty. The real restricted Sky-to-Mini runner passed;
+restart targeting was verified with kickstart intercepted, leaving worker PID 2182
+unchanged. No new alert, routing change or recovery permission was introduced.
 
 ## Cloudflare email configuration
 
@@ -324,3 +359,10 @@ Validation: `npm test` and `npm run check` in `aiops`, `npm test` in
 `aiops/cloudflare`, Python runner/platform tests, and `test_rules.py` with `PROMTOOL`
 set to the installed Prometheus tool. `coverage.test.json` tests the restored
 application rules, AIOps failure alarms, and sustained dashboard failure/recovery.
+
+## Planned downtime alert suppression
+
+See [deployment and reboot maintenance windows](../monitoring/ALERTING.md#planned-deployment-and-reboot-windows)
+for automatic expiring silences, duration overrides, failure behaviour and external
+watchdog limitations. Deployments default to three minutes; configured Ubuntu
+reboot hooks request ten minutes.

@@ -28,6 +28,68 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.handle({**self.request, 'operation': 'shell'}, self.config)
 
+    def test_launchagent_status_finds_gui_and_headless_user_services(self):
+        for domain, state in [('gui/501', 'running'), ('user/501', 'running'),
+                              ('user/501', 'waiting')]:
+            with self.subTest(domain=domain, state=state):
+                def launchctl(args, timeout=15):
+                    loaded = args == ['launchctl', 'print', domain + '/fixture']
+                    return {'code': 0 if loaded else 125,
+                            'stdout': f'state = {state}' if loaded else '', 'stderr': ''}
+                with patch.object(runner.platform, 'system', return_value='Darwin'), \
+                        patch.object(runner.os, 'getuid', return_value=501), \
+                        patch.object(runner, 'command', side_effect=launchctl):
+                    self.assertEqual(runner.status(self.item)['active'], state == 'running')
+
+    def test_launchagent_restart_targets_the_loaded_service_domain(self):
+        for domain in ['gui/501', 'user/501']:
+            with self.subTest(domain=domain):
+                def launchctl(args, timeout=15):
+                    if args[:2] == ['launchctl', 'print']:
+                        return {'code': 0 if args[2] == domain + '/fixture' else 125,
+                                'stdout': 'state = waiting', 'stderr': ''}
+                    return {'code': 0, 'stdout': '', 'stderr': ''}
+                with patch.object(runner.platform, 'system', return_value='Darwin'), \
+                        patch.object(runner.os, 'getuid', return_value=501), \
+                        patch.object(runner, 'command', side_effect=launchctl) as command:
+                    self.assertEqual(runner.restart(self.item)['code'], 0)
+                    command.assert_called_with(['launchctl', 'kickstart', '-k', domain + '/fixture'], 90)
+
+    def test_missing_launchagent_is_unhealthy_and_cannot_be_restarted(self):
+        with patch.object(runner.platform, 'system', return_value='Darwin'), \
+                patch.object(runner.os, 'getuid', return_value=501), \
+                patch.object(runner, 'command', return_value={'code': 113, 'stdout': '', 'stderr': ''}) as command:
+            self.assertFalse(runner.status(self.item)['active'])
+            with self.assertRaisesRegex(ValueError, 'not loaded'):
+                runner.restart(self.item)
+            self.assertTrue(all(c.args[0][:2] == ['launchctl', 'print'] for c in command.call_args_list))
+
+    def test_launchagent_prefers_gui_when_both_domains_have_the_service(self):
+        with patch.object(runner.platform, 'system', return_value='Darwin'), \
+                patch.object(runner.os, 'getuid', return_value=501), \
+                patch.object(runner, 'command', return_value={'code': 0, 'stdout': 'state = running', 'stderr': ''}) as command:
+            self.assertTrue(runner.status(self.item)['active'])
+            runner.restart(self.item)
+            self.assertTrue(all('user/501/fixture' not in c.args[0] for c in command.call_args_list))
+            command.assert_called_with(['launchctl', 'kickstart', '-k', 'gui/501/fixture'], 90)
+
+    def test_system_daemon_keeps_its_restricted_admin_helper(self):
+        item = {**self.item, 'scope': 'system', 'adminHelper': '/usr/local/sbin/fixture-admin'}
+        with patch.object(runner.platform, 'system', return_value='Darwin'), \
+                patch.object(runner, 'command', return_value={'code': 0, 'stdout': 'state = running', 'stderr': ''}) as command:
+            self.assertTrue(runner.status(item)['active'])
+            command.assert_called_with(['launchctl', 'print', 'system/fixture'])
+            runner.restart(item)
+            command.assert_called_with(['sudo', '-n', item['adminHelper'], 'restart', 'fixture'], 90)
+
+    def test_linux_keeps_systemd_status_and_restart(self):
+        with patch.object(runner.platform, 'system', return_value='Linux'), \
+                patch.object(runner, 'command', return_value={'code': 0, 'stdout': 'active\n', 'stderr': ''}) as command:
+            self.assertTrue(runner.status(self.item)['active'])
+            command.assert_called_with(['systemctl', '--user', 'is-active', 'fixture.service'])
+            runner.restart(self.item)
+            command.assert_called_with(['systemctl', '--user', 'restart', 'fixture.service'], 90)
+
     def test_health_checks_are_read_only_and_include_public_failures(self):
         self.item['publicUrl'] = 'https://example.test'
         (runner.ROOT / 'PAUSED').touch()

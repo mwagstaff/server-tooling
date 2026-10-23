@@ -20,6 +20,7 @@ typeset -A PROJECT_DEFAULT_HOSTS=(
   kidsplorers-api        sky
   kidsplorers-web        sky
   kidsplorers-events-worker mini
+  bha-website            mini
 )
 
 get_project_default_host() {

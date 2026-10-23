@@ -13,7 +13,8 @@ export class Engine {
     this.config=config; this.store=store; this.run=run; this.model=model;
   }
   paused(service: string) {
-    return this.store.setting('paused',false) || this.store.setting(`paused:${service}`,false);
+    const host=this.config.services.find(s=>s.name===service)?.host;
+    return this.store.setting('paused',false) || this.store.setting(`paused:${service}`,false) || Boolean(host && this.store.maintenance(host,service));
   }
   async collect(s: Service) {
     const local = await this.run(this.config,s,'inspect');
@@ -43,11 +44,16 @@ export class Engine {
     } catch {return null;}
   }
   finish(i: Incident, status:string) {
+    if(this.store.maintenance(i.host,i.service)) {
+      i.status='queued';this.store.put(i);this.store.set(`maintenance:deferred:${i.id}`,true);return;
+    }
     i.status=status; this.store.put(i); enqueueSummary(this.config,this.store,i);
   }
   async tick() {
     if (this.busy) return;
-    const i=this.store.list().reverse().find(i=>i.status==='queued' && !this.paused(i.service));
+    for(const incident of this.store.list().filter(i=>i.status==='queued' && this.store.maintenance(i.host,i.service)))
+      this.store.set(`maintenance:deferred:${incident.id}`,true);
+    const i=this.store.list().reverse().find(i=>i.status==='queued' && !this.paused(i.service) && !this.store.maintenance(i.host,i.service));
     if (!i) return;
     this.busy=true;
     try { await this.investigate(i); }
@@ -79,7 +85,14 @@ export class Engine {
     if (i.evidence.healthy && i.evidence.public?.ok !== false && firing===false) {
       i.verification={...i.evidence,logs:undefined,alertFiring:false};
       i.diagnosis='Service and public checks are healthy; source alert has cleared without intervention.';
+      if(this.store.setting(`maintenance:deferred:${i.id}`,false) && !i.attempts) {i.status='healthy';this.store.put(i);return;}
       return this.finish(i,i.attempts>0?'recovered':'healthy');
+    }
+    if(this.store.maintenance(i.host,i.service)) return this.finish(i,'queued');
+    if(this.store.setting(`maintenance:deferred:${i.id}`,false) && i.evidence.healthy && i.evidence.public?.ok!==false &&
+       (i.alert.source==='email'||firing===false)) {
+      i.diagnosis='Healthy after planned maintenance; no investigation or recovery needed.';
+      i.status='healthy';this.store.put(i);this.store.event(i.id,'maintenance_cleared',{});return;
     }
     const actions=[...new Set([...s.autoActions,...s.approvalActions])].filter(a=>
       a!=='retry'||i.evidence.retryAvailable).filter(a=>a!=='redeploy'||i.evidence.releaseAvailable);

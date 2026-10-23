@@ -40,6 +40,7 @@ export class Store {
         if (['improved','verification_incomplete'].includes(incident.status)) incident.status='queued';
       }
       this.put(incident);
+      if(this.maintenance(alert.host,alert.service)) this.set(`maintenance:deferred:${incident.id}`,true);
       return {incident, fresh:false};
     }
     const correlated = alert.status === 'firing' && alert.service !== 'unknown' &&
@@ -64,6 +65,7 @@ export class Store {
     };
     this.put(incident);
     this.event(incident.id, 'alert', alert);
+    if(this.maintenance(alert.host,alert.service)) this.set(`maintenance:deferred:${incident.id}`,true);
     return {incident, fresh:true};
   }
   event(id: string, kind: string, data: unknown) {
@@ -81,6 +83,10 @@ export class Store {
   set(key: string, value: unknown) {
     this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data')
       .run(key, JSON.stringify(value));
+  }
+  maintenance(host:string,service:string,now=Date.now()) {
+    return this.setting<{host:string;services:string[];endsAt:number}[]>('maintenance:windows',[])
+      .some(w=>w.host===host && w.endsAt>now && (!w.services.length || w.services.includes(service)));
   }
   recover() {
     for (const i of this.list()) {

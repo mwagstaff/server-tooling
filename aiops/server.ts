@@ -10,6 +10,7 @@ import {flushNotifications} from './lib/notifications.ts';
 import {HealthMonitor,fleetHealth,HEALTH_INTERVAL_MS} from './lib/health.ts';
 import type {Config,Alert} from './lib/types.ts';
 import {metrics} from './lib/metrics.ts';
+import {beginMaintenance} from './lib/maintenance.ts';
 import {pathToFileURL} from 'node:url';
 
 const assets:Record<string,[string,string]> = {
@@ -55,6 +56,11 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
         return res.end(readFileSync(new URL(`./public/${file}`,import.meta.url)));
       }
       const bearer=req.headers.authorization?.startsWith('Bearer ')?req.headers.authorization.slice(7):'';
+      if(req.method==='POST' && url.pathname==='/api/maintenance') {
+        if(!bearer || !(equal(bearer,config.webhookToken) || config.peerToken && equal(bearer,config.peerToken)))
+          return send(res,401,{error:'Unauthorized'});
+        return send(res,201,await beginMaintenance(config,store,await readBody(req)));
+      }
       if(req.method==='GET' && url.pathname==='/metrics') {
         if(!bearer || !equal(bearer,config.webhookToken)) return send(res,401,{error:'Unauthorized'});
         res.writeHead(200,{'Content-Type':'text/plain; version=0.0.4'});

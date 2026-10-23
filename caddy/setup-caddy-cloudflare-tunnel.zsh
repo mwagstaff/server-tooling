@@ -27,6 +27,9 @@ GOAL_GUESSER_HOSTNAME="goal-guesser.skynolimit.dev"
 KIDSPLORERS_HOSTNAME="kidsplorers.com"
 SKYNOLIMIT_HOSTNAME="skynolimit.dev"
 SKYNOLIMIT_WWW_HOSTNAME="www.skynolimit.dev"
+BHA_PREVIEW_HOSTNAME="bha-preview.skynolimit.dev"
+# The BHA website runs on mini; Caddy reaches it over Tailscale.
+BHA_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3050"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
@@ -109,6 +112,17 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   @skynolimit_www host ${SKYNOLIMIT_WWW_HOSTNAME}
   handle @skynolimit_www {
     redir https://${SKYNOLIMIT_HOSTNAME}{uri} 308
+  }
+
+  # Beckenham & Bromley Historical Association website preview, hosted on mini.
+  @bha_preview host ${BHA_PREVIEW_HOSTNAME}
+  handle @bha_preview {
+    reverse_proxy ${BHA_UPSTREAM} {
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
   }
 
   # Normalize Grafana base path (Grafana expects a trailing slash)
@@ -290,6 +304,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${SKYNOLIMIT_WWW_HOSTNAME}
+  - hostname: ${BHA_PREVIEW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_PREVIEW_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -345,6 +364,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${SKYNOLIMIT_WWW_HOSTNAME}
+  - hostname: ${BHA_PREVIEW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_PREVIEW_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -411,6 +435,10 @@ curl -s -o /dev/null -w "  /privacy_policy -> %{http_code}\n" -H "Host: ${SKYNOL
 curl -s -o /dev/null -w "  /terms_of_use   -> %{http_code}\n" -H "Host: ${SKYNOLIMIT_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/terms_of_use" || true
 
 echo
+echo "--> via Caddy (BHA website preview hostname, proxied to mini):"
+curl -i -H "Host: ${BHA_PREVIEW_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
+
+echo
 echo "--> via Caddy (Grafana /grafana and /grafana/):"
 # Show redirect for /grafana and confirm /grafana/ returns non-empty HTML
 curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/grafana" | head -n 20 || true
@@ -443,6 +471,7 @@ echo "    https://${TOP_SCORES_HOSTNAME}"
 echo "    https://${GOAL_GUESSER_HOSTNAME}"
 echo "    https://${KIDSPLORERS_HOSTNAME}"
 echo "    https://${API_HOSTNAME}/kidsplorers/v1/health"
+echo "    https://${BHA_PREVIEW_HOSTNAME}"
 EOF
 
 echo

@@ -235,3 +235,60 @@ actions requiring approval, and post-recovery verification. State what the
 checks cannot detect. Keep that runbook and this integration updated when moving,
 renaming or retiring a service; remove obsolete rules, registry entries and email
 routing entries together.
+
+## Planned deployment and reboot windows
+
+`deploy/node_project.zsh` requests a **180-second** maintenance window immediately
+before stopping/restarting services on Mini or Sky, after dependency installation
+and builds. It maps the actual service unit labels through the monitoring inventory,
+including every process in a multi-service deployment. Assets-only and disable
+operations do not create a temporary window. Set `DEPLOY_MAINTENANCE_SECONDS`
+to override the duration (30–1800 seconds). A long restart can outlast its window;
+choose a duration that covers its observed startup time.
+
+The controller calls `monitoring/maintenance.py`, which uses SSH to the owning
+responder and its existing private credential to POST `/api/maintenance`.
+The authenticated endpoint creates expiring Alertmanager silences and persists
+matching AIOps maintenance state. Pushover and AIOps webhook notifications are
+silenced; matching email/queued incidents wait without model calls or recovery.
+After expiry, healthy service incidents clear without a summary; persistent
+failures resume normal investigation. Host-only emails without a registered
+service still require manual triage after expiry because process health alone
+cannot prove their underlying condition resolved.
+
+Windows persist across responder restarts and expire even if the deployment
+fails or disconnects. They are not global pause switches and do not require an
+EXIT trap. Service windows leave unrelated services monitored. A deployment of
+multiple public services also silences `SharedPublicOutage` for that host for
+the same short period. Individual alerts for unrelated services remain enabled.
+A failed maintenance request prints a warning and deployment continues with
+monitoring enabled; no successful suppression is claimed. An already-running
+recovery prevents creation of a maintenance window. A model request already in
+flight cannot be undone, but recovery checks maintenance again before mutation.
+
+For an operator-requested window, from the repository root:
+
+```sh
+python3 monitoring/maintenance.py --host sky --unit com.top-scores.api --seconds 180 --reason 'Planned API restart'
+python3 monitoring/maintenance.py --host sky --host-wide --seconds 600 --reason 'Planned host reboot'
+```
+
+The endpoint body is `{ "host": "sky", "services": ["top-scores"],
+"seconds": 180, "reason": "Planned API restart" }`. An empty services array
+means host-wide maintenance. It accepts the owning responder's webhook token or
+shared peer token, validates scope/duration and never exposes credentials in
+command output. The response records the expiry and silence IDs. Windows are
+recorded in the AIOps event journal under `maintenance`; Alertmanager also shows
+the silences with creator `aiops-maintenance`.
+
+The Ubuntu maintenance installer installs the same helper for scheduled/conditional
+reboots when the SSH user's AIOps state exists. It requests a **600-second** host
+window from the peer before rebooting, after checking package locks and reboot
+need. The peer remains available while the target restarts. No reboot is performed
+when installing this hook. If the peer is unavailable, reboot proceeds with a
+recorded warning and monitoring remains enabled.
+
+External Healthchecks.io watchdogs remain independent: these windows do not pause
+Healthchecks or its direct Gmail notifications. Watchdog and pipeline canary
+routes remain enabled. Scheduled package upgrades that restart services without
+using the reboot/deployment hooks are not automatically covered by these windows.

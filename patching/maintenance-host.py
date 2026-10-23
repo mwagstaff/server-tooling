@@ -2,6 +2,8 @@
 """Root-side maintenance setup, invoked by install-maintenance.py."""
 import datetime
 import os
+import json
+import pwd
 from pathlib import Path
 import shutil
 import subprocess
@@ -75,6 +77,12 @@ def main():
         '[Unit]\nDescription=Run Server Tooling weekly apt full-upgrade\n'
         '[Timer]\nOnCalendar=Sun *-*-* 04:00:00 UTC\nPersistent=true\nRandomizedDelaySec=20m\n'
         '[Install]\nWantedBy=timers.target\n', only_missing=True)
+    put('/usr/local/lib/server-tooling/alert-maintenance.py', (stage / 'alert-maintenance.py').read_text(), 0o755)
+    owner = os.environ.get('SUDO_USER')
+    if owner:
+        state = Path(pwd.getpwnam(owner).pw_dir) / '.local/share/aiops'
+        if (state / 'config.json').is_file():
+            put('/etc/server-tooling/aiops-maintenance.json', json.dumps({'stateDir': str(state)}) + '\n', 0o600)
     put('/usr/local/lib/server-tooling/weekly-reboot.py', (stage / 'weekly-reboot.py').read_text(), 0o755)
     put(SYSTEMD / 'server-tooling-weekly-reboot.service',
         '[Unit]\nDescription=Scheduled weekly host reboot\nAfter=network.target\n'

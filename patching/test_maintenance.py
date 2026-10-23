@@ -28,6 +28,9 @@ class MaintenanceTests(unittest.TestCase):
         window = patch.object(reboot, 'in_reboot_window', return_value=True)
         self.window = window.start()
         self.addCleanup(window.stop)
+        maintenance = patch.object(reboot, 'begin_alert_maintenance')
+        self.maintenance = maintenance.start()
+        self.addCleanup(maintenance.stop)
 
     def test_daytime_request_does_not_assess_or_reboot(self):
         self.window.return_value = False
@@ -77,6 +80,8 @@ class MaintenanceTests(unittest.TestCase):
                     else:
                         reboot.main(required_only=True)
                         self.assertEqual(run.call_count, int(needed))
+                        self.assertEqual(self.maintenance.call_count, int(needed))
+                        self.maintenance.reset_mock()
 
     def test_busy_package_lock_defers_reboot_and_releases_before_retry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +134,19 @@ class MaintenanceTests(unittest.TestCase):
             installer.main()
         self.assertTrue(any('install-upgrade-report.py' in str(args) for args in commands))
         self.assertFalse(any('configure-caddy-updates.py' in str(args) for args in commands))
+
+
+class AlertMaintenanceTests(unittest.TestCase):
+    def test_configured_hook_runs_before_reboot_and_failure_is_logged(self):
+        for failure in (False, True):
+            with self.subTest(failure=failure), patch.object(reboot.Path, 'exists', return_value=True), \
+                 patch.object(reboot.Path, 'read_text', return_value='{"stateDir":"/home/test/.local/share/aiops"}'), \
+                 patch.object(reboot.subprocess, 'run', side_effect=RuntimeError('unreachable') if failure else None) as run, \
+                 patch.object(reboot, 'record') as record:
+                reboot.begin_alert_maintenance()
+                self.assertIn('--host-wide', run.call_args.args[0])
+                self.assertIn('600', run.call_args.args[0])
+                self.assertEqual(record.called, failure)
 
 
 class RebootWindowTests(unittest.TestCase):

@@ -2412,6 +2412,18 @@ if [[ "$QUICK_MODE" == "1" ]]; then
   fi
 fi
 
+# Open the window immediately before the first stop/restart, after builds finish.
+# Fixed expiry also covers a failed deploy or a client that disconnects mid-restart.
+if [[ "$HOST" == "mini" || "$HOST" == "sky" ]]; then
+  maintenance_args=(--host "$HOST" --seconds "${DEPLOY_MAINTENANCE_SECONDS:-180}" --reason "Deployment: $PROJECT_NAME")
+  for maintenance_unit in "${SERVICE_LABELS[@]}"; do
+    maintenance_args+=(--unit "$maintenance_unit")
+  done
+  if ! python3 "$SCRIPT_DIR/../monitoring/maintenance.py" "${maintenance_args[@]}"; then
+    echo "Warning: alert maintenance could not be established; continuing deployment with monitoring enabled." >&2
+  fi
+fi
+
 if [[ "$QUICK_MODE" == "1" && "$SERVICE_SETUP_REQUIRED" == "0" ]]; then
   echo "==> Quick mode: restarting existing service..."
   for ((idx = 1; idx <= ${#SERVICE_LABELS[@]}; idx++)); do

@@ -49,12 +49,22 @@ def probe(url, user_agent=None):
         return {'ok': False, 'error': type(exc).__name__}
 
 
+def launchd_service(item):
+    # Headless Macs can load LaunchAgents in user/<uid> without a GUI session.
+    domains = ['system'] if item.get('scope') == 'system' else [f'gui/{os.getuid()}', f'user/{os.getuid()}']
+    for domain in domains:
+        target = domain + '/' + item['unit']
+        result = command(['launchctl', 'print', target])
+        if result['code'] == 0:
+            return target, result
+    return None, result
+
+
 def status(item):
     if platform.system() == 'Linux':
         r = command(['systemctl', '--user', 'is-active', item['unit'] + '.service'])
         return {'active': r['code'] == 0, 'state': r['stdout'].strip()}
-    domain = 'system' if item.get('scope') == 'system' else f'gui/{os.getuid()}'
-    r = command(['launchctl', 'print', domain + '/' + item['unit']])
+    _, r = launchd_service(item)
     return {'active': r['code'] == 0 and 'state = running' in r['stdout'],
             'state': 'running' if 'state = running' in r['stdout'] else 'not running'}
 
@@ -131,7 +141,10 @@ def restart(item):
         return command(['systemctl', '--user', 'restart', item['unit'] + '.service'], 90)
     if item.get('scope') == 'system':
         return command(['sudo', '-n', item['adminHelper'], 'restart', item['unit']], 90)
-    return command(['launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/' + item['unit']], 90)
+    target, _ = launchd_service(item)
+    if target is None:
+        raise ValueError('Service is not loaded in a registered launchd domain')
+    return command(['launchctl', 'kickstart', '-k', target], 90)
 
 
 def safe_relative(name):
