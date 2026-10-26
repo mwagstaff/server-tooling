@@ -8,7 +8,7 @@ export type Service = {
 export type Provider = {
   kind: 'ollama' | 'openai' | 'anthropic'; model: string; keyEnv?: string;
   baseUrl?: string; inputPerMillion: number; outputPerMillion: number;
-  timeoutMs: number; maxOutputTokens: number;
+  timeoutMs: number; maxOutputTokens: number; budgetUsd?: number; reasoningEffort?: 'medium';
 };
 export type Config = {
   host: string; listen: string; port: number; stateDir: string; publicUrl: string;
@@ -18,6 +18,7 @@ export type Config = {
   automatic: boolean; cooldownSeconds: number; maxActions: number;
   alertmanagerUrl: string; prometheusUrl: string;
   verifyDelayMs: number; staleAfterMs: number;
+  logs?: {url:string; token:string};
   notification: {pushoverUser?: string; pushoverToken?: string; smtpHost?: string;
     smtpPort?: number; smtpUser?: string; smtpPassword?: string; emailFrom?: string; emailTo?: string};
   queue?: {account: string; id: string; token: string};
@@ -32,5 +33,6 @@ export type Incident = {
   id: string; key: string; host: string; service: string; status: string;
   created: string; updated: string; alert: Alert; diagnosis: string;
   action?: Action; approvalExpires?: string; spent: number; attempts: number;
+  runbook?: {id:string;version:number}; related?: {id:string;name:string;url:string}[];
   evidence?: any; verification?: any; resolvedAt?: string;
 };

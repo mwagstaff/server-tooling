@@ -151,7 +151,7 @@ def boot_script():
     source = SOURCE / 'enable_boot.py'
     shutil.copy2(source, ROOT / 'enable_boot.py')
     path = ROOT / 'enable-boot.sh'
-    path.write_text('#!/bin/bash\nset -euo pipefail\nexec sudo ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(ROOT / 'enable_boot.py')) + ' ' + shlex.quote(str(ROOT)) + ' ' + shlex.quote(os.environ['USER']) + '\n')
+    path.write_text('#!/bin/bash\nset -euo pipefail\nexec sudo ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(ROOT / 'enable_boot.py')) + ' ' + shlex.quote(str(ROOT)) + ' ' + shlex.quote(os.environ['USER']) + ' "$@"\n')
     path.chmod(0o700)
 
 
@@ -244,6 +244,9 @@ def target(config):
     if (Path.home()/'.local/share/aiops/webhook-token').exists():
         routes['/aiops'] = {'url':'http://127.0.0.1:19444/metrics',
                             'token_file':str(Path.home()/'.local/share/aiops/webhook-token')}
+    if (ROOT / 'logging.json').exists():
+        routes['/logs-health'] = {'url':'http://127.0.0.1:13102/metrics'}
+        routes['/alloy'] = {'url':'http://127.0.0.1:12345/metrics'}
     write_json(ROOT / 'gateway.json', {'listen': config['ip'], 'allowed': config['allowed'], 'routes': routes,
                                       'history': (ROOT / 'prometheus.json').exists()})
     shutil.copy2(SOURCE / 'gateway.py', ROOT / 'gateway.py')
@@ -261,6 +264,8 @@ def monitor(config):
         shutil.copytree(ROOT / 'secrets', candidate / 'secrets')
         if (ROOT / 'aiops.json').exists():
             shutil.copy2(ROOT / 'aiops.json', candidate / 'aiops.json')
+        if (ROOT / 'logging.json').exists():
+            shutil.copy2(ROOT / 'logging.json', candidate / 'logging.json')
         render(candidate, config['monitor'], config['target'], config['target_ip'], config['ip'], config['services'], watchdog,
                hostname=config.get('hostname'), target_os=config.get('target_os'))
         run([prometheus.parent / 'promtool', 'check', 'config', '--lint-fatal', candidate / 'prometheus.json'])

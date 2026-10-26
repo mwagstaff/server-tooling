@@ -1,15 +1,17 @@
+import {incidentBudget} from './lib/budget.ts';
 import {createServer, type IncomingMessage, type ServerResponse} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {randomBytes,createHmac} from 'node:crypto';
 import {loadConfig} from './lib/config.ts';
 import {Store} from './lib/store.ts';
 import {Engine} from './lib/engine.ts';
-import {alertsFromWebhook,alertFromEmail} from './lib/alerts.ts';
+import {alertsFromWebhook,alertFromEmail,sameAlert} from './lib/alerts.ts';
 import {boundedBody,equal,redact} from './lib/security.ts';
-import {flushNotifications} from './lib/notifications.ts';
+import {enqueueSummary,flushNotifications} from './lib/notifications.ts';
 import {HealthMonitor,fleetHealth,HEALTH_INTERVAL_MS} from './lib/health.ts';
 import type {Config,Alert} from './lib/types.ts';
 import {metrics} from './lib/metrics.ts';
+import {relayApplication,receiveRelay,applicationOwner} from './lib/routing.ts';
 import {beginMaintenance} from './lib/maintenance.ts';
 import {pathToFileURL} from 'node:url';
 
@@ -66,6 +68,15 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
         res.writeHead(200,{'Content-Type':'text/plain; version=0.0.4'});
         return res.end(metrics(config,store,health));
       }
+      if(req.method==='POST' && url.pathname==='/api/relay-alerts') {
+        if(!config.peerToken || !bearer || !equal(bearer,config.peerToken))return send(res,401,{error:'Unauthorized'});
+        await receiveRelay(config,await readBody(req));
+        return send(res,202,{accepted:true});
+      }
+      if(req.method==='GET' && url.pathname==='/api/related-incidents') {
+        if(!config.peerToken || !bearer || !equal(bearer,config.peerToken))return send(res,401,{error:'Unauthorized'});
+        return send(res,200,{incidents:store.list().slice(0,100).map(i=>({id:i.id,host:i.host,name:i.alert.name,startsAt:i.alert.startsAt,url:config.publicUrl+'/?incident='+i.id}))});
+      }
       if(req.method==='POST' && ['/webhooks/alertmanager','/webhooks/email'].includes(url.pathname)) {
         if(!bearer || !equal(bearer,config.webhookToken)) return send(res,401,{error:'Unauthorized'});
         const body=await readBody(req);
@@ -73,7 +84,17 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
           a.labels?.alertname==='AIOpsPipelineCanary' && a.labels?.host===config.host &&
           a.status==='firing' && Number.isFinite(Date.parse(a.startsAt)) && Date.parse(a.startsAt)<=Date.now()+60000)) store.set('monitor:webhook_canary',Date.now());
         const alerts=url.pathname.endsWith('email')?[alertFromEmail(body,config)]:alertsFromWebhook(body,config);
-        for(const a of alerts) store.ingest(a);
+        for(const a of alerts) {
+          if(a.source==='alertmanager') {
+            const raw=body.alerts.find((x:any)=>alertsFromWebhook({alerts:[x]},config).some(b=>sameAlert(a,b)));
+            try {if(raw && await relayApplication(config,raw,a))continue;}
+            catch(e) {return send(res,503,{error:redact(String(e)).slice(0,300)});}
+          }
+          const prior=store.list().find(i=>i.alert.key===a.key || sameAlert(i.alert,a));
+          const result=store.ingest(a);
+          if(a.status==='resolved' && prior && !prior.resolvedAt && !store.maintenance(a.host,a.service) && store.events(prior.id).some(e=>e.kind==='summary'))
+            enqueueSummary(config,store,result.incident);
+        }
         return send(res,202,{accepted:alerts.length});
       }
       if(req.method==='GET' && url.pathname==='/api/peer') {
@@ -114,8 +135,8 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
         return send(res,200,{
           host:config.host,now:new Date().toISOString(),busy:engine.busy,
           paused:store.setting('paused',false),automatic:store.setting('automatic',config.automatic),
-          budgetUsd:store.setting('budgetUsd',config.budgetUsd),
-          providers:config.providers.map(p=>({kind:p.kind,model:p.model,configured:p.kind==='ollama'||Boolean(process.env[p.keyEnv || ''])})),
+          budgetUsd:incidentBudget(config,store),
+          providers:config.providers.map(p=>({kind:p.kind,model:p.model,budgetUsd:p.budgetUsd,reasoningEffort:p.reasoningEffort,configured:p.kind==='ollama'||Boolean(process.env[p.keyEnv || ''])})),
           services:config.services.map(s=>({name:s.name,host:s.host,owner:s.owner,autoActions:s.autoActions,
             paused:store.setting(`paused:${s.name}`,false)})),
           serviceHealth:fleetHealth(config.services,[...health.reports,...peerResults.flatMap(p=>p.serviceHealth||[])]),
@@ -145,8 +166,8 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
         const body=await readBody(req);
         if(body.service && !config.services.some(s=>s.name===body.service&&s.owner===config.host))
           return send(res,400,{error:'Service is not owned by this host'});
-        if(body.budgetUsd!==undefined && (!Number.isFinite(body.budgetUsd)||body.budgetUsd<0||body.budgetUsd>100))
-          throw new Error('Budget must be between $0 and $100');
+        if(body.budgetUsd!==undefined && (!Number.isFinite(body.budgetUsd)||body.budgetUsd<0||body.budgetUsd>Math.min(1,config.budgetUsd)))
+          throw new Error(`Budget must be between $0 and $${Math.min(1,config.budgetUsd)}`);
         if(typeof body.paused==='boolean') store.set(body.service?`paused:${body.service}`:'paused',body.paused);
         if(typeof body.automatic==='boolean') store.set('automatic',body.automatic);
         if(body.budgetUsd!==undefined) {
@@ -214,14 +235,45 @@ export async function pollQueue(config:Config,store:Store) {
 }
 
 export async function reconcileAlerts(config:Config,store:Store) {
-  const r=await fetch(`${config.alertmanagerUrl}/api/v2/alerts?active=true&silenced=false&inhibited=false`,
+  const r=await fetch(`${config.alertmanagerUrl}/api/v2/alerts?active=true&silenced=true&inhibited=true&unprocessed=true`,
     {signal:AbortSignal.timeout(5000),redirect:'error'});
   if(!r.ok) throw new Error(`Alert reconciliation HTTP ${r.status}`);
   const active=JSON.parse(await boundedBody(r,1024*1024));
   if(!Array.isArray(active)) throw new Error('Invalid alert state');
+  const present:Alert[]=[];let rejected=false;
   for(const item of active) {
-    if(item.status?.state!=='active') continue;
-    for(const alert of alertsFromWebhook({alerts:[item]},config)) store.ingest(alert);
+    let parsed;
+    try {parsed=alertsFromWebhook({alerts:[item]},config);}
+    catch(e) {
+      rejected=true;
+      store.event('intake','rejected_alert',{name:String(item.labels?.alertname||'unknown').slice(0,100),reason:redact(String(e)).slice(0,300)});
+      continue;
+    }
+    // Storage errors still fail reconciliation; only malformed input is isolated.
+    present.push(...parsed);
+    for(const alert of parsed) {
+      if(await relayApplication(config,item,alert))continue;
+      if(item.status?.state==='active')store.ingest(alert);
+    }
+  }
+  // Absence in a filtered/suppressed list is not resolution. Require two full,
+  // successful snapshots at least a minute apart, and no invalid entries.
+  if(!rejected)for(const i of store.list()) {
+    if(i.alert.source!=='alertmanager' || (applicationOwner(config,i.alert) && applicationOwner(config,i.alert)!==config.host))continue;
+    const key='source:absent:'+i.id;
+    if(present.some(a=>sameAlert(a,i.alert))) {store.set(key,0);continue;}
+    if(!i.resolvedAt) {
+      const since=store.setting(key,0);
+      if(!since){store.set(key,Date.now());continue;}
+      if(Date.now()-since<60000)continue;
+      store.ingest({...i.alert,status:'resolved',receivedAt:new Date().toISOString()});
+      store.event(i.id,'source_absent',{snapshots:2});
+    }
+  }
+  for(const i of store.list()) {
+    if(i.resolvedAt && Date.parse(i.resolvedAt)>Date.now()-config.staleAfterMs && !store.maintenance(i.host,i.service) && store.events(i.id).some(e=>e.kind==='summary') && !store.setting('summary:resolved:'+i.id,false)) {
+      enqueueSummary(config,store,i);
+    }
   }
   store.set('monitor:reconcile',Date.now());
 }

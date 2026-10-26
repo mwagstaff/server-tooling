@@ -133,3 +133,8 @@ See [deployment and reboot maintenance windows](../monitoring/ALERTING.md#planne
 for automatic expiring silences, duration overrides, failure behaviour and external
 watchdog limitations. Deployments default to three minutes; configured Ubuntu
 reboot hooks request ten minutes.
+
+Reboot requests blocked by systemd's explicit logged-in-user/inhibitor refusal
+are recorded as deferred and retried at the next scheduled window. They do not
+mark the timer service failed. Other reboot errors still fail visibly. This does
+not bypass sessions, inhibitors, package locks, or the 04:00–05:00 UK window.

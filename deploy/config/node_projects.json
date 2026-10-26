@@ -376,6 +376,7 @@
         "path": "/Users/mwagstaff/dev/kidsplorers",
     "remote_dir": "~/dev/kidsplorers",
     "bw_remote_env_file_name": ".bw-secrets.events-worker.env.sh",
+    "extra_bw_folder_ids": ["53dced61-a4d0-4cbd-942f-b452018a7ace"],
     "entry_file": "services/events-worker/dist/index.js",
     "node_binary": "/opt/homebrew/bin/node",
         "rsync_excludes": ["/apps/mobile/ios/", "/apps/mobile/android/"],
@@ -386,7 +387,7 @@
         "service_description": "kidsplorers Events Worker",
         "log_file": "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.log",
         "error_log_file": "/Users/mwagstaff/Library/Logs/kidsplorers-events-worker/worker.error.log",
-        "required_bitwarden_env": ["EVENTS_INGEST_TOKEN"],
+        "required_bitwarden_env": ["EVENTS_INGEST_TOKEN", "TINYFISH_WEB_SEARCH_API_KEY"],
         "static_env": {
             "PORT": "3310",
             "OLLAMA_URL": "http://127.0.0.1:11434",

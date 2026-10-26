@@ -87,7 +87,7 @@
                 "severity": "critical"
               },
               "exp_annotations": {
-                "summary": "app errors exceed 5%",
+                "summary": "app HTTP 5xx responses exceed 5% (20%)",
                 "description": "sky / app: 0.2",
                 "runbook_url": "https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts"
               }
@@ -195,6 +195,45 @@
         {
           "eval_time": "90s",
           "alertname": "SharedPublicOutage",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "aborts warn without being classified as HTTP 5xx",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "monitoring_http_requests_total{host=\"sky\",service=\"app\",status=\"aborted\"}",
+          "values": "0+20x20"
+        },
+        {
+          "series": "monitoring_http_request_duration_seconds_count{host=\"sky\",service=\"app\"}",
+          "values": "0+100x20"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "15m",
+          "alertname": "HttpAbortedRequests",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "host": "sky",
+                "service": "app",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "app incomplete responses exceed 5% (20%); inspect client/proxy cancellations",
+                "description": "sky / app: 0.2",
+                "runbook_url": "https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts"
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "15m",
+          "alertname": "HttpErrors",
           "exp_alerts": []
         }
       ]

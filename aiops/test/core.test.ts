@@ -1,3 +1,4 @@
+import nodemailer from 'nodemailer';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -5,6 +6,7 @@ import {Store} from '../lib/store.ts';
 import {Engine} from '../lib/engine.ts';
 import {alertsFromWebhook,alertFromEmail} from '../lib/alerts.ts';
 import {parseDecision,reserveCost,diagnose} from '../lib/providers.ts';
+import {enqueueSummary,summaryHtml,flushNotifications} from '../lib/notifications.ts';
 import {redact} from '../lib/security.ts';
 import {createApp,pollQueue,reconcileAlerts} from '../server.ts';
 import type {Config,Alert,Service} from '../lib/types.ts';
@@ -196,4 +198,197 @@ test('dashboard requires login, same-origin controls, and webhook authentication
   assert.equal((await fetch(base+'/api/controls',{method:'POST',headers:{cookie},body:'{"paused":true}'})).status,403);
   const control=await fetch(base+'/api/controls',{method:'POST',headers:{cookie,Origin:base,'X-AIOps-Control':'1','Content-Type':'application/json'},body:'{"paused":true}'});
   assert.equal(control.status,200);assert.equal(s.setting('paused',false),true);
+});
+
+test('summary leads with source resolution without claiming service recovery',()=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  i.status='needs_review';i.diagnosis='Old startup lines.\nPossible restart loop.';s.put(i);
+  s.ingest({...i.alert,status:'resolved'});
+  enqueueSummary(config,s,i);
+  const summary=s.events(i.id).find(e=>e.kind==='summary')!.data;
+  assert.match(summary.title,/SOURCE CLEARED/);
+  assert.match(summary.text,/^- Summary: SOURCE CLEARED. Service health not verified/);
+  assert.ok(summary.text.split('\n').every((line:string)=>line.startsWith('- ')));
+  assert.ok(!summary.text.includes('Final verification: {'));
+  s.db.close();
+});
+test('uncertain assessment escalates once per provider within shared incident budget',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{
+    calls++;
+    return Response.json({choices:[{message:{content:JSON.stringify({diagnosis:'Cause uncertain',action:'none',reason:'Review',confidence:calls===1?'low':'high'})}}],
+      usage:{prompt_tokens:10,completion_tokens:10}});
+  });
+  const p={kind:'openai' as const,model:'test',keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:1,outputPerMillion:5,timeoutMs:1000,maxOutputTokens:1000};
+  const d=await diagnose({...config,providers:[p,p]},s,i,{},[]);
+  assert.equal(calls,2);assert.equal(d.confidence,'high');assert.ok(i.spent<2);
+  assert.equal(s.events(i.id).filter(e=>e.kind==='investigation_escalated').length,1);
+  s.db.close();
+});
+test('escalation preserves uncertain assessment when remaining budget cannot reserve another request',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{
+    calls++;return Response.json({choices:[{message:{content:JSON.stringify({diagnosis:'Unknown cause',action:'none',reason:'Review',confidence:'low'})}}]});
+  });
+  const p={kind:'openai' as const,model:'test',keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:1,outputPerMillion:5,timeoutMs:1000,maxOutputTokens:1000};
+  const d=await diagnose({...config,budgetUsd:0.02,providers:[p,p]},s,i,{},[]);
+  assert.equal(calls,1);assert.equal(d.diagnosis,'Unknown cause');
+  assert.ok(s.events(i.id).some(e=>e.kind==='budget_limit'));s.db.close();
+});
+test('investigation supplies restart and response metrics to the model',async t=>{
+  const s=new Store(':memory:');s.ingest(makeAlert());
+  const queries:string[]=[];
+  t.mock.method(globalThis,'fetch',async(url:URL)=>{
+    queries.push(url.searchParams.get('query')!);
+    return Response.json({status:'success',data:{result:[{metric:{},value:[1,'0']}]}});
+  });
+  const e=new Engine(config,s,async()=>unhealthy,async(_c,_s,_i,evidence)=>{
+    assert.equal(evidence.metrics.restarts15m.samples[0].value[1],'0');
+    return {diagnosis:'Unknown',action:'none',reason:'Review',confidence:'low'};
+  });
+  await e.tick();assert.equal(queries.length,3);assert.ok(queries.every(q=>q.includes('host="sky"')));s.db.close();
+});
+
+test('email delivers spaced HTML bullets and plain text, escaping alert content',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert({summary:'<img src=x onerror=alert(1)> & errors'})).incident;
+  const c={...config,notification:{smtpHost:'smtp.test',emailTo:'test@example.com'}};
+  enqueueSummary(c,s,i);
+  let mail:any;let closed=false;
+  t.mock.method(nodemailer,'createTransport',()=>({sendMail:async(value:any)=>{mail=value;},close:()=>{closed=true;}}) as any);
+  await flushNotifications(c,s);
+  assert.equal((mail.html.match(/<li /g)||[]).length,10);
+  assert.match(mail.html,/<strong>Summary:<\/strong>/);
+  assert.match(mail.html,/margin:0 0 12px/);
+  assert.match(mail.html,/&lt;img src=x onerror=alert\(1\)&gt; &amp; errors/);
+  assert.ok(!mail.html.includes('<img'));
+  assert.match(mail.html,/<a href="http:\/\/localhost\/\?incident=/);
+  assert.equal(mail.text.split('\n').length,10);
+  assert.ok(closed);s.db.close();
+});
+test('HTML renderer also handles queued plain-text summaries and CRLF',()=>{
+  const html=summaryHtml('- Summary: Review\r\n- Assessment: "quoted" <unsafe>');
+  assert.equal((html.match(/<li /g)||[]).length,2);
+  assert.match(html,/&quot;quoted&quot; &lt;unsafe&gt;/);
+});
+
+test('evidence gaps force escalation even when the local assessment claims high confidence',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{calls++;return Response.json({choices:[{message:{content:JSON.stringify({diagnosis:'Possible disconnect',action:'none',reason:'Review',confidence:'high'})}}],usage:{prompt_tokens:1,completion_tokens:1}});});
+  const p={kind:'openai' as const,model:'test',keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:1,outputPerMillion:5,timeoutMs:1000,maxOutputTokens:1000};
+  const d=await diagnose({...config,providers:[p,p]},s,i,{qualityIssues:['Untimestamped logs.']},[]);
+  assert.equal(calls,2);assert.equal(d.confidence,'low');assert.match(d.diagnosis,/Cause unconfirmed/);s.db.close();
+});
+test('summary dashboard links preserve exact service and incident window',()=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  i.diagnosis='First complete sentence. '+ 'Long trailing explanation '.repeat(40);s.put(i);
+  enqueueSummary(config,s,i);
+  const text=s.events(i.id).find(e=>e.kind==='summary')!.data.text;
+  assert.match(text,/Assessment: First complete sentence. See incident for details./);
+  const link=new URL(text.split('Service metrics: ')[1].split('\n')[0]);
+  assert.equal(link.searchParams.get('var-service'),i.service);
+  assert.equal(Number(link.searchParams.get('from')),Date.parse(i.alert.startsAt)-900000);
+  assert.match(text,/monitoring-logs/);s.db.close();
+});
+
+
+test('source resolution queues one updated summary despite repeated webhooks',async t=>{
+  const s=new Store(':memory:');
+  const c={...config,notification:{smtpHost:'fixture',emailTo:'fixture@example.invalid'}};
+  const server=createApp(c,s,new Engine(c,s));
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{server.close();s.db.close();});
+  const body=webhook();const a=alertsFromWebhook(body,c)[0];const i=s.ingest(a).incident;
+  enqueueSummary(c,s,i);
+  body.alerts[0].status='resolved';
+  for(let n=0;n<2;n++) {
+    const response=await fetch(`http://127.0.0.1:${(server.address() as any).port}/webhooks/alertmanager`,{
+      method:'POST',headers:{Authorization:'Bearer '+c.webhookToken,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    assert.equal(response.status,202);
+  }
+  const rows=s.db.prepare('SELECT data FROM notifications').all();
+  assert.equal(rows.length,2);
+  assert.match(JSON.parse(rows[1].data as string).title,/SOURCE CLEARED/);
+});
+
+test('legacy Sky hostname is canonicalized without accepting another host',()=>{
+  const b=webhook();b.alerts[0].labels.host='ubuntu-4gb-hel1-2';
+  const [a]=alertsFromWebhook(b,config);
+  assert.equal(a.host,'sky');assert.equal(a.labels.host,'sky');
+});
+test('one invalid alert cannot stall reconciliation of valid alerts',async t=>{
+  const s=new Store(':memory:');const good=webhook().alerts[0];
+  t.mock.method(globalThis,'fetch',async()=>Response.json([
+    {...good,labels:{...good.labels,host:'mini'},status:{state:'active'}},
+    {...good,status:{state:'active'}}
+  ]));
+  await reconcileAlerts(config,s);
+  assert.equal(s.list().length,1);assert.equal(s.events('intake')[0].kind,'rejected_alert');
+  assert.ok(s.setting('monitor:reconcile',0)>0);
+  t.mock.method(s,'ingest',()=>{throw new Error('disk unavailable');});
+  await assert.rejects(reconcileAlerts(config,s),/disk unavailable/);s.db.close();
+});
+
+test('source verification recognizes the legacy hostname after normalization',async t=>{
+  const s=new Store(':memory:');const b=webhook();b.alerts[0].labels.host='ubuntu-4gb-hel1-2';
+  const i=s.ingest(alertsFromWebhook(b,config)[0]).incident;
+  t.mock.method(globalThis,'fetch',async()=>Response.json([{...b.alerts[0],status:{state:'active'}}]));
+  assert.equal(await new Engine(config,s).alertStillFiring(i),true);s.db.close();
+});
+
+
+test('provider caps persist across investigations and total settings cannot exceed one dollar',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  s.set('budgetUsd',2);let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{calls++;throw new Error('timeout');});
+  const p={kind:'openai' as const,model:'test',keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:1,outputPerMillion:5,timeoutMs:1000,maxOutputTokens:1000,budgetUsd:0.02};
+  await diagnose({...config,providers:[p]},s,i,{},[]);
+  const reserved=i.spent;
+  await diagnose({...config,providers:[p]},s,s.get(i.id)!,{},[]);
+  assert.equal(calls,1);assert.equal(s.get(i.id)!.spent,reserved);
+  assert.ok(s.events(i.id).some(e=>e.kind==='provider_budget_limit'));
+  i.spent=0.999;s.put(i);
+  await diagnose({...config,providers:[{...p,budgetUsd:0.8}]},s,i,{},[]);
+  assert.equal(calls,1);assert.ok(s.events(i.id).some(e=>e.kind==='budget_limit'));s.db.close();
+});
+
+test('Haiku hands uncertain assessment to Sonnet medium and accounts actual stage usage',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  const requests:any[]=[];
+  t.mock.method(globalThis,'fetch',async(_url:any,options:any)=>{
+    const body=JSON.parse(options.body);requests.push(body);
+    const decision={diagnosis:requests.length===1?'Uncertain dependency failure':'Evidence remains inconclusive',action:'none',reason:'Review required',confidence:requests.length===1?'medium':'high'};
+    return Response.json({content:[{type:'text',text:JSON.stringify(decision)}],usage:{input_tokens:requests.length===1?100:200,output_tokens:requests.length===1?50:100}});
+  });
+  const common={keyEnv:'AIOPS_TEST_API_KEY',timeoutMs:1000,maxOutputTokens:1500};
+  const providers=[{...common,kind:'anthropic' as const,model:'claude-haiku-4-5-20251001',inputPerMillion:1,outputPerMillion:5,budgetUsd:0.2},
+    {...common,kind:'anthropic' as const,model:'claude-sonnet-5-5',reasoningEffort:'medium' as const,inputPerMillion:2,outputPerMillion:10,budgetUsd:0.8}];
+  await diagnose({...config,providers},s,i,{},['none']);
+  assert.equal(requests.length,2);assert.equal(requests[1].output_config.effort,'medium');
+  assert.match(requests[1].messages[0].content,/Uncertain dependency failure/);
+  assert.ok(Math.abs(i.spent-0.00175)<1e-8);
+  const {providerSpent}=await import('../lib/budget.ts');
+  assert.ok(Math.abs(providerSpent(s,i.id,'anthropic','claude-haiku-4-5-20251001')-0.00035)<1e-8);
+  assert.ok(Math.abs(providerSpent(s,i.id,'anthropic','claude-sonnet-5-5')-0.0014)<1e-8);s.db.close();
+});
+
+test('exhausted Haiku allowance escalates directly to Sol without borrowing its budget',async t=>{
+  const s=new Store(':memory:');const i=s.ingest(makeAlert()).incident;
+  i.spent=0.199;s.put(i);s.event(i.id,'model_request',{provider:'anthropic',model:'haiku',reservedUsd:0.199});
+  process.env.AIOPS_TEST_API_KEY='test';t.after(()=>delete process.env.AIOPS_TEST_API_KEY);
+  const models:string[]=[];
+  t.mock.method(globalThis,'fetch',async(_u:any,o:any)=>{
+    models.push(JSON.parse(o.body).model);
+    return Response.json({choices:[{message:{content:JSON.stringify({diagnosis:'No cause established',action:'none',reason:'Review',confidence:'high'})}}],usage:{prompt_tokens:100,completion_tokens:100}});
+  });
+  const p={keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:2,outputPerMillion:10,timeoutMs:1000,maxOutputTokens:1500};
+  await diagnose({...config,providers:[{...p,kind:'anthropic',model:'haiku',budgetUsd:0.2},{...p,kind:'openai',model:'sol',budgetUsd:0.8}]},s,i,{},['none']);
+  assert.deepEqual(models,['sol']);assert.ok(i.spent<1);s.db.close();
 });

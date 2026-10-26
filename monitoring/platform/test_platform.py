@@ -153,13 +153,55 @@ class PlatformTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_planned_starts_are_one_use_and_crashes_still_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / 'runtime.cjs'
+            runtime.write_bytes(Path(__file__).with_name('runtime.cjs').read_bytes())
+            entry = root / 'app.cjs'
+            entry.write_text('setInterval(()=>{},1000)')
+            port = free_port()
+            state = root / 'runtime-state'
+            state.mkdir()
+            marker = state / f'{port}.planned.json'
+            env = dict(os.environ, MONITORING_ENTRY=str(entry), MONITORING_PORT=str(port))
+            def start():
+                process = subprocess.Popen(['node', '--require', str(runtime), str(entry)], env=env,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    for _ in range(50):
+                        try:
+                            return get(f'http://127.0.0.1:{port}/metrics')
+                        except OSError:
+                            time.sleep(.05)
+                    self.fail('Runtime did not start')
+                finally:
+                    process.terminate()
+                    process.wait(timeout=5)
+            self.assertIn('monitoring_unplanned_restarts_15m 0', start())
+            for _ in range(3):
+                marker.write_text(json.dumps(dict(startsAt=time.time()-1, endsAt=time.time()+180)))
+                self.assertIn('monitoring_unplanned_restarts_15m 0', start())
+                self.assertFalse(marker.exists())
+            for count in range(1,4):
+                self.assertIn(f'monitoring_unplanned_restarts_15m {count}', start())
+            # Expired markers cannot excuse a crash; old crashes age out.
+            marker.write_text(json.dumps(dict(startsAt=time.time()-300, endsAt=time.time()-1)))
+            self.assertIn('monitoring_unplanned_restarts_15m 4', start())
+            (state / f'{port}.json').write_text(json.dumps(dict(unexpectedStarts=[time.time()-901])))
+            self.assertIn('monitoring_unplanned_restarts_15m 1', start())
+            (state / f'{port}.json').write_text('invalid')
+            self.assertNotIn('monitoring_unplanned_restarts_15m', start())
+
     def test_runtime_metrics_match_real_http_and_stable_start_time(self):
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / 'server.cjs'
             app_port, metrics_port = free_port(), free_port()
             entry.write_text("const h=require('http'); h.createServer((q,s)=>{s.statusCode=q.url==='/error'?503:200;s.end('ok')}).listen(Number(process.env.PORT),'127.0.0.1');")
             env = dict(os.environ, PORT=str(app_port), MONITORING_ENTRY=str(entry), MONITORING_PORT=str(metrics_port))
-            process = subprocess.Popen(['node', '--require', str(Path(__file__).with_name('runtime.cjs')), str(entry)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            runtime = Path(directory) / 'runtime.cjs'
+            runtime.write_bytes(Path(__file__).with_name('runtime.cjs').read_bytes())
+            process = subprocess.Popen(['node', '--require', str(runtime), str(entry)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 metrics_url = f'http://127.0.0.1:{metrics_port}/metrics'
                 for _ in range(50):
@@ -170,7 +212,10 @@ class PlatformTests(unittest.TestCase):
                         time.sleep(.05)
                 else:
                     self.fail('Node metrics failed to start')
-                get(f'http://127.0.0.1:{app_port}/ok')
+                request = urllib.request.Request(f'http://127.0.0.1:{app_port}/ok?secret=not-for-logs', headers={'X-Request-ID':'12345678-1234-1234-1234-123456789abc'})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.headers['X-Request-ID'], '12345678-1234-1234-1234-123456789abc')
+                    response.read()
                 get(f'http://127.0.0.1:{app_port}/healthcheck')
                 with self.assertRaises(urllib.error.HTTPError):
                     get(f'http://127.0.0.1:{app_port}/error')
@@ -186,6 +231,14 @@ class PlatformTests(unittest.TestCase):
                 process.terminate()
                 process.wait(timeout=5)
                 process.stderr.close()
+                output = process.stdout.read().decode()
+                process.stdout.close()
+                records = [json.loads(line) for line in output.splitlines() if line.startswith('{')]
+                self.assertEqual(len(records), 2)
+                self.assertEqual(records[0]['request_id'], '12345678-1234-1234-1234-123456789abc')
+                self.assertEqual(records[0]['path'], '/ok')
+                self.assertEqual(records[1]['level'], 'error')
+                self.assertNotIn('not-for-logs', output)
 
 
 if __name__ == '__main__':

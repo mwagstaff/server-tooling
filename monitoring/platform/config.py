@@ -18,7 +18,7 @@ def alert(name, expr, duration, summary, severity='warning'):
                              'runbook_url': 'https://github.com/mwagstaff/server-tooling/tree/main/monitoring/platform#alerts'})
 
 
-def make_rules(services, target, aiops=False, monitor=None):
+def make_rules(services, target, aiops=False, monitor=None, logging=False):
     rules = [dict(alert='MonitoringWatchdog', expr='vector(1)', labels={'severity': 'none'})]
     rules += [
         alert('MetricsAccessUnavailable', 'up{kind="host"} == 0', '3m', 'Cannot collect host metrics from {{ $labels.host }}', 'critical'),
@@ -37,13 +37,28 @@ def make_rules(services, target, aiops=False, monitor=None):
         alert('DiskWillFill', 'predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}[6h], 86400) < 0 and node_filesystem_readonly == 0', '30m', 'Disk may fill within 24 hours on {{ $labels.host }}'),
         alert('HeapPressure', 'monitoring:heap_ratio > 0.85', '10m', '{{ $labels.service }} heap usage above 85% of limit'),
         alert('HeapCritical', 'monitoring:heap_ratio > 0.95', '3m', '{{ $labels.service }} heap usage above 95% of limit', 'critical'),
-        alert('RestartLoop', 'changes(monitoring_process_start_time_seconds[15m]) >= 3', '0m', '{{ $labels.service }} restarted at least 3 times in 15 minutes', 'critical'),
-        alert('HttpErrors', 'monitoring:http_error_ratio5m > 0.05 and on(host,service) monitoring:http_requests5m >= 100', '5m', '{{ $labels.service }} errors exceed 5%', 'critical'),
+        alert('RestartLoop', '(monitoring_unplanned_restarts_15m >= 3) or ((changes(monitoring_process_start_time_seconds[15m]) >= 3) unless monitoring_unplanned_restarts_15m)', '0m', '{{ $labels.service }} restarted unexpectedly at least 3 times in 15 minutes', 'critical'),
+        alert('HttpErrors', 'monitoring:http_5xx_ratio5m > 0.05 and on(host,service) monitoring:http_requests5m >= 100', '5m', '{{ $labels.service }} HTTP 5xx responses exceed 5% ({{ $value | humanizePercentage }})', 'critical'),
+        alert('HttpAbortedRequests', 'monitoring:http_abort_ratio5m > 0.05 and on(host,service) monitoring:http_requests5m >= 100', '5m', '{{ $labels.service }} incomplete responses exceed 5% ({{ $value | humanizePercentage }}); inspect client/proxy cancellations'),
         alert('CertificateExpiring', 'probe_ssl_earliest_cert_expiry - time() < 14 * 86400', '30m', '{{ $labels.service }} certificate expires within 14 days'),
-        alert('MonitoringRuleFailures', 'increase(prometheus_rule_evaluation_failures_total[5m]) > 0', '5m', 'Monitoring rule evaluations failing', 'critical'),
-        alert('MonitoringNotificationFailures', 'increase(alertmanager_notifications_failed_total[10m]) > 0', '5m', 'Monitoring notification delivery failing', 'critical'),
+        alert('MonitoringRuleFailures', 'increase(prometheus_rule_evaluation_failures_total[2m]) > 0', '5m', 'Monitoring rule evaluations failing', 'critical'),
+        alert('MonitoringNotificationFailures', 'increase(alertmanager_notifications_failed_total[2m]) > 0', '5m', 'Sustained notification failures via {{ $labels.integration }} ({{ $labels.reason }})', 'critical'),
         alert('MonitoringComponentUnavailable', 'up{kind="monitor"} == 0', '3m', 'Monitoring component {{ $labels.job }} unavailable', 'critical'),
     ]
+    if logging:
+        rules += [
+            alert('LogCollectorUnavailable', 'up{kind="logging"} == 0', '3m', 'Log collection metrics unavailable on {{ $labels.host }}'),
+            alert('LogPipelineStalled', 'time() - logging_canary_timestamp_seconds > 300', '3m', 'No recent end-to-end log canary from {{ $labels.host }}'),
+            alert('LogEntriesDropped', 'sum by(host,service) (increase(loki_process_dropped_lines_total{kind="logging"}[5m])) > 0 or sum by(host,service) (increase(loki_write_dropped_entries_total{kind="logging"}[5m])) > 0', '1m', 'Log entries are being dropped on {{ $labels.host }}'),
+            alert('LogStorageSpaceLow', 'logging_disk_free_bytes < 10737418240', '5m', 'Log storage host {{ $labels.host }} has less than 10 GiB free'),
+        ]
+        missing = alert('LogTelemetryMissing',
+            'absent(up{kind="logging",job="alloy"}) or absent(up{kind="logging",job="logs-health"}) or '
+            '(up{kind="logging",job="logs-health"} == 1 unless on(host,service) logging_canary_timestamp_seconds) or '
+            '(up{kind="logging",job="logs-health"} == 1 unless on(host,service) logging_disk_free_bytes)',
+            '3m', 'Required log collection targets or telemetry are missing')
+        missing['labels'].update(host=target, service='logging')
+        rules.append(missing)
     rules += application_rules(services, target, alert)
     if aiops:
         rules.append(dict(alert='AIOpsPipelineCanary', expr='vector(1)', labels={'severity':'none','host':monitor,'service':'aiops'}))
@@ -63,6 +78,15 @@ def make_rules(services, target, aiops=False, monitor=None):
         missing = alert('AIOpsTargetMissing', 'absent(up{kind="aiops"})', '3m', 'AIOps disappeared from monitoring', 'critical')
         missing['labels'].update(host=target, service='aiops')
         rules.append(missing)
+        required=['aiops_webhook_canary_timestamp_seconds','aiops_reconcile_timestamp_seconds',
+                  'aiops_queue_poll_timestamp_seconds','aiops_email_canary_timestamp_seconds',
+                  'aiops_email_enabled','aiops_incident_oldest_seconds','aiops_notifications_pending','aiops_notifications_failed']
+        missing = alert('AIOpsTelemetryMissing', ' or '.join(
+            '(up{kind="aiops"} == 1 unless on(host) ' + metric + ')' for metric in required),
+            '3m', 'AIOps responds to scrapes but required telemetry is missing', 'critical')
+        missing['labels'].update(host=target,service='aiops')
+        missing['annotations']['description']=target + ' / aiops: {{ printf "%.3g" $value }}'
+        rules.append(missing)
     for service in services:
         labels = '{host="' + target + '",service="' + service['name'] + '",kind="runtime"}'
         missing = alert('RuntimeTargetMissing', 'absent(up' + labels + ')', '5m', service['name'] + ' disappeared from scrape inventory', 'critical')
@@ -78,6 +102,8 @@ def make_rules(services, target, aiops=False, monitor=None):
         ('monitoring:http_error_ratio5m', '(sum by(host,service) (rate(monitoring_http_requests_total{status=~"5..|aborted"}[5m])) or on(host,service) (0 * sum by(host,service) (rate(monitoring_http_request_duration_seconds_count[5m])))) / sum by(host,service) (rate(monitoring_http_request_duration_seconds_count[5m]))'),
         ('monitoring:heap_ratio', 'monitoring_heap_used_bytes / monitoring_heap_limit_bytes'),
     ]
+    for label, status in [('5xx', '5..'), ('abort', 'aborted')]:
+        records.append((f'monitoring:http_{label}_ratio5m', '(sum by(host,service) (rate(monitoring_http_requests_total{status=~"' + status + '"}[5m])) or on(host,service) (0 * sum by(host,service) (rate(monitoring_http_request_duration_seconds_count[5m])))) / sum by(host,service) (rate(monitoring_http_request_duration_seconds_count[5m]))'))
     for quantile in [90, 95, 99]:
         records.append((f'monitoring:http_p{quantile}_seconds', f'histogram_quantile({quantile / 100}, sum by(host,service,le) (rate(monitoring_http_request_duration_seconds_bucket[5m])))'))
     result = {'groups': [{'name': 'monitoring-recordings', 'rules': [dict(record=k, expr=v) for k, v in records]},
@@ -109,6 +135,9 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
                          'relabel_configs': [{'source_labels': ['__address__'], 'target_label': '__param_target'},
                                              {'source_labels': ['__param_target'], 'target_label': 'instance'},
                                              {'target_label': '__address__', 'replacement': '127.0.0.1:19115'}]})
+    if (root / 'logging.json').exists():
+        scrape('logs-health', 'logging', 'logging', endpoint, '/logs-health')
+        scrape('alloy', 'logging', 'logging', endpoint, '/alloy')
     if (root / 'aiops.json').exists():
         scrape('aiops', 'aiops', 'aiops', endpoint, '/aiops')
         del jobs[-1]['static_configs'][0]['labels']['service']
@@ -121,7 +150,7 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
                                                    'scrape_failure_log_file': str(root / 'logs/scrape-failures.log')},
                                         'rule_files': [str(root / 'rules.json')],
                                         'alerting': {'alertmanagers': [{'static_configs': [{'targets': ['127.0.0.1:19093']}]}]}, 'scrape_configs': jobs})
-    write_json(root / 'rules.json', make_rules(services, target, (root / 'aiops.json').exists(), monitor))
+    write_json(root / 'rules.json', make_rules(services, target, (root / 'aiops.json').exists(), monitor, (root / 'logging.json').exists()))
     write_json(root / 'blackbox.json', {'modules': {'http_2xx': {'prober': 'http', 'timeout': '8s', 'http': {'preferred_ip_protocol': 'ip4', 'follow_redirects': True, 'headers': {'User-Agent': 'ServerToolingMonitoring/1.0'}}}}})
     receivers = [{'name': 'silent'}, {'name': 'pushover', 'pushover_configs': [{
         'user_key_file': str(root / 'secrets/PUSHOVER_USER_KEY'),
@@ -166,6 +195,13 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         {'name': 'Monitoring Alertmanager', 'uid': 'monitoring-alertmanager', 'type': 'alertmanager', 'access': 'proxy', 'url': 'http://127.0.0.1:19093', 'jsonData': {'implementation': 'prometheus'}, 'editable': False},
         {'name': 'Monitoring Alert History', 'uid': 'monitoring-history', 'type': 'yesoreyeram-infinity-datasource', 'access': 'proxy',
          'jsonData': {'allowedHosts': ['http://127.0.0.1:19116'], 'auth_method': 'none'}, 'editable': False}]})
+    if (root / 'logging.json').exists():
+        logging_config = json.loads((root / 'logging.json').read_text())
+        write_json(root / 'grafana/provisioning/datasources/logging.yaml', {'apiVersion': 1, 'datasources': [
+            {'name': 'Estate Logs', 'uid': 'monitoring-loki', 'type': 'loki', 'access': 'proxy',
+             'url': logging_config['url'], 'basicAuth': True, 'basicAuthUser': 'logs',
+             'secureJsonData': {'basicAuthPassword': (root / 'secrets/LOKI_TOKEN').read_text().strip()},
+             'jsonData': {'maxLines': 1000}, 'editable': False}]})
     write_json(root / 'grafana/provisioning/dashboards/monitoring.yaml', {'apiVersion': 1, 'providers': [{'name': 'Monitoring', 'folder': 'Monitoring', 'type': 'file', 'updateIntervalSeconds': 30, 'options': {'path': str(root / 'grafana/dashboards')}}]})
     (root / 'grafana.ini').write_text(f'''[server]
 http_addr = {monitor_ip}
@@ -231,6 +267,19 @@ def dashboards(root, target_os=None):
         panel('Event-loop p99 delay', 'monitoring_event_loop_delay_p99_seconds' + selector, 's'),
         panel('Time spent in garbage collection', 'rate(monitoring_gc_duration_seconds_total' + selector + '[5m])', 'percentunit'),
         panel('Restarts in 1 hour', 'changes(monitoring_process_start_time_seconds' + selector + '[1h])')])
+    if (root / 'logging.json').exists():
+        logging_selector = '{kind="logging",host=~"$host"}'
+        dashboard('logging', 'Log pipeline health', [
+            panel('Collector scrape availability', 'up' + logging_selector, legend='{{job}}'),
+            panel('Ingestion canary age (300s threshold)', 'time() - logging_canary_timestamp_seconds' + logging_selector, 's', legend='{{host}}'),
+            panel('Collector drops in 5 minutes', 'sum by(reason) (increase(loki_process_dropped_lines_total' + logging_selector + '[5m]))', legend='{{reason}}'),
+            panel('Delivery drops in 5 minutes', 'sum by(reason) (increase(loki_write_dropped_entries_total' + logging_selector + '[5m]))', legend='{{reason}}'),
+            panel('Log host free space (10 GiB threshold)', 'logging_disk_free_bytes' + logging_selector, 'bytes', legend='{{host}}')])
+        dashboard('logs', 'Service logs', [{
+            'title': 'Logs — collection timestamps are marked; use journal/request timestamps for causality',
+            'type': 'logs', 'datasource': {'type': 'loki', 'uid': 'monitoring-loki'},
+            'targets': [{'expr': '{host=~"$host",service=~"$service"}', 'refId': 'A'}],
+            'options': {'showTime': True, 'showLabels': True, 'wrapLogMessage': True, 'sortOrder': 'Descending'}}])
     memory_panels = []
     if target_os != 'darwin':
         memory_panels.append(panel('Available memory (Linux)', 'node_memory_MemAvailable_bytes{kind="host",host=~"$host"}', 'bytes', legend='{{host}}'))
@@ -248,8 +297,12 @@ def dashboards(root, target_os=None):
         panel('Scrape success', 'up{host=~"$host",service=~"$service"}'),
         panel('Scrape duration', 'scrape_duration_seconds{host=~"$host"}', 's'),
         panel('Stored metric series', 'prometheus_tsdb_head_series'),
-        panel('Rule failures', 'rate(prometheus_rule_evaluation_failures_total[5m])'),
-        panel('Notification failures', 'increase(alertmanager_notifications_failed_total[1h])'),
+        panel('Rule failures in last 2 minutes', 'increase(prometheus_rule_evaluation_failures_total{host=~"$host"}[2m])', legend='{{rule_group}}'),
+        panel('Notification failures in last 2 minutes', 'increase(alertmanager_notifications_failed_total{host=~"$host"}[2m])', legend='{{integration}} · {{reason}}'),
+        panel('Notification attempts in last 2 minutes', 'increase(alertmanager_notifications_total{host=~"$host"}[2m])', legend='{{integration}}'),
+        panel('AIOps undelivered summaries', '{__name__=~"aiops_notifications_(pending|failed)",host=~"$host"}', legend='{{__name__}}'),
+        panel('AIOps oldest pending incident', 'aiops_incident_oldest_seconds{host=~"$host"}', 's', legend='{{host}}'),
+        panel('AIOps pipeline age', 'time() - label_replace({__name__=~"aiops_(webhook_canary|email_canary|queue_poll|reconcile)_timestamp_seconds",host=~"$host"}, "stage", "$1", "__name__", "aiops_(.*)_timestamp_seconds")', 's', legend='{{stage}}'),
         panel('Watchdog firing', 'ALERTS{alertname="MonitoringWatchdog",alertstate="firing"}')])
 
 

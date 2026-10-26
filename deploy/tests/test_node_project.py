@@ -24,6 +24,8 @@ body = sys.stdin.read() if name in ("ssh", "osascript") else ""
 with open(os.environ["DEPLOY_TEST_LOG"], "a") as log:
     log.write(json.dumps({"name": name, "args": sys.argv[1:], "stdin": body}) + "\n")
 command = " ".join(sys.argv[1:])
+if name == "afplay" and os.environ.get("DEPLOY_TEST_AFPLAY_FAIL") == "1":
+    sys.exit(1)
 if name == "ssh":
     if "test -f" in command and "server-tooling-monitoring/gateway.json" in command:
         sys.exit(0 if os.environ.get("DEPLOY_TEST_PLATFORM") == "1" else 1)
@@ -41,11 +43,13 @@ python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write
 """
 
 BW_STUB = r'''#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 if "status" in sys.argv:
     print('{"status":"unlocked"}')
 elif "list" in sys.argv and "items" in sys.argv:
-    print(os.environ["DEPLOY_TEST_BW_ITEMS"])
+    folder = sys.argv[sys.argv.index("--folderid") + 1]
+    items = json.loads(os.environ.get("DEPLOY_TEST_BW_ITEMS_BY_FOLDER", "{}"))
+    print(json.dumps(items.get(folder, json.loads(os.environ["DEPLOY_TEST_BW_ITEMS"]))))
 '''
 
 
@@ -54,8 +58,9 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    excludes=None, missing=False, project_arg="test-project", host="test-host", switches=None,
                    service_scope=None, log_file=None, error_log_file=None, metrics_port=None,
                    project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
+                   extra_bw_folder_ids=None, bw_items_by_folder=None,
                    launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
-                   share_remote_dir=False, pin_by_host=None, platform=False):
+                   share_remote_dir=False, pin_by_host=None, platform=False, audio_failure=False):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -94,6 +99,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["aliases"] = aliases
         if required_bw_env is not None:
             config["required_bitwarden_env"] = required_bw_env
+        if extra_bw_folder_ids is not None:
+            config["extra_bw_folder_ids"] = extra_bw_folder_ids
         if metrics_port is not None:
             config["metrics_port"] = metrics_port
         if pin is not None:
@@ -131,9 +138,11 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}",
                    DEPLOY_TEST_LOG=str(log), SSH_CONFIG_FILE=str(ssh_config), BW_ENV_SYNC="0")
         env["DEPLOY_TEST_PLATFORM"] = "1" if platform else "0"
+        env["DEPLOY_TEST_AFPLAY_FAIL"] = "1" if audio_failure else "0"
         if bw_items is not None:
             env.update(BW_ENV_SYNC="1", BW_SESSION="test-session", BW_SKIP_SYNC="1",
-                       DEPLOY_TEST_BW_ITEMS=json.dumps(bw_items))
+                       DEPLOY_TEST_BW_ITEMS=json.dumps(bw_items),
+                       DEPLOY_TEST_BW_ITEMS_BY_FOLDER=json.dumps(bw_items_by_folder or {}))
         if missing:
             env["DEPLOY_TEST_NODE_MISSING"] = "1"
         command = ["zsh", str(deploy / "node_project.zsh")]
@@ -161,6 +170,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                 index = maintenance[0]
                 self.assertIn('com.test-project.api', calls[index]['args'])
                 self.assertIn('180', calls[index]['args'])
+                self.assertIn('--planned-restart', calls[index]['args'])
                 build = [i for i, call in enumerate(calls) if call['name']=='ssh' and 'npm run build' in ' '.join(call['args'])]
                 self.assertTrue(build and max(build)<index)
                 restart = [i for i, call in enumerate(calls) if call['name']=='ssh' and 'systemctl --user restart' in ' '.join(call['args'])]
@@ -336,6 +346,26 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         duplicate, _ = self.run_deploy(required_bw_env=["ONE"], bw_items=[item("ONE"), item("ONE")])
         self.assertNotEqual(duplicate.returncode, 0)
         self.assertIn("Duplicate Bitwarden env var 'ONE'", duplicate.stderr)
+
+    def test_bitwarden_sync_includes_project_extra_folder(self):
+        def item(name):
+            return {"name": name, "fields": [{"name": "Apps", "value": "test-project"}],
+                    "login": {"password": "test-value"}}
+
+        result, calls = self.run_deploy(
+            required_bw_env=["ONE", "TINYFISH_WEB_SEARCH_API_KEY"],
+            bw_items=[item("ONE")],
+            extra_bw_folder_ids=["local-env"],
+            bw_items_by_folder={"local-env": [item("TINYFISH_WEB_SEARCH_API_KEY")]})
+        self.assert_success(result)
+        self.assertIn("Prepared 2 Bitwarden env var(s)", result.stdout)
+        self.assertIn("TINYFISH_WEB_SEARCH_API_KEY", result.stdout)
+        self.assertTrue(any(".incoming." in " ".join(call["args"])
+                            for call in calls if call["name"] == "rsync"))
+
+    def test_audio_notification_failure_does_not_fail_completed_deploy(self):
+        result, _ = self.run_deploy(audio_failure=True)
+        self.assert_success(result)
 
     def test_bitwarden_sync_without_required_vars(self):
         item = {"name": "ONE", "fields": [{"name": "Apps", "value": "test-project"}],

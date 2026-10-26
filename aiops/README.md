@@ -12,8 +12,8 @@ independently using the existing Node deployment script.
 
 | Responder | Private dashboard | Default inference |
 | --- | --- | --- |
-| Mini | http://mikes-mac-mini.dog-rattlesnake.ts.net:19444 | Ollama `qwen3.5:9b`, then Anthropic, then OpenAI |
-| Sky | http://sky.dog-rattlesnake.ts.net:19444 | Anthropic, then OpenAI |
+| Mini | http://mikes-mac-mini.dog-rattlesnake.ts.net:19444 | Haiku 4.5 → Sonnet 5.5 (medium) |
+| Sky | http://sky.dog-rattlesnake.ts.net:19444 | Haiku 4.5 → Sonnet 5.5 (medium) |
 
 Connect to Tailscale first. Each dashboard has its own password in
 `~/.local/share/aiops/secrets.env` on that host, named `AIOPS_DASHBOARD_PASSWORD`.
@@ -61,9 +61,9 @@ alerts receive manual triage. Shared infrastructure, host reboots, package chang
 database repairs and arbitrary shell commands are not exposed as model tools.
 The initial Top Scores pilot is enabled; use the dashboard to pause it at any time.
 
-As of the initial rollout, Ollama and Anthropic have passed live synthetic diagnosis
-checks. OpenAI's configured key returns `credit_balance_exhausted`; restore the
-account's credit or supply another authorized key before selecting it first.
+The active two-stage policy uses Anthropic only. OpenAI credits are not required.
+Both stages use `ANTHROPIC_API_KEY_AIOPS`; their incident allowances are tracked
+separately by model, even though they share a provider and credential.
 
 ## Alert and notification flow
 
@@ -155,9 +155,48 @@ Keep provider prices current when changing models. This is an application limit
 for model requests, not an account-wide billing cap or a cap on hosting costs.
 Investigation also limits model activity during an alert flood (20 incidents/hour).
 
-Mini skips local inference when it is under resource pressure. Set the cloud budget
-to zero to prevent cloud requests; if no suitable local model is available, evidence
-is retained for manual review.
+Email summaries include an HTML list with bold labels and spacing for Gmail,
+plus a plain-text fallback. Pushover retains plain text. Alert and model content
+is HTML-escaped before delivery.
+
+Summaries use a short bulleted format, led by observed status and service-check
+results. Subjects distinguish source cleared, healthy, still failing, approval
+needed and review needed. Source resolution alone does not prove service recovery;
+workflow status and any unverified health remain explicit. Full evidence and action
+outcomes remain in the linked incident console.
+
+Investigations collect bounded, read-only Prometheus queries for recent process
+restarts, HTTP error ratio and response codes alongside the existing inspection.
+Missing metrics are unknown, never zero. Historical startup log lines alone are
+not evidence of a current restart loop. Low/medium-confidence model assessments
+continue to the next configured provider for an independent assessment; high
+confidence stops escalation only when no evidence quality gaps remain. Each provider is attempted at most once per
+investigation, using the same incident budget and reservation rules. Resolution,
+pause or maintenance stops further provider calls. Exhaustion retains the last
+valid assessment for review. This is bounded diagnostic escalation, not an
+open-ended agent with shell access, and does not expand recovery permissions.
+
+Both hosts use the dedicated `ANTHROPIC_API_KEY_AIOPS` for both stages in
+`config/model-policy.json`: Haiku 4.5 first (maximum $0.20),
+then `claude-sonnet-5-5` with medium reasoning (maximum $0.80). Sonnet receives the same
+evidence plus Haiku's prior assessment as untrusted context. Provider failure,
+low/medium confidence, or evidence quality gaps trigger escalation. Deterministic
+runbooks still finish without LLM calls. Ollama is not in this policy.
+
+The incident ceiling is $1, including all prior spend and outstanding reservations.
+Per-model accounting is reconstructed from the persisted event journal across
+re-investigations/restarts. Failed requests retain their reservation. Successful
+usage includes Anthropic thinking tokens in output tokens. Stage allowances
+cannot borrow from each other. An existing incident already above a cap receives
+no further requests against that cap. Dashboard controls can reduce the total
+(to zero to disable model calls), but cannot raise it above $1. Historical spend
+is preserved. Limits are ceilings, not spending targets.
+
+Sonnet uses standard-tier pricing ($2 input/$10 output per million tokens), a 120s
+timeout, and 8,192 maximum completion tokens including reasoning. Haiku uses
+$1 input/$5 output per million, a 45s timeout, and 1,500 output tokens. Requests
+reserve a conservative byte-based input bound and maximum output cost before
+transmission. The shipped policy overrides old host model lists and caps.
 
 ## Deployment and configuration
 
@@ -176,6 +215,21 @@ identities. It reuses existing monitoring notification credentials and available
 cloud keys without printing them. Existing host configuration is preserved.
 Reprovisioning rotates the shared peer token, so deploy/restart both responders
 afterwards. Generated configuration initially disables automatic recovery.
+
+OpenAI uses only `OPENAI_API_KEY_AIOPS`, stored in the AIOps Bitwarden folder.
+The deployment wrapper loads the synced `.bw-secrets.env.sh` before starting
+AIOps; its value takes precedence over the private `secrets.env`. Legacy
+`OPENAI_API_KEY` provider settings are migrated in memory to the dedicated name;
+there is no fallback to a shared application key. Anthropic uses only
+`ANTHROPIC_API_KEY_AIOPS` from the same folder. Both hosts load the versioned
+model policy above instead of their legacy provider lists. To refresh Bitwarden credentials and deploy explicitly to each host:
+
+```sh
+d aiops mini -b --no-tail
+d aiops sky -b --no-tail
+# Without the shell alias:
+zsh deploy/node_project.zsh aiops sky -b --full --no-tail
+```
 
 Routine application updates:
 
@@ -366,3 +420,116 @@ See [deployment and reboot maintenance windows](../monitoring/ALERTING.md#planne
 for automatic expiring silences, duration overrides, failure behaviour and external
 watchdog limitations. Deployments default to three minutes; configured Ubuntu
 reboot hooks request ten minutes.
+
+
+### Logging infrastructure investigation
+
+Structured `logging` alerts for Mini/Sky have a dedicated read-only investigation:
+LogEntriesDropped, LogCollectorUnavailable, LogPipelineStalled and
+LogStorageSpaceLow. The opposite host queries its local Prometheus for collector
+scrapes, canary age, disk space and per-reason five-minute drop counts. Drop counts
+are also queried at the original alert start so a cleared burst is not misreported
+as an unknown cause. Failed/empty required measurements remain unknown.
+
+Summaries distinguish log loss from application failure, show observation time,
+source firing/cleared state, and specific troubleshooting steps. Metrics links use
+the Log pipeline health dashboard; log links include all services on the affected
+host instead of filtering to the synthetic service name `logging`.
+This deterministic investigation consumes no AI budget and runs no recovery
+commands. Unknown alert names retain manual triage. Current health and the source
+alert are checked independently; historical evidence does not prove current failure.
+
+
+### Infrastructure alert coverage audit (24 October 2026)
+
+All 18 monitored application targets have registry entries. Read-only infrastructure
+investigations additionally cover monitoring notification/rule/component failures,
+host CPU/memory/I/O/OOM/disk/load, shared public outages, Mini connectivity/power
+checks, and AIOps availability/canaries/queues/processing/delivery. Logging retains
+its dedicated investigation. Tests enumerate the generated infrastructure rules
+and fail on a new unhandled name; application inventory registration is also tested.
+
+Monitor-local alerts are investigated by that monitor; target-host alerts by the
+opposite responder. Measurements are host-scoped, bounded queries, with current
+and alert-start snapshots and alert-specific next steps. Unknown/missing metrics
+remain unknown. No model, restart, redeploy, cleanup or recovery permission is added.
+Notification analysis distinguishes integration/reason and only verifies resumed
+attempts for the integrations that failed; it does not claim inbox/device receipt.
+
+Incident keys and source-state matching distinguish notification integration/reason,
+mountpoint and target/check identity. Legacy incidents migrate by matching their
+full labels, avoiding duplicate incidents or cross-channel resolution. Unsupported
+external alert names still require manual triage, with source status checked.
+
+MonitoringNotificationFailures and MonitoringRuleFailures now require a positive
+two-minute failure increase continuously for five minutes. A brief successful
+restart retry no longer generates a delayed critical alert. Sparse intermittent
+errors remain in metrics/history; AIOps canary/backlog alerts independently detect
+stalled delivery. LogTelemetryMissing and AIOpsTelemetryMissing detect missing
+required telemetry even when an endpoint still returns a successful scrape.
+
+Limitations: this does not add a new out-of-band path for simultaneous loss of both
+responders; independent Pushover/watchdog delivery remains essential. Current metric
+snapshots explain measured symptoms, not always the ultimate cause. Historical
+snapshots are limited by Prometheus retention. No destructive recovery is inferred.
+
+
+Validation: 60 AIOps tests and 30 monitoring tests passed, including promtool
+transient/sustained/resolved and missing-telemetry scenarios. Live synthetic rule
+incident `767d9714-924b-40c0-81cb-44162ca96722` exercised Prometheus → Alertmanager →
+AIOps → email/Pushover for both firing and source resolution, with zero recovery
+actions and zero AI spend. Transport acceptance was checked; device/inbox display
+was not independently inspected. The temporary rule was removed. Historical
+notification incident `ba58942d-68b7-4637-af92-45fffe5c857f` was replayed in memory
+against live metrics and correctly identified resumed webhook delivery.
+
+### Legacy host labels and reconciliation isolation
+
+The verified legacy Sky hostname `ubuntu-4gb-hel1-2` is normalized to `sky`
+on structured alert intake and source-state verification. Other service/host
+mismatches remain rejected. Reconciliation journals malformed individual alerts
+as `intake/rejected_alert` and continues with valid entries; storage and upstream
+failures still fail the pass. This prevents one bad producer label from stalling
+the entire reconciliation stage.
+
+### Runbooks, ownership relay and missed resolution
+
+See [reviewed runbooks](runbooks/README.md). Every new investigation records the
+selected ID/version and a runbook event. Model prompts receive the trusted
+catalogue entry separately from untrusted incident evidence. The available action
+set is intersected with the runbook; registry and approval checks remain in force.
+Upstream import and weekly upgrade reviews follow deterministic read-only paths.
+Weekly reports identify `maintenance / WeeklyUpgradeReview`, preserve reported
+findings, and never claim current recovery from historical email alone.
+
+Misdirected registered application alerts are relayed over the existing private
+peer connection using the peer credential to `POST /api/relay-alerts`. The receiver
+validates ownership and posts the original bounded-lifetime alert to its own
+Alertmanager. That preserves normal notification routing, source verification and
+owner maintenance silences. Expiry and resolved events are retained; credentials
+and arbitrary upstream URLs are never accepted from the alert. Relay failures
+remain retryable through Alertmanager and reconciliation. No second incident is
+created on the wrong responder. Local infrastructure alerts keep their local owner.
+
+Reconciliation reads active, suppressed and unprocessed alerts. Missing sources
+are marked source-resolved only after two complete successful snapshots at least
+60 seconds apart, with no malformed entries. This is not a claim of service
+recovery. A missing resolved webhook during maintenance therefore cannot leave
+an incident permanently firing. Resolution summaries wait for maintenance expiry
+and are deduplicated against both new markers and existing summary history.
+Old resolution messages beyond the stale-alert horizon are not replayed.
+
+Related notification/reconciliation alerts on the same affected host within ten
+minutes link across peers via a private, credential-protected compact metadata
+endpoint. They retain separate identities and budgets; summaries say possible
+shared cause rather than infer causality solely from timing.
+
+Rollout verification (25 October 2026): real Club Elo incident
+`69be37f7-108d-44c3-b5d1-bb84568669f4` was relayed to Mini and investigated with
+`upstream-import v1`, reporting dataset age with zero actions/model spend.
+Synthetic relay incident `81fc9868-846d-4d79-bfef-4965cc3b2ce3` exercised Sky
+Alertmanager → authenticated relay → Mini Alertmanager → runbook investigation
+→ firing and source-cleared email/Pushover acceptance. Both source copies cleared;
+zero actions and zero model spend. The existing weekly report
+`0faf4522-47e3-4106-b669-c372c4aff67f` was reclassified with an audit event and
+its original ID/budget retained, then processed by `upgrade-review v1`.

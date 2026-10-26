@@ -43,7 +43,20 @@ def probe(url, user_agent=None):
     try:
         if user_agent:
             url = urllib.request.Request(url, headers={'User-Agent': user_agent})
+        deadline = time.monotonic() + 8
         with urllib.request.build_opener(NoRedirect).open(url, timeout=8) as response:
+            # Drain streamed pages: closing after headers creates false abort errors.
+            size = 0
+            while True:
+                chunk = response.read1(65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 8 * 1024 * 1024 or time.monotonic() > deadline:
+                    return {'ok': False, 'error': 'ResponseLimitExceeded'}
+            expected = response.headers.get('Content-Length')
+            if expected is not None and size != int(expected):
+                return {'ok': False, 'error': 'IncompleteResponse'}
             return {'ok': 200 <= response.status < 300, 'status': response.status}
     except Exception as exc:
         return {'ok': False, 'error': type(exc).__name__}
@@ -76,18 +89,21 @@ def inspect(item):
     state = status(item)
     health = probe(item['healthUrl'])
     logs = {}
+    log_metadata = {}
     for name in item.get('logs', []):
         path = Path(name).expanduser()
         try:
             with path.open('rb') as handle:
-                handle.seek(max(0, path.stat().st_size - 14000))
+                stat = path.stat()
+                log_metadata[path.name] = {'modifiedAt': datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), 'timestamped': False}
+                handle.seek(max(0, stat.st_size - 14000))
                 logs[path.name] = clean(handle.read(14000).decode(errors='replace'))
         except OSError:
             logs[path.name] = 'Unavailable'
     dependencies = {name: probe(url) for name, url in item.get('dependencyProbes', {}).items()}
     release = ROOT / 'releases' / item['group'] / 'manifest.json'
     return {'service': item['name'], 'status': state, 'health': health,
-            'healthy': state['active'] and health['ok'], 'logs': logs,
+            'healthy': state['active'] and health['ok'], 'logs': logs, 'logMetadata': log_metadata,
             'dependencies': dependencies, 'disk': shutil.disk_usage(item['directory'])._asdict(),
             'load': os.getloadavg(), 'releaseAvailable': release.is_file(),
             'retryAvailable': bool(item.get('retryCommand'))}

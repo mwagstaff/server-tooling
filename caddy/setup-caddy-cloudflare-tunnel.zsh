@@ -23,6 +23,7 @@ CADDYFILE="/etc/caddy/Caddyfile"
 API_HOSTNAME="api.kidsplorers.com"
 LEGACY_API_HOSTNAME="api.skynolimit.dev"
 TOP_SCORES_HOSTNAME="top-scores.skynolimit.dev"
+TOP_SCORES_PUBLIC_HOSTNAME="top-scores.com"
 GOAL_GUESSER_HOSTNAME="goal-guesser.skynolimit.dev"
 KIDSPLORERS_HOSTNAME="kidsplorers.com"
 SKYNOLIMIT_HOSTNAME="skynolimit.dev"
@@ -279,6 +280,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${API_HOSTNAME}
+  - hostname: ${TOP_SCORES_PUBLIC_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TOP_SCORES_HOSTNAME}
   - hostname: ${TOP_SCORES_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
@@ -339,6 +345,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${API_HOSTNAME}
+  - hostname: ${TOP_SCORES_PUBLIC_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TOP_SCORES_HOSTNAME}
   - hostname: ${TOP_SCORES_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:

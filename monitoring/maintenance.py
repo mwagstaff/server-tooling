@@ -33,6 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', choices=['mini', 'sky'])
     parser.add_argument('--unit', action='append', default=[])
+    parser.add_argument('--planned-restart', action='store_true', help='Mark one upcoming start per selected runtime as planned')
     parser.add_argument('--host-wide', action='store_true')
     parser.add_argument('--seconds', type=int, default=180)
     parser.add_argument('--reason', default='Planned deployment')
@@ -48,6 +49,8 @@ def main():
         parser.error('Choose host-wide maintenance or service units, not both')
     services = [] if args.host_wide else service_names(
         json.loads(Path(__file__).with_name('platform').joinpath('inventory.json').read_text()), host, args.unit)
+    if args.planned_restart and (args.host_wide or args.state_dir):
+        parser.error('Planned restart markers require explicit deployment units')
     payload = dict(host=host, services=services, seconds=args.seconds, reason=args.reason)
     owner = 'mini' if host == 'sky' else 'sky'
     if config:
@@ -66,6 +69,23 @@ except Exception:
         response = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', owner, 'python3 -'],
                                   input=code, capture_output=True, text=True, timeout=60, check=True)
         result = json.loads(response.stdout)
+    if args.planned_restart:
+        inventory = json.loads(Path(__file__).with_name('platform').joinpath('inventory.json').read_text())
+        ports = [row['runtime_port'] for row in inventory['hosts'][host]['services'] if row['unit'] in args.unit]
+        # Target clock determines marker lifetime; no credentials are transferred.
+        code = """import json,pathlib,time,os
+root=pathlib.Path.home()/'.local/share/server-tooling-monitoring/runtime-state'
+root.mkdir(parents=True,exist_ok=True,mode=0o700)
+now=time.time()
+for port in PORTS:
+ p=root/(str(port)+'.planned.json')
+ tmp=p.with_suffix('.tmp')
+ tmp.write_text(json.dumps(dict(startsAt=now,endsAt=now+SECONDS)))
+ tmp.chmod(0o600)
+ os.replace(tmp,p)
+""".replace('PORTS', repr(ports)).replace('SECONDS', str(args.seconds))
+        subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'python3 -'],
+                       input=code, text=True, timeout=30, check=True)
     print('Maintenance active for ' + host + '/' + (', '.join(services) or 'all services') +
           ': ' + str(args.seconds) + ' seconds; automatically expires.')
     return result

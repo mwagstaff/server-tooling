@@ -6,10 +6,41 @@ const path = require('node:path');
 if (isMainThread && process.env.MONITORING_ENTRY &&
     path.resolve(process.argv[1] || '') === process.env.MONITORING_ENTRY) {
   const http = require('node:http');
+  const {randomUUID} = require('node:crypto');
   const v8 = require('node:v8');
   const { performance, monitorEventLoopDelay, PerformanceObserver } = require('node:perf_hooks');
   const buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
   const startedAt = Date.now() / 1000 - process.uptime();
+  // Persist only unexpected starts. A deployment may consume exactly one marker;
+  // a crash/retry after that start still counts, even during maintenance.
+  let unexpectedStarts;
+  try {
+    const fs = require('node:fs');
+    const root = path.join(__dirname, 'runtime-state');
+    fs.mkdirSync(root, {recursive: true, mode: 0o700});
+    const statePath = path.join(root, `${Number(process.env.MONITORING_PORT)}.json`);
+    const markerPath = path.join(root, `${Number(process.env.MONITORING_PORT)}.planned.json`);
+    let previous;
+    try { previous = JSON.parse(fs.readFileSync(statePath, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    let planned = false;
+    try {
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      fs.unlinkSync(markerPath);
+      planned = marker.startsAt <= startedAt && startedAt <= marker.endsAt;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (previous && (!Array.isArray(previous.unexpectedStarts) || !previous.unexpectedStarts.every(Number.isFinite)))
+      throw new Error('Invalid restart state');
+    unexpectedStarts = (previous?.unexpectedStarts || []).filter(t => t > startedAt - 900);
+    if (previous && !planned) unexpectedStarts.push(startedAt);
+    const temporary = `${statePath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({unexpectedStarts}), {mode: 0o600});
+    fs.renameSync(temporary, statePath);
+  } catch {
+    // Omit the new metric so the legacy rule remains active if accounting fails.
+    unexpectedStarts = undefined;
+    console.error('Monitoring restart accounting unavailable; using process-start fallback');
+  }
   const requests = new Map();
   const durations = buckets.map(() => 0);
   let count = 0, sum = 0, active = 0, gcCount = 0, gcSeconds = 0;
@@ -28,6 +59,9 @@ if (isMainThread && process.env.MONITORING_ENTRY &&
       const pathname = (req.url || '').split('?')[0];
       if (!['/metrics', '/healthcheck', '/health', '/health/ready'].includes(pathname)) {
         const start = performance.now();
+        const suppliedId = req.headers['x-request-id'];
+        const requestId = typeof suppliedId === 'string' && /^[a-f0-9-]{36}$/i.test(suppliedId) ? suppliedId : randomUUID();
+        res.setHeader('X-Request-ID', requestId);
         let done = false;
         active++;
         const finish = () => {
@@ -36,6 +70,11 @@ if (isMainThread && process.env.MONITORING_ENTRY &&
           active--;
           const seconds = (performance.now() - start) / 1000;
           const status = res.writableFinished ? String(res.statusCode) : 'aborted';
+          // No headers, bodies, query strings or client addresses enter request logs.
+          const route = pathname.slice(0,512).replace(/[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.%+-]+/gi,'[redacted]');
+          console.log(JSON.stringify({ts:new Date().toISOString(),event:'http_request',level:status==='aborted'?'warn':res.statusCode>=500?'error':'info',
+            request_id:requestId,method:req.method,path:route,status,duration_ms:Math.round(seconds*1000),
+            monitoring:req.headers['user-agent']==='ServerToolingMonitoring/1.0'}));
           requests.set(status, (requests.get(status) || 0) + 1);
           count++; sum += seconds;
           buckets.forEach((limit, i) => { if (seconds <= limit) durations[i]++; });
@@ -54,6 +93,7 @@ if (isMainThread && process.env.MONITORING_ENTRY &&
       lines.push(`# TYPE monitoring_${name} ${type}`, `monitoring_${name}${labels} ${Number.isFinite(value) ? value : 0}`);
     }
     metric('runtime_info', 'gauge', 1);
+    if (unexpectedStarts) metric('unplanned_restarts_15m', 'gauge', unexpectedStarts.filter(t => t > Date.now() / 1000 - 900).length);
     metric('process_start_time_seconds', 'gauge', startedAt);
     metric('process_cpu_seconds_total', 'counter', (cpu.user + cpu.system) / 1e6);
     metric('process_resident_memory_bytes', 'gauge', memory.rss);

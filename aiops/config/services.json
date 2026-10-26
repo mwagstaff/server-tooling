@@ -349,8 +349,8 @@
     "unit": "com.train-track-planner.api",
     "directory": "/Users/mwagstaff/dev/train-track-planner",
     "logs": [
-      "/Users/mwagstaff/dev/train-track-planner/train-track-planner.log",
-      "/Users/mwagstaff/dev/train-track-planner/train-track-planner.error.log"
+      "/Users/mwagstaff/Library/Logs/train-track-planner/service.log",
+      "/Users/mwagstaff/Library/Logs/train-track-planner/service.error.log"
     ],
     "healthUrl": "http://127.0.0.1:3014/healthcheck",
     "publicUrl": "https://mikes-mac-mini.dog-rattlesnake.ts.net/train-track-planner/healthcheck",

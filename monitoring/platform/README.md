@@ -284,3 +284,106 @@ the gateway route; the dashboard alert timestamp may be one evaluation later.
 These logs are separate from the 30-day metrics retention. When rotating the
 scrape-failure file, send Prometheus SIGHUP to reopen it. Avoid adding credentials
 or sensitive query parameters to scrape URLs, since Prometheus logs targets.
+
+
+## Central logs and incident troubleshooting
+
+`python3 monitoring/platform/install_logs.py` installs pinned Loki 3.7.9 on Mini
+and Alloy 1.21.2 on both hosts. Run `install.py` afterwards in both monitoring
+directions with `--skip-target --keep-secrets` to provision log health scrapes,
+alerts and the `monitoring-loki` datasource. Reuse the existing LOKI_TOKEN; never
+paste it into URLs. `configure_log_dashboards.py` also integrates the existing
+Sky public Grafana and places the website dashboard in its web folder.
+
+Loki binds only loopback (13100/13109). Its gateway on Mini Tailscale port 13101
+requires Basic authentication and an allowed peer IP, permits queries/push only,
+and limits request/response size. Grafana and AIOps query server-side. The store
+uses filesystem TSDB with 14-day retention, 0.1 MB/s ingestion limit, bounded
+queries and memory targets. Mini is the single storage node; this is not HA.
+Sky Alloy is a system service running as mwagstaff with journal read access.
+Mini initially installs login LaunchAgents. Promote the four logging services
+to system LaunchDaemons with the scoped command below; they continue running as
+the installation owner. Administrator authentication is required once. The
+installer then preserves system service management on subsequent updates. Alloy's disk WAL currently requires its experimental stability flag;
+replay is bounded by the pinned release's default one-hour segment age.
+
+Registered application files, AIOps files and Sky service journals are collected.
+File tails begin at collection time and carry `timestamp_source=collected`:
+they must not be treated as historic event timestamps. Journals retain event
+timestamps. New files are rediscovered every 10 seconds. Filters redact
+credential-bearing text, URLs, email addresses, common token formats and PEM
+markers/base64 lines; arbitrary application text is not a guarantee of PII-free
+logging. Request bodies and headers are never intentionally exported.
+
+`configure_access_logs.py --apply` on Sky validates/backups/reloads Caddy's
+existing listener to enable sanitized access logs and a generated request ID.
+Queries, client addresses and headers are excluded. The shared Node runtime
+records completion status, duration, path without query, request ID and probe
+flag. It is active on Kidsplorers web now; other processes load it on their next
+planned restart. Do not restart active workers just to enable request logging.
+
+Use Grafana's Service Logs dashboard with host/service and the alert's absolute
+time window; Explore supports LogQL, for example
+`{host="sky",service="kidsplorers-web"} |= "request_id"`.
+Filter by a particular request ID to join Caddy and Node evidence. AIOps emails
+link directly to service metrics, host metrics and logs with a fixed incident
+window. Untimestamped/stale evidence lowers confidence and forces the next
+configured provider subject to the existing $2 incident limit. No new automatic
+recovery permission is granted.
+
+HttpErrors now measures only 5xx. HttpAbortedRequests separately measures aborted
+connections. Both require over 5% for 5 minutes and at least 100 requests in the
+five-minute window. Inspect status counts, request logs and probe flags before
+assuming a service outage. HTTP health probes must drain responses to avoid
+creating aborted requests themselves.
+
+Each host emits an ingested canary every minute. LogCollectorUnavailable,
+LogPipelineStalled, LogEntriesDropped and LogStorageSpaceLow cover scrape loss,
+stale ingestion, dropped entries and less than 10 GiB free. Check `/metrics` on
+loopback 13102 and Alloy on 12345; the existing private metrics gateway exports
+them. Retention is configured, not a claim of 14 days of existing history.
+
+For rollback, stop Alloy/canary and Mini Loki/gateway using their service manager;
+restore the timestamped Caddyfile backup and validate before reload. Remove the
+logging.json marker and regenerate monitoring config to remove log scrapes and
+alerts. Preserve data/loki and data/alloy until retention/rollback needs are clear.
+
+
+### Enable Mini log services at boot
+
+After installing logs, run from an interactive terminal:
+
+```sh
+ssh -t mini '~/.local/share/server-tooling-monitoring/enable-boot.sh --services loki log-gateway alloy log-canary'
+```
+
+This installs root-owned LaunchDaemons with RunAtLoad/KeepAlive and the existing
+unprivileged service user. It preflights all four definitions, starts them in the
+system domain, and retires their login plists to prevent duplicate processes.
+It does not restart the other monitoring services or reboot the host. If a
+bootstrap fails, it attempts to restore that service's previous launch domain.
+For later binary argument changes, rerun the same command to apply staged plists.
+Check `launchctl print system/com.server-tooling.monitoring.loki` and the other
+three labels, then verify both log canaries through Sky's Prometheus. A reboot
+remains a separate operational test; system registration alone is not a reboot test.
+
+The collector limits processing to 50 lines/second with a 100-line burst using
+backpressure (`drop = false`), so ordinary bursts wait instead of being discarded.
+Watch the ingestion canary for excessive processing lag.
+
+
+Notification/rule-failure alerts require failures in a rolling two-minute window
+continuously for five minutes. This rejects isolated recovered deployment failures;
+canaries/backlog checks still cover stalled delivery. Required logging and AIOps
+telemetry has explicit missing-data alerts, in addition to scrape availability.
+See the infrastructure coverage audit in `aiops/README.md` for diagnosis scope.
+
+### Planned versus unexpected restarts
+
+Deployment maintenance now marks one upcoming runtime start per selected service.
+`RestartLoop` counts three unexpected starts within 15 minutes using persisted
+`monitoring_unplanned_restarts_15m`; planned deploy starts do not accumulate after
+the three-minute silence expires. A subsequent crash consumes no further credit.
+Older runtimes and accounting failures retain the process-start fallback. The
+updated preload activates at the next service start, with a fresh baseline on
+first activation. See `../ALERTING.md` for marker expiry and state limitations.

@@ -1,6 +1,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
 import type {Alert, Incident} from './types.ts';
+import {sameAlert} from './alerts.ts';
 
 export class Store {
   db: DatabaseSync;
@@ -30,7 +31,16 @@ export class Store {
       .run(incident.id, incident.key, JSON.stringify(incident));
   }
   ingest(alert: Alert): {incident: Incident; fresh: boolean} {
-    const row = this.db.prepare('SELECT data FROM incidents WHERE key=? OR id=(SELECT incident FROM deliveries WHERE key=?)').get(alert.key, alert.key);
+    let row = this.db.prepare('SELECT data FROM incidents WHERE key=? OR id=(SELECT incident FROM deliveries WHERE key=?)').get(alert.key, alert.key);
+    // Preserve existing incidents when identity gains a discriminator; never merge different channels/devices.
+    if(!row && alert.source==='alertmanager') {
+      const prior=this.list().find(i=>sameAlert(i.alert,alert));
+      if(prior) {
+        this.db.prepare('INSERT OR IGNORE INTO deliveries VALUES(?,?)').run(alert.key,prior.id);
+        prior.alert.key=alert.key;
+        row={data:JSON.stringify(prior)};
+      }
+    }
     if (row) {
       const incident: Incident = JSON.parse(row.data as string);
       if (alert.status === 'resolved' && alert.key === incident.alert.key) {

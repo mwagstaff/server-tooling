@@ -22,6 +22,36 @@ class RunnerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_probe_drains_streamed_response_and_rejects_truncated_body(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread, Event
+        complete = Event()
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '131072')
+                self.end_headers()
+                self.wfile.write(b'x' * 65536)
+                self.wfile.flush()
+                if self.path == '/truncated':
+                    return
+                runner.time.sleep(0.02)
+                self.wfile.write(b'x' * 65536)
+                complete.set()
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(runner.probe(f'http://127.0.0.1:{server.server_port}/')['ok'])
+            self.assertTrue(complete.is_set())
+            self.assertFalse(runner.probe(f'http://127.0.0.1:{server.server_port}/truncated')['ok'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_reject_unknown_service_and_command(self):
         with self.assertRaises(ValueError):
             runner.handle({**self.request, 'service': 'fixture; rm -rf /'}, self.config)

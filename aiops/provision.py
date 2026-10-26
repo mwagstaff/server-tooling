@@ -36,7 +36,7 @@ def services():
     for host, target in inventory['hosts'].items():
         for item in target['services']:
             name=item['name']
-            project=next((p for p in projects if p['name']==name),None)
+            project=next((p for p in projects if p['name']==name or name in p.get('aliases',[])),None)
             if name.startswith('top-scores-') and name!='top-scores-web':
                 project=next(p for p in projects if p['name']=='top-scores')
             definition=next((s for s in (project or {}).get('services',[]) if s.get('service_label')==item['unit']),project or {})
@@ -87,13 +87,9 @@ def main():
     os.umask(0o077)
     cached=cached_keys()
     peer_token=secrets.token_urlsafe(36)
-    openai=cached.get('OPENAI_API_KEY_KIDSPLORERS','')
-    anthropic=cached.get('ANTHROPIC_API_KEY_KIDSPLORERS','')
-    cloud=[{'kind':'openai','model':'gpt-4.1-mini','keyEnv':'OPENAI_API_KEY','inputPerMillion':0.4,
-            'outputPerMillion':1.6,'timeoutMs':45000,'maxOutputTokens':1500},
-           {'kind':'anthropic','model':'claude-haiku-4-5-20251001','keyEnv':'ANTHROPIC_API_KEY','inputPerMillion':1,
-            'outputPerMillion':5,'timeoutMs':45000,'maxOutputTokens':1500}]
-    cloud.reverse()
+    openai=cached.get('OPENAI_API_KEY_AIOPS','')
+    anthropic=cached.get('ANTHROPIC_API_KEY_AIOPS','')
+    policy=json.loads((SOURCE/'config/model-policy.json').read_text())
     public_keys={}
     host_keys={}
     for host,h in HOSTS.items():
@@ -108,11 +104,10 @@ def main():
         if host=='sky':
             ssh(host,f"test -x {root}/runtime/node || cp {h['node']} {root}/runtime/node")
         config={'host':host,'listen':h['ip'],'port':19444,'stateDir':root,
-                'publicUrl':f"http://{h['dns']}:19444",'automatic':False,'budgetUsd':2,
+                'publicUrl':f"http://{h['dns']}:19444",'automatic':False,'budgetUsd':policy['budgetUsd'],
                 'peers':{other:f"http://{v['dns']}:19444" for other,v in HOSTS.items() if other!=host},
                 'ssh':{other:{'destination':f"mwagstaff@{v['ip']}",'runner':v['home']+'/.local/share/aiops/runner.py'} for other,v in HOSTS.items()},
-                'providers':([{'kind':'ollama','model':'qwen3.5:9b','inputPerMillion':0,'outputPerMillion':0,
-                               'timeoutMs':120000,'maxOutputTokens':1500}]+cloud if host=='mini' else cloud)}
+                'providers':policy['providers']}
         # Preserve host-specific settings, especially queue IDs and model choices.
         existing=ssh(host,f'test ! -f {root}/config.json || cat {root}/config.json')
         if not existing:
@@ -126,8 +121,8 @@ def main():
         values.setdefault('AIOPS_DASHBOARD_PASSWORD',secrets.token_urlsafe(30))
         values.setdefault('AIOPS_WEBHOOK_TOKEN',secrets.token_urlsafe(36))
         values['AIOPS_PEER_TOKEN']=peer_token
-        if openai: values.setdefault('OPENAI_API_KEY',openai)
-        if anthropic: values.setdefault('ANTHROPIC_API_KEY',anthropic)
+        if openai: values['OPENAI_API_KEY_AIOPS']=openai
+        if anthropic: values['ANTHROPIC_API_KEY_AIOPS']=anthropic
         for key in ['PUSHOVER_USER_KEY','PUSHOVER_API_KEY_MONITORING']:
             values[key]=ssh(host,f'cat {h["home"]}/.local/share/server-tooling-monitoring/secrets/{key}').strip()
         # SMTP credential stays in process memory while being transferred.

@@ -1,0 +1,26 @@
+{
+  "budgetUsd": 1,
+  "providers": [
+    {
+      "kind": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "keyEnv": "ANTHROPIC_API_KEY_AIOPS",
+      "inputPerMillion": 1,
+      "outputPerMillion": 5,
+      "timeoutMs": 45000,
+      "maxOutputTokens": 1500,
+      "budgetUsd": 0.2
+    },
+    {
+      "kind": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "keyEnv": "ANTHROPIC_API_KEY_AIOPS",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "timeoutMs": 120000,
+      "maxOutputTokens": 8192,
+      "budgetUsd": 0.8,
+      "reasoningEffort": "medium"
+    }
+  ]
+}

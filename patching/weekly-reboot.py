@@ -78,7 +78,13 @@ def main(required_only=False):
                     record('scheduled-reboot', reason + ' deferred: maintenance window ended')
                     return
                 record('scheduled-reboot', reason + ' requested')
-                subprocess.run(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True)
+                try:
+                    subprocess.run(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as error:
+                    detail = (error.stderr or '') + (error.stdout or '')
+                    if 'Please retry operation after closing inhibitors and logging out other users' not in detail:
+                        raise
+                    record('scheduled-reboot', reason + ' deferred: active sessions or inhibitors; next scheduled check will retry')
                 return
         if time.monotonic() >= deadline:
             raise RuntimeError('Package installation still active after 30 minutes; reboot skipped')

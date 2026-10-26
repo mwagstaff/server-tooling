@@ -246,6 +246,23 @@ operations do not create a temporary window. Set `DEPLOY_MAINTENANCE_SECONDS`
 to override the duration (30–1800 seconds). A long restart can outlast its window;
 choose a duration that covers its observed startup time.
 
+Deployment hooks also pass `--planned-restart`, which writes one short-lived,
+per-runtime marker on the target after maintenance succeeds. The Node runtime
+consumes the marker on its next start and persists unexpected restart timestamps
+under `~/.local/share/server-tooling-monitoring/runtime-state/`. Each deployment
+excuses **one** start; crashes after that start count even within the maintenance
+window. Expired markers do not excuse a start. A cancelled deployment can leave
+its unused marker valid until that same short expiry; no long silence is added.
+
+`RestartLoop` uses `monitoring_unplanned_restarts_15m >= 3`. Old runtime versions
+and failed accounting fall back to process-start changes, preserving detection.
+The first start after upgrading establishes a baseline; previous restart history
+cannot be classified retrospectively. Runtime upgrades take effect on the next
+service start. The dashboard's total restart count still includes deployments.
+State loss establishes a fresh baseline, so preserve the runtime-state directory.
+Manual restarts outside the deployment hook count as unplanned; ordinary
+operator maintenance windows do not implicitly grant a planned-start credit.
+
 The controller calls `monitoring/maintenance.py`, which uses SSH to the owning
 responder and its existing private credential to POST `/api/maintenance`.
 The authenticated endpoint creates expiring Alertmanager silences and persists
@@ -292,3 +309,14 @@ External Healthchecks.io watchdogs remain independent: these windows do not paus
 Healthchecks or its direct Gmail notifications. Watchdog and pipeline canary
 routes remain enabled. Scheduled package upgrades that restart services without
 using the reboot/deployment hooks are not automatically covered by these windows.
+
+## AIOps runbook and relay acceptance
+
+AIOps records a reviewed versioned runbook per investigation; see
+[runbooks](../aiops/runbooks/README.md). Registered application alerts accidentally
+sent to the target's local Alertmanager are relayed to the owning responder's
+Alertmanager over the authenticated private peer route. Prefer the canonical
+metrics path for new producers. Relays preserve source expiry and resolution and
+do not grant actions. Validate both owner intake and source checks when changing
+producer labels or routing. Reconciliation includes suppressed alerts and requires
+two full snapshots before interpreting disappearance as source resolution.

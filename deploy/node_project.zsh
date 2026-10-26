@@ -827,7 +827,7 @@ notify_deploy_complete() {
 
   if [[ "$OSTYPE" == darwin* ]]; then
     if command -v say >/dev/null 2>&1; then
-      afplay /System/Library/Sounds/Glass.aiff
+      afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 || true
     fi
 
     if command -v osascript >/dev/null 2>&1; then
@@ -2228,6 +2228,12 @@ elif [[ "$BW_ENV_SYNC" == "1" ]]; then
   refresh_bw_vault_data_if_needed
 
   bw_items_json="$(run_bw_json_with_session list items --folderid "$BW_FOLDER_ID")"
+  extra_bw_folder_ids=("${(@f)$(jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .extra_bw_folder_ids[]?' "$CONFIG_FILE")}")
+  for extra_folder_id in "${extra_bw_folder_ids[@]}"; do
+    [[ -n "$extra_folder_id" ]] || continue
+    extra_bw_items_json="$(run_bw_json_with_session list items --folderid "$extra_folder_id")"
+    bw_items_json="$(jq -cn --argjson base "$bw_items_json" --argjson extra "$extra_bw_items_json" '$base + $extra')"
+  done
   project_aliases_json="$(jq -c --arg name "$PROJECT_NAME" '
     [.[] | select(.name == $name) | .aliases // [] | .[]] | map(ascii_downcase)
   ' "$CONFIG_FILE")"
@@ -2416,7 +2422,7 @@ fi
 # Open the window immediately before the first stop/restart, after builds finish.
 # Fixed expiry also covers a failed deploy or a client that disconnects mid-restart.
 if [[ "$HOST" == "mini" || "$HOST" == "sky" ]]; then
-  maintenance_args=(--host "$HOST" --seconds "${DEPLOY_MAINTENANCE_SECONDS:-180}" --reason "Deployment: $PROJECT_NAME")
+  maintenance_args=(--host "$HOST" --planned-restart --seconds "${DEPLOY_MAINTENANCE_SECONDS:-180}" --reason "Deployment: $PROJECT_NAME")
   for maintenance_unit in "${SERVICE_LABELS[@]}"; do
     maintenance_args+=(--unit "$maintenance_unit")
   done

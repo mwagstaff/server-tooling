@@ -92,7 +92,16 @@ class MaintenanceTests(unittest.TestCase):
                 reboot.main()
         sleep.assert_called_once_with(30)
         self.assertIn('delayed', record.call_args_list[0].args[1])
-        run.assert_called_once_with(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True)
+        run.assert_called_once_with(['systemctl', '--check-inhibitors=yes', 'reboot'], check=True, capture_output=True, text=True)
+
+    def test_logged_in_users_defer_without_masking_other_reboot_failures(self):
+        for detail, deferred in [('Please retry operation after closing inhibitors and logging out other users.', True),('D-Bus unavailable', False)]:
+            with tempfile.TemporaryDirectory() as directory, patch.object(reboot, 'LOCKS', [str(Path(directory)/'lock')]), patch.object(reboot, 'record') as record, patch.object(reboot.subprocess, 'run', side_effect=subprocess.CalledProcessError(1,'systemctl',stderr=detail)):
+                if deferred:
+                    reboot.main()
+                    self.assertIn('deferred', record.call_args.args[1])
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError): reboot.main()
 
     def test_busy_package_lock_timeout_never_reboots(self):
         with tempfile.TemporaryDirectory() as directory:
