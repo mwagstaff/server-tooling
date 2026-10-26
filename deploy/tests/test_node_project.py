@@ -60,7 +60,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    project_name="test-project", aliases=None, required_bw_env=None, bw_items=None,
                    extra_bw_folder_ids=None, bw_items_by_folder=None,
                    launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
-                   share_remote_dir=False, pin_by_host=None, platform=False, audio_failure=False):
+                   share_remote_dir=False, pin_by_host=None, platform=False, audio_failure=False,
+                   systemd_directives=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -115,6 +116,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["service_scope"] = service_scope
         if launchd_admin_helper is not None:
             config["launchd_admin_helper"] = launchd_admin_helper
+        if systemd_directives is not None:
+            config["systemd_service_directives"] = systemd_directives
         if log_file is not None:
             config["log_file"] = log_file
         if error_log_file is not None:
@@ -495,6 +498,16 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         result, calls = self.run_deploy(quick=True, pin_by_host={"test-host": "/tmp/$(touch bad)/node"})
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
+
+    def test_systemd_directives_reach_the_unit_and_unsafe_ones_are_rejected(self):
+        result, calls = self.run_deploy(systemd_directives=["MemoryHigh=96M", "MemoryMax=128M"])
+        self.assert_success(result)
+        unit = [" ".join(call["args"]) for call in calls if call["name"] == "ssh" and "EOF_SYSTEMD" in " ".join(call["args"])]
+        self.assertTrue(unit and "Environment=NODE_ENV=production\nMemoryHigh=96M\nMemoryMax=128M\n" in unit[0])
+        for bad in (["ExecStartPre=/bin/rm -rf /"], ["MemoryMax=1G\nUser=root"], "MemoryMax=1G"):
+            result, calls = self.run_deploy(systemd_directives=bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

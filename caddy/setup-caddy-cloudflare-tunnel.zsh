@@ -29,8 +29,15 @@ KIDSPLORERS_HOSTNAME="kidsplorers.com"
 SKYNOLIMIT_HOSTNAME="skynolimit.dev"
 SKYNOLIMIT_WWW_HOSTNAME="www.skynolimit.dev"
 BHA_PREVIEW_HOSTNAME="bha-preview.skynolimit.dev"
-# The BHA website runs on mini; Caddy reaches it over Tailscale.
+# The BHA website preview runs on mini; Caddy reaches it over Tailscale.
 BHA_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3050"
+# The live BHA website runs on sky (bha-website-live). bha.skynolimit.dev is
+# its test address; the association's own domain points here once its DNS
+# moves to Cloudflare.
+BHA_LIVE_HOSTNAME="bha.skynolimit.dev"
+BHA_HOSTNAME="beckenham-historical-association.org"
+BHA_WWW_HOSTNAME="www.beckenham-historical-association.org"
+BHA_LIVE_UPSTREAM="http://127.0.0.1:3050"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
@@ -124,6 +131,23 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
       header_up X-Forwarded-Proto https
       header_up X-Forwarded-Port 443
     }
+  }
+
+  # Beckenham & Bromley Historical Association website, hosted on sky.
+  @bha_live host ${BHA_LIVE_HOSTNAME} ${BHA_HOSTNAME}
+  handle @bha_live {
+    reverse_proxy ${BHA_LIVE_UPSTREAM} {
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
+  }
+
+  # www -> apex redirect for the BHA website.
+  @bha_www host ${BHA_WWW_HOSTNAME}
+  handle @bha_www {
+    redir https://${BHA_HOSTNAME}{uri} 308
   }
 
   # Normalize Grafana base path (Grafana expects a trailing slash)
@@ -315,6 +339,21 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_PREVIEW_HOSTNAME}
+  - hostname: ${BHA_LIVE_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_LIVE_HOSTNAME}
+  - hostname: ${BHA_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_HOSTNAME}
+  - hostname: ${BHA_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_WWW_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -380,6 +419,21 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_PREVIEW_HOSTNAME}
+  - hostname: ${BHA_LIVE_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_LIVE_HOSTNAME}
+  - hostname: ${BHA_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_HOSTNAME}
+  - hostname: ${BHA_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${BHA_WWW_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -450,6 +504,12 @@ echo "--> via Caddy (BHA website preview hostname, proxied to mini):"
 curl -i -H "Host: ${BHA_PREVIEW_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
 
 echo
+echo "--> via Caddy (BHA website hostnames, served on sky):"
+curl -i -H "Host: ${BHA_LIVE_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
+curl -s -o /dev/null -w "  ${BHA_HOSTNAME}/healthcheck -> %{http_code}\n" -H "Host: ${BHA_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" || true
+curl -s -o /dev/null -w "  ${BHA_WWW_HOSTNAME}/events -> %{http_code} %{redirect_url}\n" -H "Host: ${BHA_WWW_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/events" || true
+
+echo
 echo "--> via Caddy (Grafana /grafana and /grafana/):"
 # Show redirect for /grafana and confirm /grafana/ returns non-empty HTML
 curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/grafana" | head -n 20 || true
@@ -483,6 +543,7 @@ echo "    https://${GOAL_GUESSER_HOSTNAME}"
 echo "    https://${KIDSPLORERS_HOSTNAME}"
 echo "    https://${API_HOSTNAME}/kidsplorers/v1/health"
 echo "    https://${BHA_PREVIEW_HOSTNAME}"
+echo "    https://${BHA_LIVE_HOSTNAME}"
 EOF
 
 echo

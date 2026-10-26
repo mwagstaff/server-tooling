@@ -416,5 +416,31 @@
             "NODE_ENV": "production",
             "BHA_DATA_DIR": "/Users/mwagstaff/.local/share/bha-website"
         }
+    },
+    {
+        "name": "bha-website-live",
+        "aliases": ["bha-live"],
+        "path": "/Users/mwagstaff/dev/bha-website",
+        "remote_dir": "~/dev/bha-website",
+        "node_binary": "/home/mwagstaff/.local/share/bha-website/runtime/node24/bin/node",
+        "sync_env_local": false,
+        "entry_file": "server.js",
+        "startup_port": 3050,
+        "healthcheck_path": "/healthcheck",
+        "metrics_port": false,
+        "service_label": "com.bha-website.web",
+        "service_description": "Beckenham & Bromley Historical Association website",
+        "public_url": "https://bha.skynolimit.dev",
+        "rsync_excludes": ["/var/", "/test/", "/.claude/"],
+        "required_bitwarden_env": ["BHA_EDITOR_USERNAME", "BHA_EDITOR_PASSWORD", "PLUNK_SECRET_KEY"],
+        "systemd_service_directives": ["MemoryHigh=96M", "MemoryMax=128M"],
+        "static_env": {
+            "PORT": "3050",
+            "NODE_ENV": "production",
+            "NODE_OPTIONS": "--max-old-space-size=48",
+            "BHA_DATA_DIR": "/home/mwagstaff/.local/share/bha-website",
+            "BHA_ENQUIRY_TO": "ann.wagstaff@gmail.com",
+            "BHA_EMAIL_FROM": "bha@skynolimit.dev"
+        }
     }
 ]

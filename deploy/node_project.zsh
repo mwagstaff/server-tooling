@@ -1724,6 +1724,17 @@ if ! jq -e --arg name "$PROJECT_NAME" '
   echo "Error: rsync_excludes must be an array of non-empty patterns without control characters" >&2
   exit 1
 fi
+# Extra [Service] lines for systemd units (e.g. memory limits). Only a few
+# resource-control keys with plain values are accepted, as the lines are
+# interpolated into the remote unit file.
+if ! jq -e --arg name "$PROJECT_NAME" '
+  .[] | select(.name == $name) | (.systemd_service_directives // []) |
+  type == "array" and all(.[]; type == "string" and test("^(MemoryHigh|MemoryMax|MemorySwapMax|CPUQuota|TasksMax)=[A-Za-z0-9.%]+$"))
+' "$CONFIG_FILE" >/dev/null; then
+  echo "Error: systemd_service_directives must be an array of MemoryHigh/MemoryMax/MemorySwapMax/CPUQuota/TasksMax=VALUE lines" >&2
+  exit 1
+fi
+SYSTEMD_SERVICE_DIRECTIVES="$(jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | (.systemd_service_directives // [])[]' "$CONFIG_FILE")"
 RSYNC_PROJECT_RULES=()
 for project_exclude in "${(@f)$(get_project_rsync_excludes "$PROJECT_NAME")}"; do
   [[ -n "$project_exclude" ]] && RSYNC_PROJECT_RULES+=(--exclude "$project_exclude")
@@ -2979,6 +2990,7 @@ StandardOutput=append:\$REMOTE_DIR_EXPANDED/\${service_log_file}
 StandardError=append:\$REMOTE_DIR_EXPANDED/\${service_error_log_file}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
+${SYSTEMD_SERVICE_DIRECTIVES}
 
 [Install]
 WantedBy=default.target
