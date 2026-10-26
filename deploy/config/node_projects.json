@@ -440,6 +440,7 @@
             "NODE_OPTIONS": "--max-old-space-size=48",
             "BHA_DATA_DIR": "/home/mwagstaff/.local/share/bha-website",
             "BHA_ENQUIRY_TO": "ann.wagstaff@gmail.com",
+            "BHA_BULLETIN_TO": "john.wagstaff176@gmail.com",
             "BHA_EMAIL_FROM": "bha@skynolimit.dev"
         }
     }
