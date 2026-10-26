@@ -43,6 +43,8 @@ export class Store {
     }
     if (row) {
       const incident: Incident = JSON.parse(row.data as string);
+      // Incidents opened before references existed adopt their source's reference.
+      if (!incident.alert.ref && alert.ref && alert.key === incident.alert.key) incident.alert.ref = alert.ref;
       if (alert.status === 'resolved' && alert.key === incident.alert.key) {
         incident.resolvedAt = alert.receivedAt;
         // A source resolution is evidence, not proof that an action recovered the service.

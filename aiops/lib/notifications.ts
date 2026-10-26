@@ -3,6 +3,7 @@ import nodemailer from 'nodemailer';
 import type {Config, Incident} from './types.ts';
 import type {Store} from './store.ts';
 import {boundedBody, redact} from './security.ts';
+import {incidentRef} from './alerts.ts';
 
 // Explicit block elements survive mail gateways that collapse plain-text newlines.
 export function summaryHtml(text: string): string {
@@ -38,7 +39,8 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
     const sentences=text.slice(0,max).match(/^.*[.!?](?=\s)/);
     return (sentences?.[0] || 'Assessment requires the full incident record.') + ' See incident for details.';
   };
-  const title = `[AIOps ${status}] ${i.service} · ${i.host} · ${i.alert.name}`;
+  const ref = i.alert.ref || incidentRef(i.key,i.alert.startsAt);
+  const title = `[AIOps ${status}] ${i.service} · ${i.host} · ${i.alert.name} · ${ref}`;
   const events = store.events(i.id);
   const actions = events.filter(e=>e.kind === 'action_requested');
   const samples = v?.samples;
@@ -60,6 +62,7 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
   const text = [
     `- Summary: ${status}. ${logging ? checks.replace('Service',infrastructure?'Infrastructure':'Logging').replace('service',infrastructure?'infrastructure':'logging') : checks}; source alert ${source}. Workflow: ${current.status.replaceAll('_',' ')}.`,
     `- Alert: ${i.alert.name} — ${compact(i.alert.summary,200)}`,
+    `- Ref: ${ref}`,
     ...(logging ? [`- Evidence: ${logging.summary}`] : []),
     ...(metrics ? [`- Evidence: Five-minute window at ${metrics.responses5m?.observedAt || 'unknown time'}; combined 5xx/abort ratio ${ratio===undefined ? 'unavailable' : (ratio*100).toFixed(2)+'%'}; responses ${counts}; restarts in 15 minutes: ${scalar('restarts15m') ?? 'unknown'}.`] : []),
     ...(i.evidence?.qualityIssues?.length ? [`- Evidence gaps: ${i.evidence.qualityIssues.join(' ')}`] : []),

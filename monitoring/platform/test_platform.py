@@ -118,6 +118,39 @@ class PlatformTests(unittest.TestCase):
                 self.assertEqual(receiver['webhook_configs'][0]['http_config']['authorization']['credentials_file'],
                                  marker['token_file'])
 
+    def test_local_application_alerts_skip_duplicate_pushover_and_email_mirrors_pushover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'secrets').mkdir()
+            render(root, 'sky', 'mini', '100.64.0.2', '100.64.0.1', [], local_services=['top-scores', 'healthcheck'])
+            am = json.loads((root / 'alertmanager.json').read_text())
+            pushover = next(r for r in am['receivers'] if r['name'] == 'pushover')
+            self.assertNotIn('email_configs', pushover)
+            self.assertFalse(any('service=~' in m for r in am['route']['routes'] for m in r.get('matchers', [])))
+            (root / 'aiops.json').write_text(json.dumps({'url': 'http://127.0.0.1:19444/webhooks/alertmanager', 'token_file': '/private/token'}))
+            (root / 'secrets/SMTP_PASSWORD').write_text('x')
+            render(root, 'sky', 'mini', '100.64.0.2', '100.64.0.1', [], local_services=['top-scores', 'healthcheck'])
+            am = json.loads((root / 'alertmanager.json').read_text())
+            routes = am['route']['routes']
+            local = routes[1]
+            self.assertEqual(local['receiver'], 'aiops')
+            self.assertNotIn('continue', local)
+            self.assertEqual(local['matchers'][:2], ['host="sky"', 'service=~"healthcheck|top-scores"'])
+            self.assertEqual(routes[0]['matchers'], ['alertname="AIOpsPipelineCanary"'])
+            self.assertTrue(routes[2].get('continue'))
+            pushover = next(r for r in am['receivers'] if r['name'] == 'pushover')
+            email = pushover['email_configs'][0]
+            self.assertEqual(email['to'], 'mike.wagstaff@gmail.com')
+            self.assertNotIn('alerts@skynolimit.dev', email['to'])
+            self.assertTrue(email['send_resolved'])
+            self.assertEqual(email['auth_password_file'], str(root / 'secrets/SMTP_PASSWORD'))
+            ref = 'INC-{{ slice .Fingerprint 0 8 }}-{{ .StartsAt.UTC.Format "20060102T1504Z" }}'
+            self.assertIn(ref, email['headers']['Subject'])
+            self.assertIn(ref, email['text'])
+            self.assertIn(ref, email['html'])
+            self.assertIn('<li style="margin:0 0 12px;padding-left:4px;"><strong>Ref:</strong>', email['html'])
+            self.assertIn(ref, pushover['pushover_configs'][0]['message'])
+
     def test_dashboard_hostname_and_host_metrics_scope(self):
         for target_os in ('linux', 'darwin'):
             with tempfile.TemporaryDirectory() as directory:

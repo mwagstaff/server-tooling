@@ -14,6 +14,7 @@ import uuid
 SOURCE = Path(__file__).resolve().parent
 REMOTE_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 BW_FOLDER = '7a5cbc24-a5c4-4d07-bbf3-b3f600e24660'
+PLUNK_SMTP_PASSWORD = '/home/mwagstaff/monitoring/secrets/plunk-smtp-password'
 
 
 def run(args, **kwargs):
@@ -73,6 +74,11 @@ def get_secret(items, name, app='monitoring', optional=False):
     if not matches and not optional:
         raise RuntimeError(f'Bitwarden entry {name} missing or empty; set Apps to {app}')
     return matches[0] if matches else None
+
+
+def remote_secret_exists(host, info, name):
+    path = info['home'] + '/.local/share/server-tooling-monitoring/secrets/' + name
+    return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, 'test -s ' + shlex.quote(path)]).returncode == 0
 
 
 def validate_services(services):
@@ -149,6 +155,9 @@ def main():
             if item.get('metrics_secret'):
                 # Existing app-owned token; never associate monitoring notification keys with apps.
                 target_secrets[item['metrics_secret']] = get_secret(items, item['metrics_secret'], app=None)
+    if not args.keep_secrets or not remote_secret_exists(args.monitor, monitor_info, 'SMTP_PASSWORD'):
+        # Shared Plunk credential used by AIOps; it is not stored in the deploy vault folder.
+        monitor_secrets['SMTP_PASSWORD'] = ssh('sky', ['sudo', '-n', 'cat', PLUNK_SMTP_PASSWORD], capture_output=True, text=True).stdout.strip() or None
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='monitoring-deploy-') as directory:
         work = Path(directory)
@@ -157,7 +166,8 @@ def main():
             source = stage(args.target, target_info, config, target_secrets, work)
             ssh(args.target, ['python3', source + '/host.py', 'target', source + '/deploy.json'])
         config = {'monitor': args.monitor, 'target': args.target, 'ip': monitor_info['ip'], 'target_ip': target_info['ip'], 'services': services,
-                  'hostname': monitor_info['dns'], 'target_os': target_info['os']}
+                  'hostname': monitor_info['dns'], 'target_os': target_info['os'],
+                  'local_services': [item['name'] for item in inventory['hosts'].get(args.monitor, {}).get('services', [])]}
         source = stage(args.monitor, monitor_info, config, monitor_secrets, work)
         ssh(args.monitor, ['python3', source + '/host.py', 'monitor', source + '/deploy.json'])
     print('Installed. Check the dashboards and expected target count before retiring legacy alerts.')

@@ -4,6 +4,10 @@ import {redact} from './security.ts';
 
 export const canonicalHost=(host:string)=>host==='ubuntu-4gb-hel1-2'?'sky':host;
 
+// Matches monitoring/platform/config.py INCIDENT_REF so Alertmanager and AIOps notifications agree.
+export const incidentRef=(id:string,startsAt:string)=>
+  'INC-'+id.slice(0,8)+'-'+new Date(startsAt).toISOString().replace(/[-:]/g,'').slice(0,13)+'Z';
+
 export const identityLabels=['check','device','instance','mountpoint','integration','reason','job'];
 
 export const sameAlert=(a:Alert,b:Alert)=>a.source===b.source && a.host===b.host && a.service===b.service && a.name===b.name && a.startsAt===b.startsAt && identityLabels.every(k=>(a.labels[k]||'')===(b.labels[k]||''));
@@ -25,9 +29,11 @@ export function alertsFromWebhook(body: any, config: Config, now = Date.now()): 
     labels.host = host;
     if (registered && host !== registered.host) throw new Error('Service/host mismatch');
     const key = createHash('sha256').update(JSON.stringify([host, service, name, new Date(starts).toISOString(), labels.check || '', labels.device || '', labels.instance || '', ...['mountpoint','integration','reason',...(name==='LogTelemetryMissing'?['job']:[])].flatMap(k=>labels[k]?[k,labels[k]]:[])])).digest('hex');
-    return {source:'alertmanager', key, host, service, name,
+    const startsAt=new Date(starts).toISOString();
+    const fingerprint=/^[0-9a-f]{16}$/.test(a.fingerprint) ? a.fingerprint : key;
+    return {source:'alertmanager', key, ref:incidentRef(fingerprint,startsAt), host, service, name,
       summary:redact(String(a.annotations?.summary || name)+(name==='TopScoresEloImportFailed'?' '+String(a.annotations?.description||''):'')).slice(0,2000),
-      status:a.status === 'resolved' ? 'resolved' : 'firing', startsAt:new Date(starts).toISOString(),
+      status:a.status === 'resolved' ? 'resolved' : 'firing', startsAt,
       labels, receivedAt:new Date(now).toISOString()};
   });
 }
@@ -43,8 +49,9 @@ export function alertFromEmail(body: any, config: Config, now = Date.now()): Ale
   const matches = config.services.filter(s => new RegExp(`(?:^|[^a-z0-9-])${s.name}(?:$|[^a-z0-9-])`, 'i').test(text));
   const service = matches.length === 1 ? matches[0] : undefined;
   const weekly=/^\[(?:REVIEW|FAIL)\] (sky|mini) weekly upgrade report$/i.exec(String(body.subject||''));
-  return {source:'email', key:createHash('sha256').update('email:' + body.id).digest('hex'),
+  const key=createHash('sha256').update('email:' + body.id).digest('hex'), startsAt=new Date(received).toISOString();
+  return {source:'email', key, ref:incidentRef(key,startsAt),
     host:weekly?.[1].toLowerCase() || service?.host || (['mini','sky'].includes(body.host)?body.host:'unknown'), service:weekly?'maintenance':service?.name || 'unknown', name:weekly?'WeeklyUpgradeReview':'EmailAlert',
-    summary:redact(text).slice(0,6000), startsAt:new Date(received).toISOString(),
+    summary:redact(text).slice(0,6000), startsAt,
     status:'firing', labels:{}, receivedAt:new Date(now).toISOString()};
 }

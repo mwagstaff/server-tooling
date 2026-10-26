@@ -24,7 +24,7 @@ export type Config = {
   queue?: {account: string; id: string; token: string};
 };
 export type Alert = {
-  source: string; key: string; host: string; service: string; name: string;
+  source: string; key: string; ref?: string; host: string; service: string; name: string;
   summary: string; status: 'firing' | 'resolved'; startsAt: string;
   labels: Record<string, string>; receivedAt: string;
 };

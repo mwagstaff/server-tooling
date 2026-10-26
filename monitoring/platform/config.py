@@ -114,7 +114,50 @@ def make_rules(services, target, aiops=False, monitor=None, logging=False):
     return result
 
 
-def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=False, hostname=None, target_os=None):
+# Shared with AIOps (lib/alerts.ts incidentRef): Alertmanager fingerprint prefix + UTC start.
+INCIDENT_REF = 'INC-{{ slice .Fingerprint 0 8 }}-{{ .StartsAt.UTC.Format "20060102T1504Z" }}'
+ALERT_EMAIL_TO = 'mike.wagstaff@gmail.com'
+ALERT_EMAIL_TEXT = (
+    '{{ .Status | toUpper }}: {{ .CommonLabels.host }} / {{ .CommonLabels.service }} / {{ .CommonLabels.alertname }}\n'
+    '{{ range .Alerts }}\n'
+    'Ref: ' + INCIDENT_REF + '\n'
+    'Status: {{ .Status }}\n'
+    'Started: {{ .StartsAt.UTC.Format "2006-01-02 15:04:05 MST" }}\n'
+    '{{ if eq .Status "resolved" }}Ended: {{ .EndsAt.UTC.Format "2006-01-02 15:04:05 MST" }}\n{{ end }}'
+    'Summary: {{ .Annotations.summary }}\n'
+    '{{ with .Annotations.description }}Description: {{ . }}\n{{ end }}'
+    '{{ with .Annotations.runbook_url }}Runbook: {{ . }}\n{{ end }}'
+    'Labels:{{ range .Labels.SortedPairs }} {{ .Name }}={{ .Value }}{{ end }}\n'
+    '{{ end }}\n'
+    'Dashboards: DASHBOARD_URL\n'
+    'AIOps incidents for this alert quote the same Ref.\n'
+)
+# Same spaced-bullet layout as AIOps summaryHtml (aiops/lib/notifications.ts).
+# Alertmanager renders email HTML with html/template, so alert values are escaped.
+_LI = '<li style="margin:0 0 12px;padding-left:4px;"><strong>{}:</strong> {}</li>'
+_UL = '<ul style="margin:0;padding-left:24px;">{}</ul>'
+ALERT_EMAIL_HTML = (
+    '<html><body><div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;max-width:720px;">'
+    + _UL.format(
+        _LI.format('Status', '{{ .Status | toUpper }}')
+        + _LI.format('Alert', '{{ .CommonLabels.host }} · {{ .CommonLabels.service }} · {{ .CommonLabels.alertname }}')
+        + _LI.format('Dashboards', '<a href="DASHBOARD_URL">Open monitoring dashboards</a>'))
+    + '{{ range .Alerts }}<hr style="border:0;border-top:1px solid #ddd;margin:16px 0;">'
+    + _UL.format(
+        _LI.format('Ref', INCIDENT_REF)
+        + _LI.format('Status', '{{ .Status }}')
+        + _LI.format('Summary', '{{ .Annotations.summary }}')
+        + '{{ with .Annotations.description }}' + _LI.format('Description', '{{ . }}') + '{{ end }}'
+        + _LI.format('Started', '{{ .StartsAt.UTC.Format "2006-01-02 15:04:05 MST" }}')
+        + '{{ if eq .Status "resolved" }}' + _LI.format('Ended', '{{ .EndsAt.UTC.Format "2006-01-02 15:04:05 MST" }}') + '{{ end }}'
+        + '{{ with .Annotations.runbook_url }}' + _LI.format('Runbook', '<a href="{{ . }}">Open runbook</a>') + '{{ end }}'
+        + _LI.format('Labels', '{{ range $i, $p := .Labels.SortedPairs }}{{ if $i }}, {{ end }}{{ $p.Name }}={{ $p.Value }}{{ end }}'))
+    + '{{ end }}<hr style="border:0;border-top:1px solid #ddd;margin:16px 0;">'
+    '<p style="margin:0;color:#666;">AIOps incidents for these alerts quote the same Ref.</p></div></body></html>'
+)
+
+
+def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=False, hostname=None, target_os=None, local_services=()):
     root = Path(root)
     dashboard_host = hostname or monitor_ip
     endpoint = f'{target_ip}:19443'
@@ -152,15 +195,29 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
                                         'alerting': {'alertmanagers': [{'static_configs': [{'targets': ['127.0.0.1:19093']}]}]}, 'scrape_configs': jobs})
     write_json(root / 'rules.json', make_rules(services, target, (root / 'aiops.json').exists(), monitor, (root / 'logging.json').exists()))
     write_json(root / 'blackbox.json', {'modules': {'http_2xx': {'prober': 'http', 'timeout': '8s', 'http': {'preferred_ip_protocol': 'ip4', 'follow_redirects': True, 'headers': {'User-Agent': 'ServerToolingMonitoring/1.0'}}}}})
+    dashboard_url = f'http://{dashboard_host}:13000/d/monitoring-fleet'
     receivers = [{'name': 'silent'}, {'name': 'pushover', 'pushover_configs': [{
         'user_key_file': str(root / 'secrets/PUSHOVER_USER_KEY'),
         'token_file': str(root / 'secrets/PUSHOVER_API_KEY_MONITORING'),
         'send_resolved': True,
         'priority': '{{ if eq .Status "resolved" }}0{{ else if eq .CommonLabels.severity "critical" }}1{{ else }}0{{ end }}',
         'title': '[{{ .Status | toUpper }}] {{ .CommonLabels.host }} {{ .CommonLabels.service }}',
-        'message': '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}',
-        'url': f'http://{dashboard_host}:13000/d/monitoring-fleet', 'url_title': 'Monitoring dashboards',
+        'message': '{{ range .Alerts }}{{ .Annotations.summary }}\nRef ' + INCIDENT_REF + '\n{{ end }}',
+        'url': dashboard_url, 'url_title': 'Monitoring dashboards',
     }]}]
+    # Searchable mirror of every Pushover; sent to Gmail, not the AIOps intake address.
+    if (root / 'secrets/SMTP_PASSWORD').exists():
+        receivers[1]['email_configs'] = [{
+            'to': ALERT_EMAIL_TO, 'from': 'Monitoring <alerts@skynolimit.dev>',
+            'smarthost': 'next-smtp.useplunk.com:2587', 'auth_username': 'plunk',
+            'auth_password_file': str(root / 'secrets/SMTP_PASSWORD'), 'require_tls': True, 'send_resolved': True,
+            'headers': {'Subject': '[{{ .Status | toUpper }}] {{ .CommonLabels.host }} {{ .CommonLabels.service }} '
+                                   '{{ .CommonLabels.alertname }} · {{ with index .Alerts 0 }}' + INCIDENT_REF + '{{ end }}'
+                                   '{{ if gt (len .Alerts) 1 }} ({{ len .Alerts }} alerts){{ end }}',
+                        'Auto-Submitted': 'auto-generated'},
+            'html': ALERT_EMAIL_HTML.replace('DASHBOARD_URL', dashboard_url),
+            'text': ALERT_EMAIL_TEXT.replace('DASHBOARD_URL', dashboard_url),
+        }]
     routes = [{'matchers': ['alertname="MonitoringWatchdog"'], 'receiver': 'watchdog' if watchdog else 'silent', 'group_wait': '0s', 'group_interval': '1m', 'repeat_interval': '1m'}]
     routes.append({'matchers': ['alertname="SharedPublicOutage"'], 'receiver': 'pushover', 'group_by': ['host', 'alertname'], 'group_wait': '0s', 'group_interval': '1m'})
     if watchdog:
@@ -175,6 +232,12 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
         routes.insert(0, {'receiver': 'aiops', 'matchers': ['alertname!~"MonitoringWatchdog|AIOpsPipelineCanary"'],
                           'continue': True, 'group_wait': '0s', 'group_interval': '1m',
                           'repeat_interval': '4h'})
+        if local_services:
+            # Alerts about this host's own applications are relayed by AIOps to the
+            # owning peer, whose Alertmanager notifies; local Pushover would duplicate it.
+            routes.insert(0, {'receiver': 'aiops', 'matchers': [f'host="{monitor}"', 'service=~"' + '|'.join(sorted(local_services)) + '"',
+                                                               'alertname!~"MonitoringWatchdog|AIOpsPipelineCanary"'],
+                              'group_wait': '0s', 'group_interval': '1m', 'repeat_interval': '4h'})
         routes.insert(0, {'receiver':'aiops', 'matchers':['alertname="AIOpsPipelineCanary"'],
                           'group_wait':'0s', 'group_interval':'1m', 'repeat_interval':'1m'})
     routes.append({'receiver': 'pushover'})

@@ -260,13 +260,15 @@ test('email delivers spaced HTML bullets and plain text, escaping alert content'
   let mail:any;let closed=false;
   t.mock.method(nodemailer,'createTransport',()=>({sendMail:async(value:any)=>{mail=value;},close:()=>{closed=true;}}) as any);
   await flushNotifications(c,s);
-  assert.equal((mail.html.match(/<li /g)||[]).length,10);
+  assert.equal((mail.html.match(/<li /g)||[]).length,11);
+  assert.match(mail.subject,/ · INC-\S{8}-\d{8}T\d{4}Z$/);
+  assert.match(mail.text,/^- Ref: INC-/m);
   assert.match(mail.html,/<strong>Summary:<\/strong>/);
   assert.match(mail.html,/margin:0 0 12px/);
   assert.match(mail.html,/&lt;img src=x onerror=alert\(1\)&gt; &amp; errors/);
   assert.ok(!mail.html.includes('<img'));
   assert.match(mail.html,/<a href="http:\/\/localhost\/\?incident=/);
-  assert.equal(mail.text.split('\n').length,10);
+  assert.equal(mail.text.split('\n').length,11);
   assert.ok(closed);s.db.close();
 });
 test('HTML renderer also handles queued plain-text summaries and CRLF',()=>{
@@ -391,4 +393,19 @@ test('exhausted Haiku allowance escalates directly to Sol without borrowing its 
   const p={keyEnv:'AIOPS_TEST_API_KEY',inputPerMillion:2,outputPerMillion:10,timeoutMs:1000,maxOutputTokens:1500};
   await diagnose({...config,providers:[{...p,kind:'anthropic',model:'haiku',budgetUsd:0.2},{...p,kind:'openai',model:'sol',budgetUsd:0.8}]},s,i,{},['none']);
   assert.deepEqual(models,['sol']);assert.ok(i.spent<1);s.db.close();
+});
+
+test('incident reference matches the Alertmanager fingerprint template and survives re-delivery',()=>{
+  const raw={labels:{alertname:'TopScoresEloImportFailed',host:'sky',service:'top-scores',source:'club_elo_rankings'},
+    annotations:{summary:'Club Elo import failed after retries'},status:'firing',
+    startsAt:'2026-10-25T10:47:24.642Z',fingerprint:'3fa9c2d1e4b5a697'};
+  const [a]=alertsFromWebhook({alerts:[raw]},config);
+  assert.equal(a.ref,'INC-3fa9c2d1-20261025T1047Z');
+  const s=new Store(':memory:');
+  const legacy={...a};delete legacy.ref;
+  const i=s.ingest(legacy).incident;assert.equal(i.alert.ref,undefined);
+  assert.equal(s.ingest(a).incident.alert.ref,'INC-3fa9c2d1-20261025T1047Z');
+  const [noFingerprint]=alertsFromWebhook({alerts:[{...raw,fingerprint:'not-hex'}]},config);
+  assert.match(noFingerprint.ref!,/^INC-[0-9a-f]{8}-20261025T1047Z$/);
+  s.db.close();
 });

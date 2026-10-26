@@ -167,6 +167,32 @@ routes: `MonitoringWatchdog` goes to Healthchecks.io, and `AIOpsPipelineCanary`
 goes only to AIOps. Do not use reserved watchdog/canary names for application
 alerts because intake intentionally excludes them from incident creation.
 
+### Pushover email mirror, references and duplicate suppression
+
+The Alertmanager `pushover` receiver also emails every notification, including
+resolutions and 4-hour repeats, directly to Gmail through the shared Plunk SMTP
+account (`secrets/SMTP_PASSWORD`, copied from Sky's Plunk secret by `install.py`
+when missing). It deliberately does **not** send to `alerts@skynolimit.dev`,
+which would create duplicate AIOps email incidents. Without the secret file the
+mirror is omitted and Pushover continues unchanged.
+
+Every Pushover line, mirror email and AIOps summary quotes a reference such as
+`INC-3fa9c2d1-20261025T1047Z`: the first eight characters of the Alertmanager
+fingerprint plus the UTC start minute (`INCIDENT_REF` in `platform/config.py`,
+`incidentRef` in `aiops/lib/alerts.ts`; change both together). Search Gmail
+for the full reference for one episode, or the eight-character prefix for every
+recurrence of the same label set. Email-originated AIOps incidents use their
+incident key instead. Alertmanager keeps the original start while a re-posted
+alert is still active, so repeats share a reference.
+
+Alerts about the monitor host's own registered applications (typically custom
+producers posting to the local Alertmanager) route only to the local AIOps,
+which relays them to the owning responder's Alertmanager. That owner sends the
+single Pushover/email. If the relay fails, the local webhook fails and
+`MonitoringNotificationFailures` notifies instead; no Pushover is sent for the
+underlying alert until relay recovers. Legacy `ubuntu-4gb-hel1-2` labels are not
+matched and may still notify twice.
+
 ## Deploy and verify
 
 Run from the repository root. For **rule-only** updates, retain installed secrets

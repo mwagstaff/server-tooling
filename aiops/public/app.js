@@ -58,7 +58,7 @@ function renderList() {
   if($('filter').value==='attention')items=items.filter(i=>!good.includes(i.status));
   if($('filter').value==='resolved')items=items.filter(i=>good.includes(i.status));
   $('incidents').innerHTML=items.length?items.map(i=>{
-    const content=`<div class="incident-head"><span class="incident-title">${escape(i.service)}</span>${badge(i.status)}</div><p>${escape(i.alert.name)}</p><div class="meta">${escape(i.host)} · ${time(i.created)} · $${i.spent.toFixed(4)}</div>`;
+    const content=`<div class="incident-head"><span class="incident-title">${escape(i.service)}</span>${badge(i.status)}</div><p>${escape(i.alert.name)}</p><div class="meta">${escape(i.host)}${i.alert.ref?' · '+escape(i.alert.ref):''} · ${time(i.created)} · $${i.spent.toFixed(4)}</div>`;
     if(i.peerUrl) {
       const destination=i.responder.charAt(0).toUpperCase()+i.responder.slice(1);
       const current=state.host.charAt(0).toUpperCase()+state.host.slice(1);

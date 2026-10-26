@@ -267,7 +267,7 @@ def monitor(config):
         if (ROOT / 'logging.json').exists():
             shutil.copy2(ROOT / 'logging.json', candidate / 'logging.json')
         render(candidate, config['monitor'], config['target'], config['target_ip'], config['ip'], config['services'], watchdog,
-               hostname=config.get('hostname'), target_os=config.get('target_os'))
+               hostname=config.get('hostname'), target_os=config.get('target_os'), local_services=config.get('local_services', ()))
         run([prometheus.parent / 'promtool', 'check', 'config', '--lint-fatal', candidate / 'prometheus.json'])
         run([alertmanager.parent / 'amtool', 'check-config', candidate / 'alertmanager.json'])
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
