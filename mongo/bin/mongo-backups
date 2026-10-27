@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# Lists sky's Mongo backups on mini, e.g. mongo-backups bha
+# Runs mongo-sky on mini, where the backups are (see ../mongo-sky.zsh).
+set -euo pipefail
+if [[ -x "$HOME/.local/bin/mongo-sky" && -d "$HOME/backups/mongo-sky" ]]; then
+  exec "$HOME/.local/bin/mongo-sky" list "$@"
+fi
+exec ssh -t -o ConnectTimeout=10 "${MONGO_SKY_BACKUP_HOST:-mini}" "~/.local/bin/mongo-sky list ${(q)@}"

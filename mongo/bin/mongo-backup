@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# Takes an ad hoc backup of sky's databases (default: all of them), e.g. mongo-backup bha
+# Runs mongo-sky on mini, where the backups are (see ../mongo-sky.zsh).
+set -euo pipefail
+if [[ -x "$HOME/.local/bin/mongo-sky" && -d "$HOME/backups/mongo-sky" ]]; then
+  exec "$HOME/.local/bin/mongo-sky" backup "$@"
+fi
+exec ssh -t -o ConnectTimeout=10 "${MONGO_SKY_BACKUP_HOST:-mini}" "~/.local/bin/mongo-sky backup ${(q)@}"

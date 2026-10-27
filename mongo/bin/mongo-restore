@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# Restores a database on sky from its backup, e.g. mongo-restore bha  /  mongo-restore bha 2026-10-28  /  mongo-restore bha --as bha_check
+# Runs mongo-sky on mini, where the backups are (see ../mongo-sky.zsh).
+set -euo pipefail
+if [[ -x "$HOME/.local/bin/mongo-sky" && -d "$HOME/backups/mongo-sky" ]]; then
+  exec "$HOME/.local/bin/mongo-sky" restore "$@"
+fi
+exec ssh -t -o ConnectTimeout=10 "${MONGO_SKY_BACKUP_HOST:-mini}" "~/.local/bin/mongo-sky restore ${(q)@}"

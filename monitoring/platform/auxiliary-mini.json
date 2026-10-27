@@ -221,6 +221,34 @@
           }
         },
         {
+          "alert": "MongoBackupStale",
+          "expr": "(time() - mongo_backup_last_success_timestamp_seconds{source=\"sky\"} > 26 * 3600) or absent(mongo_backup_last_success_timestamp_seconds{source=\"sky\"})",
+          "for": "10m",
+          "labels": {
+            "layer": "backup",
+            "severity": "warning",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "No complete nightly backup of sky's Mongo for over 26 hours (see ~/backups/mongo-sky/logs/nightly.log on mini)"
+          }
+        },
+        {
+          "alert": "MongoRestoreTestStale",
+          "expr": "(time() - mongo_backup_restore_test_last_success_timestamp_seconds{source=\"sky\"} > 8 * 86400) or absent(mongo_backup_restore_test_last_success_timestamp_seconds{source=\"sky\"})",
+          "for": "10m",
+          "labels": {
+            "layer": "backup",
+            "severity": "warning",
+            "host": "mini",
+            "service": "host"
+          },
+          "annotations": {
+            "summary": "sky's Mongo backups haven't passed a test restore for over 8 days (see ~/backups/mongo-sky/logs/test-restore.log on mini)"
+          }
+        },
+        {
           "alert": "AuxiliaryCollectorUnavailable",
           "expr": "up{kind=\"auxiliary\"} == 0",
           "for": "3m",
