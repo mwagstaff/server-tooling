@@ -163,7 +163,8 @@ export class Engine {
     }
     const metadata=Object.values(i.evidence.logMetadata || {}) as any[];
     i.evidence.qualityIssues=[];
-    if(!i.evidence.recentLogs?.some((l:any)=>l.timestampSource==='journal') && (!metadata.length || metadata.every(m=>!m.timestamped)))
+    i.evidence.eventLogs=(i.evidence.eventLogs || []).filter((l:any)=>Date.parse(l.at)>=Date.parse(i.alert.startsAt)-15*60000 && Date.parse(l.at)<=Date.now());
+    if(!i.evidence.eventLogs.length && !i.evidence.recentLogs?.some((l:any)=>l.timestampSource==='journal') && (!metadata.length || metadata.every(m=>!m.timestamped)))
       i.evidence.qualityIssues.push('Application log lines lack verified event timestamps; they cannot establish the current cause.');
     for(const [name,m] of Object.entries(i.evidence.logMetadata || {}) as [string,any][]) {
       if(Date.parse(m.modifiedAt)<Date.parse(i.alert.startsAt)-15*60000) {

@@ -147,3 +147,23 @@ test('webhook returns retryable 503 when the owning responder cannot accept a re
  const r=await client(`http://127.0.0.1:${(server.address() as any).port}/webhooks/alertmanager`,{method:'POST',headers:{Authorization:'Bearer '+source.webhookToken,'Content-Type':'application/json'},body:JSON.stringify({alerts:[raw()]})});
  assert.equal(r.status,503);assert.equal(s.list().length,0);
 });
+
+for (const fresh of [true,false]) test(`planner evidence uses event time and importer runbook (fresh=${fresh})`, async t=>{
+ const c={...config,host:'sky',services:[{name:'train-track-planner',host:'mini',owner:'sky',autoActions:[],approvalActions:[]}] } as unknown as Config;
+ const store=new Store(':memory:');t.after(()=>store.db.close());
+ const alert={...raw(),labels:{host:'mini',service:'train-track-planner',alertname:'PlannerTimetableUpdateFailed'}};
+ const i=store.ingest(alertsFromWebhook({alerts:[alert]},c)[0]).incident;
+ const at=new Date(Date.parse(i.alert.startsAt)-(fresh?0:3600000)).toISOString();
+ const inspect=async()=>({healthy:true,status:{active:true},logs:{},logMetadata:{'service.log':{modifiedAt:i.alert.startsAt,timestamped:false}},
+   eventLogs:[{at,timestampSource:'application',line:'Timetable check failed'}],plannerIngestion:{lastCheckAt:at,lastErrorCode:'INVALID_DELIVERY'}});
+ t.mock.method(globalThis,'fetch',async(url:any)=>String(url).includes('/api/v2/alerts')?Response.json([{...alert,startsAt:i.alert.startsAt,status:{state:'active'}}]):Response.json({status:'success',data:{result:[{value:[0,'0']}]}}));
+ const model=async(_c:any,_s:any,_i:any,e:any)=>{
+   assert.equal(e.eventLogs.length,fresh?1:0);
+   assert.equal(e.qualityIssues.some((x:string)=>x.includes('lack verified')), !fresh);
+   assert.equal(e.plannerIngestion.lastErrorCode,'INVALID_DELIVERY');
+   return {action:'none',confidence:'medium',diagnosis:'Importer evidence received',reason:'Review feed'};
+ };
+ await new Engine(c,store,inspect as any,model as any).investigate(i);
+ assert.deepEqual(store.get(i.id)!.runbook,{id:'planner-ingestion',version:1});
+ assert.equal(store.get(i.id)!.action,'none');
+});

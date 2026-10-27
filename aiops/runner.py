@@ -82,6 +82,39 @@ def status(item):
             'state': 'running' if 'state = running' in r['stdout'] else 'not running'}
 
 
+def event_logs(text, source):
+    """Trust only explicit UTC event times, never a file's mtime or collection time."""
+    result = []
+    for line in text.splitlines():
+        match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) ', line)
+        if not match:
+            continue
+        try:
+            datetime.fromisoformat(match[1].replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        result.append({'at': match[1], 'source': source, 'timestampSource': 'application', 'line': clean(line)[:500]})
+    return result[-30:]
+
+
+def planner_ingestion_evidence():
+    path = Path.home() / '.local/share/train-track-planner/planner/ingestion-state.json'
+    try:
+        with path.open('rb') as handle:
+            data = json.loads(handle.read(2 * 1024 * 1024))
+        keys = ('schemaVersion', 'enabled', 'inProgress', 'lastCheckAt', 'lastFinishedAt',
+                'lastSuccessfulCheckAt', 'lastSuccessAt', 'lastActivatedAt', 'lastResult',
+                'lastErrorCode', 'lastErrorMessage', 'phase', 'lastDurationMs', 'pendingGap')
+        result = {key: data.get(key) for key in keys}
+        active = data.get('active') or {}
+        result['active'] = {key: active.get(key) for key in ('version', 'activatedAt', 'baselineSequence', 'currentSequence')}
+        result['observedAt'] = datetime.now(timezone.utc).isoformat()
+        # Bound and redact even operator-edited state; omit timetable contents/paths.
+        return json.loads(clean(json.dumps(result)))
+    except (OSError, ValueError, TypeError):
+        return {'error': 'Ingestion state unavailable or invalid'}
+
+
 def inspect(item):
     if item is None:
         return {'host': platform.node(), 'disk': shutil.disk_usage(Path.home())._asdict(),
@@ -90,6 +123,7 @@ def inspect(item):
     health = probe(item['healthUrl'])
     logs = {}
     log_metadata = {}
+    events = []
     for name in item.get('logs', []):
         path = Path(name).expanduser()
         try:
@@ -98,12 +132,15 @@ def inspect(item):
                 log_metadata[path.name] = {'modifiedAt': datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), 'timestamped': False}
                 handle.seek(max(0, stat.st_size - 14000))
                 logs[path.name] = clean(handle.read(14000).decode(errors='replace'))
+                events.extend(event_logs(logs[path.name], path.name))
         except OSError:
             logs[path.name] = 'Unavailable'
     dependencies = {name: probe(url) for name, url in item.get('dependencyProbes', {}).items()}
     release = ROOT / 'releases' / item['group'] / 'manifest.json'
     return {'service': item['name'], 'status': state, 'health': health,
             'healthy': state['active'] and health['ok'], 'logs': logs, 'logMetadata': log_metadata,
+            'eventLogs': sorted(events, key=lambda row: row['at'])[-30:],
+            **({'plannerIngestion': planner_ingestion_evidence()} if item['name'] == 'train-track-planner' else {}),
             'dependencies': dependencies, 'disk': shutil.disk_usage(item['directory'])._asdict(),
             'load': os.getloadavg(), 'releaseAvailable': release.is_file(),
             'retryAvailable': bool(item.get('retryCommand'))}

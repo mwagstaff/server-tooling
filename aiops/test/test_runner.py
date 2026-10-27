@@ -52,6 +52,24 @@ class RunnerTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
+    def test_event_logs_require_valid_explicit_event_time(self):
+        rows = runner.event_logs('old startup\n2026-10-26T21:14:34.123Z failed\n2026-99-26T21:14:34.123Z invalid\n', 'service.log')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['at'], '2026-10-26T21:14:34.123Z')
+        self.assertEqual(rows[0]['timestampSource'], 'application')
+
+    def test_planner_evidence_omits_payloads_and_preserves_event_times(self):
+        path = Path(self.temp.name) / '.local/share/train-track-planner/planner'
+        path.mkdir(parents=True)
+        (path / 'ingestion-state.json').write_text(json.dumps({'lastCheckAt': '2026-10-26T21:14:34.123Z',
+            'lastErrorCode': 'INVALID_DELIVERY', 'active': {'currentSequence': '001', 'metadata': {'private': 'payload'}}, 'remote': {'secret': 'hidden'}}))
+        with patch.object(runner.Path, 'home', return_value=Path(self.temp.name)):
+            evidence = runner.planner_ingestion_evidence()
+        self.assertEqual(evidence['lastErrorCode'], 'INVALID_DELIVERY')
+        self.assertEqual(evidence['active']['currentSequence'], '001')
+        self.assertNotIn('payload', json.dumps(evidence))
+        self.assertNotIn('hidden', json.dumps(evidence))
+
     def test_reject_unknown_service_and_command(self):
         with self.assertRaises(ValueError):
             runner.handle({**self.request, 'service': 'fixture; rm -rf /'}, self.config)

@@ -18,6 +18,12 @@ export const runbooks = {
     'For 403/authentication/browser challenges, do not restart a healthy application or bypass access controls.',
     'Leave retries to the importer: bounded exponential backoff and its normal schedule; do not add parallel retries.'
   ],'A successful validated import and a matching resolved source alert; API health alone is insufficient.','Persistent upstream rejection or unacceptable dataset age requires operator review.'),
+  planner:book('planner-ingestion','Planner timetable ingestion',[
+    'Read plannerIngestion: lastCheckAt, lastFinishedAt, phase, lastResult, lastErrorCode and lastErrorMessage; compare their event times with the incident.',
+    'Compare active baseline/current sequence and last activation. HTTP health proves serving, not successful ingestion.',
+    'A full feed may be revised on the same date. Only a newer publication with the next sequence can replace a same-day baseline; retain validation and rollback.',
+    'Never infer the cause from old startup errors or collection timestamps. Missing state or a generic error code is an evidence gap.'
+  ],'Successful ingestion result and source alert resolved, with a validated active dataset.','Inspect rejected delivery metadata; do not restart a healthy service or delete locks.'),
   restarts:book('unexpected-restarts','Unexpected restart loop',[
     'Compare unexpected restart accounting with total process starts and deployment events.',
     'A deployment excuses one start only. Inspect timestamped exits, OOM evidence and process-manager state.',
@@ -44,6 +50,7 @@ export function selectRunbook(i:Incident):Runbook {
   if(n==='MonitoringNotificationFailures'||n==='AIOpsNotificationFailures')return runbooks.notifications;
   if(n==='AIOpsReconciliationStalled')return runbooks.reconciliation;
   if(n==='TopScoresEloImportFailed')return runbooks.upstream;
+  if(i.service==='train-track-planner' && n.startsWith('PlannerTimetable'))return runbooks.planner;
   if(n==='RestartLoop')return runbooks.restarts;
   if(n==='WeeklyUpgradeReview')return runbooks.maintenance;
   if(n.startsWith('Log'))return runbooks.logging;

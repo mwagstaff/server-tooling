@@ -533,3 +533,15 @@ Alertmanager → authenticated relay → Mini Alertmanager → runbook investiga
 zero actions and zero model spend. The existing weekly report
 `0faf4522-47e3-4106-b669-c372c4aff67f` was reclassified with an audit event and
 its original ID/budget retained, then processed by `upgrade-review v1`.
+
+### Planner ingestion evidence
+
+For train-track-planner, the restricted runner reads a bounded summary of
+~/.local/share/train-track-planner/planner/ingestion-state.json on Mini. It
+includes check/completion times, result, safe error detail, phase and active
+sequence, but excludes timetable contents and remote credentials. The
+planner-ingestion runbook distinguishes importer failure from serving health.
+File tails retain their unverified metadata; separately extracted ISO UTC events
+are checked against the incident window. Old startup lines and file modification
+times never become event timestamps. Deploy runner.py to both its application
+and private locations; deploy the responder for runbook/evidence filtering changes.
