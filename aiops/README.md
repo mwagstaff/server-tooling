@@ -278,6 +278,42 @@ started within 28 hours, completion within four hours and successful source resu
 `ServiceHealthFailing` fires after three minutes of failing dashboard health.
 These checks do not verify every published event or downstream discovery task.
 
+For job failures, the `events-worker-job` runbook reads `workerHealth` from the
+restricted inspection, including the same checks as the dashboard, the full run
+counts and timestamped failed sources. `healthy` is false when any job check
+fails, even when HTTP returns 200. JSON `time` and `ts` fields are event timestamps;
+file modification and collector timestamps are not. The worker retries malformed
+or incomplete model output up to three times (four attempts total) within its serialized model queue. A persistent
+failure remains visible and retains the previous source data. AIOps has no
+registered retry procedure and must not substitute restart/redeploy for a failed
+source import. Operator recovery: confirm `/status` is idle and the logs show
+post-run detail/discovery/audit work complete, then POST `/run` on loopback.
+Verify a completed full run with zero failed sources, all dashboard checks,
+Prometheus health 1, Alertmanager resolution and the owning incident lifecycle.
+
+Incident `INC-4943ca0a-20261029T0153Z` (29 October 2026): 26 sources succeeded,
+one source (Barking and Dagenham) returned invalid model JSON at 01:46:08Z.
+The full run finished at 01:49:25Z. Inspection previously omitted job results and
+ignored JSON `time`, so AIOps saw HTTP 200 and no usable event timestamps. Ollama's `~/Library/Logs/ollama/serve.log` records an MLX subprocess panic
+at 01:46:08Z: `cache: offset 5631 exceeds 5630 stored keys`, followed by a
+replacement subprocess at 01:46:09Z. HTTP 200 did not guarantee a completed
+stream. Require the final `done` chunk, reject streamed error records, and retry
+up to three times (four attempts total). This contains the dependency crash; it does not patch Ollama's MLX cache.
+The bounded worker retry fixes the missing transient recovery path without
+expanding AIOps recovery permissions or weakening success checks.
+
+Verification on 29 October 2026: deployed the worker on Mini and AIOps on both
+hosts. The operator-triggered full run finished at 09:06:25Z with 27 successful
+sources and zero failures, including Barking and Dagenham. All five dashboard
+checks passed; Sky Prometheus reported health 1 and Alertmanager had no worker
+alert. The owning incident recorded source resolution and delivered email and
+Pushover resolution summaries. Its historical needs-review assessment is retained.
+Malformed/incomplete response recovery was regression-tested without crashing
+production Ollama. Validation: 48 worker tests, 62 focused AIOps Node tests,
+25 Python tests, TypeScript checks and the production worker build passed.
+The broader AIOps Node suite has an unrelated infrastructure-coverage failure
+for MongoBackupStale/MongoRestoreTestStale.
+
 On a headless Mac the LaunchAgent can be loaded in `user/<uid>` rather than
 `gui/<uid>`. The runner checks both service targets, preferring the GUI target
 when loaded, and restarts the target it actually finds. A system-scoped daemon
@@ -545,3 +581,19 @@ File tails retain their unverified metadata; separately extracted ISO UTC events
 are checked against the incident window. Old startup lines and file modification
 times never become event timestamps. Deploy runner.py to both its application
 and private locations; deploy the responder for runbook/evidence filtering changes.
+
+### Train loading / Darwin readiness
+
+The darwin-feed runbook handles train-loading-service readiness alerts. The runner
+preserves allowlisted readiness JSON even on HTTP 503 and probes liveness
+separately. Evidence includes Mongo status, feed/message/transport age, state,
+lastError and check time. Engine collects Darwin connection and MESSAGE-age
+metrics; current structured readiness can establish a dependency failure even
+when legacy log tails lack timestamps. Stale readiness cannot do so. ISO-prefixed
+and JSON `ts` application events are accepted; collection/file modification times
+are never promoted to event times. No restart/retry action is allowed by this
+runbook for upstream failure. See train-track-uk/api/train-loading-service/README.md.
+
+### Managed Ollama upgrades
+
+Mini uses the [transactional Ollama updater](../ollama/README.md). The events-worker-job v3 runbook includes updater evidence. Worker service health includes missing/stale updater state, failed upgrades, stuck transactions and overdue versions, routed through the existing ServiceHealthFailing alert on Sky. Installed/latest version and last check/success timestamps are exported as `aiops_ollama_update_*` metrics. This does not grant AIOps permission to upgrade Ollama, restart a healthy worker or clear a maintenance gate.

@@ -295,7 +295,8 @@ def dashboards(root, target_os=None):
                 'fieldConfig': {'defaults': {'unit': unit}, 'overrides': []}, 'description': description}
     def dashboard(slug, title, panels):
         for index, item in enumerate(panels):
-            item.update(id=index + 1, gridPos={'x': (index % 2) * 12, 'y': (index // 2) * 8, 'w': 12, 'h': 8})
+            item['id'] = index + 1
+            item.setdefault('gridPos', {'x': (index % 2) * 12, 'y': (index // 2) * 8, 'w': 12, 'h': 8})
         if slug == 'fleet':
             for item in panels:
                 item['gridPos']['y'] += 17
@@ -339,7 +340,9 @@ def dashboards(root, target_os=None):
             panel('Delivery drops in 5 minutes', 'sum by(reason) (increase(loki_write_dropped_entries_total' + logging_selector + '[5m]))', legend='{{reason}}'),
             panel('Log host free space (10 GiB threshold)', 'logging_disk_free_bytes' + logging_selector, 'bytes', legend='{{host}}')])
         dashboard('logs', 'Service logs', [{
-            'title': 'Logs — collection timestamps are marked; use journal/request timestamps for causality',
+            'title': 'Service logs',
+            'description': 'Collection timestamps are labelled; use embedded application or journal event times for causality. Expand a log row for its labels.',
+            'gridPos': {'x': 0, 'y': 0, 'w': 24, 'h': 24},
             'type': 'logs', 'datasource': {'type': 'loki', 'uid': 'monitoring-loki'},
             'targets': [{'expr': '{host=~"$host",service=~"$service"}', 'refId': 'A'}],
             'options': {'showTime': True, 'showLabels': True, 'wrapLogMessage': True, 'sortOrder': 'Descending'}}])

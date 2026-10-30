@@ -1,6 +1,6 @@
 import type {Incident} from './types.ts';
 export type Runbook={id:string;version:number;title:string;steps:string[];allowedActions:string[];recovery:string;escalation:string};
-const book=(id:string,title:string,steps:string[],recovery:string,escalation:string,allowedActions=['none']):Runbook=>({id,version:1,title,steps,allowedActions,recovery,escalation});
+const book=(id:string,title:string,steps:string[],recovery:string,escalation:string,allowedActions=['none'],version=1):Runbook=>({id,version,title,steps,allowedActions,recovery,escalation});
 export const runbooks = {
   notifications:book('notification-delivery','Notification delivery failures',[
     'Identify the failing integration and reason, and correlate Alertmanager logs with the incident window.',
@@ -24,6 +24,20 @@ export const runbooks = {
     'A full feed may be revised on the same date. Only a newer publication with the next sequence can replace a same-day baseline; retain validation and rollback.',
     'Never infer the cause from old startup errors or collection timestamps. Missing state or a generic error code is an evidence gap.'
   ],'Successful ingestion result and source alert resolved, with a validated active dataset.','Inspect rejected delivery metadata; do not restart a healthy service or delete locks.'),
+  events:book('events-worker-job','Kidsplorers nightly event ingestion',[
+    'Read workerHealth checks, running, lastRun and failedSources. HTTP 200 proves liveness only; dailyJobSucceeded requires zero failed sources and at least one success.',
+    'Correlate source failure times and explicit JSON time fields with the run. A single failed source is a partial import failure, not a process outage.',
+    'Inspect workerHealth.ollamaUpdate for update checks, installed/latest versions, lastOutcome, healthError, blockedVersions and phase. The local updater alone owns its bounded rollback. Never restart a draining worker, remove its maintenance gate, or replay a blocked version. Missing state, checks older than 72h, updates pending 14 days, or a transaction over 45 minutes require review.',
+    'Ollama can return HTTP 200 and then lose its MLX subprocess. Correlate ~/Library/Logs/ollama/serve.log with failedSources times; the 29 October incident recorded cache: offset 5631 exceeds 5630 stored keys followed by automatic subprocess replacement. Do not infer a cache crash from invalid JSON alone.',
+    'Malformed or incomplete model output gets up to three serialized retries (four attempts total) inside the worker. Persistent failures remain unhealthy; never suppress the failed-source check or mark a run successful manually.',
+    'There is no registered AIOps retry procedure. Do not restart or redeploy a healthy process to repair a source result. An operator may rerun POST /run on loopback after confirming the worker and downstream jobs are idle; retain state and verify every source.'
+  ],'Completed full run with zero failed sources, fresh healthy dashboard checks and source alert resolution.','Escalate persistent source/model failures with timestamped evidence. No new AIOps recovery permissions are granted.',['none'],3),
+  loading:book('darwin-feed','Train loading readiness and Darwin feed',[
+    'Read loadingHealth even on HTTP 503: compare ready, Mongo health, feed state, transport age, MESSAGE age and lastError with checkedAt and the incident window.',
+    'Liveness and process uptime distinguish a running service with an unavailable dependency from a crash. A subscribed socket or fresh heartbeats alone do not prove fresh Darwin data.',
+    'ECONNREFUSED identifies a refused broker connection; it does not establish the provider internal cause. Stale messages with a live transport are a feed-delivery problem until further evidence is available.',
+    'Keep the existing bounded reconnect/backoff. Do not restart a healthy process to repair an upstream feed, clear Mongo, or declare recovery from connection state alone.'
+  ],'Fresh Darwin MESSAGEs, healthy Mongo, local/public readiness and resolved source alert.','Escalate persistent feed staleness or broker refusal with timestamps; investigate Mongo separately. Recovery actions require separate approval.'),
   restarts:book('unexpected-restarts','Unexpected restart loop',[
     'Compare unexpected restart accounting with total process starts and deployment events.',
     'A deployment excuses one start only. Inspect timestamped exits, OOM evidence and process-manager state.',
@@ -51,6 +65,8 @@ export function selectRunbook(i:Incident):Runbook {
   if(n==='AIOpsReconciliationStalled')return runbooks.reconciliation;
   if(n==='TopScoresEloImportFailed')return runbooks.upstream;
   if(i.service==='train-track-planner' && n.startsWith('PlannerTimetable'))return runbooks.planner;
+  if(i.service==='train-loading-service' && ['PublicEndpointUnavailable','ServiceHealthFailing','AppCheckFailing','AppCheckFailingLong'].includes(n))return runbooks.loading;
+  if(i.service==='kidsplorers-events-worker' && n==='ServiceHealthFailing')return runbooks.events;
   if(n==='RestartLoop')return runbooks.restarts;
   if(n==='WeeklyUpgradeReview')return runbooks.maintenance;
   if(n.startsWith('Log'))return runbooks.logging;

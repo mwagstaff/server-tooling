@@ -9,6 +9,13 @@ export function metrics(config:Config,store:Store,health:HealthMonitor,now=Date.
     lines.push(`${name}{service=${JSON.stringify(service)}} ${value}`);
   for(const report of fleetHealth(config.services.filter(s=>s.host===config.host),health.reports,now)) {
     emit('aiops_service_healthy',report.status==='healthy'?1:0,report.name);
+    if(report.ollamaUpdate) {
+      const u=report.ollamaUpdate;
+      if(/^\d+\.\d+\.\d+$/.test(u.installedVersion||'') && /^\d+\.\d+\.\d+$/.test(u.latestVersion||''))
+        lines.push(`aiops_ollama_update_info{service=${JSON.stringify(report.name)},installed=${JSON.stringify(u.installedVersion)},latest=${JSON.stringify(u.latestVersion)}} 1`);
+      emit('aiops_ollama_update_last_check_timestamp_seconds',Number(u.lastCheckAt)||0,report.name);
+      emit('aiops_ollama_update_last_success_timestamp_seconds',Number(u.lastUpgradeAt)||0,report.name);
+    }
     emit('aiops_service_checked_timestamp_seconds',report.checkedAt?Date.parse(report.checkedAt)/1000:0,report.name);
   }
   for(const task of ['webhook_canary','email_canary','queue_poll','reconcile'])

@@ -45,6 +45,7 @@ def main():
     args = parser.parse_args()
     path = Path('/etc/caddy/Caddyfile')
     candidate = Path.home() / '.local/share/server-tooling-monitoring/Caddyfile.logs'
+    candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text(render(path.read_text()))
     subprocess.run(['sudo', '-n', 'caddy', 'validate', '--config', candidate, '--adapter', 'caddyfile'], check=True)
     if args.apply:

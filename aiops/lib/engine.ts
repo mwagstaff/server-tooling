@@ -137,6 +137,8 @@ export class Engine {
       errors5m:`monitoring:http_error_ratio5m{${selector}}`,
       responses5m:`sum by(status) (increase(monitoring_http_requests_total{${selector}}[5m]))`
     };
+    if(s.name==='kidsplorers-events-worker') {delete queries.errors5m;delete queries.responses5m;}
+    if(s.name==='train-loading-service') Object.assign(queries,{darwinConnected:`train_loading_stomp_connected{${selector}}`,darwinMessageAge:`time() - train_loading_stomp_last_message_timestamp_seconds{${selector}}`});
     i.evidence.metrics = Object.fromEntries(await Promise.all(Object.entries(queries).map(async ([name,query])=>{
       try {
         const url=new URL('/api/v1/query',this.config.prometheusUrl);url.searchParams.set('query',query);
@@ -164,7 +166,11 @@ export class Engine {
     const metadata=Object.values(i.evidence.logMetadata || {}) as any[];
     i.evidence.qualityIssues=[];
     i.evidence.eventLogs=(i.evidence.eventLogs || []).filter((l:any)=>Date.parse(l.at)>=Date.parse(i.alert.startsAt)-15*60000 && Date.parse(l.at)<=Date.now());
-    if(!i.evidence.eventLogs.length && !i.evidence.recentLogs?.some((l:any)=>l.timestampSource==='journal') && (!metadata.length || metadata.every(m=>!m.timestamped)))
+    const readiness=i.evidence.loadingHealth;
+    const timedReadiness=s.name==='train-loading-service' && typeof readiness?.ready==='boolean' && typeof readiness?.feed?.healthy==='boolean' && typeof readiness?.mongo?.healthy==='boolean' && Date.parse(readiness.checkedAt)>=Date.parse(i.alert.startsAt)-15*60000 && Date.parse(readiness.checkedAt)<=Date.now();
+    const worker=i.evidence.workerHealth;
+    const timedWorker=s.name==='kidsplorers-events-worker' && typeof worker?.checks?.dailyJobSucceeded==='boolean' && Date.parse(worker.checkedAt)>=Date.parse(i.alert.startsAt)-15*60000 && Date.parse(worker.checkedAt)<=Date.now();
+    if(!timedWorker && !timedReadiness && !i.evidence.eventLogs.length && !i.evidence.recentLogs?.some((l:any)=>l.timestampSource==='journal') && (!metadata.length || metadata.every(m=>!m.timestamped)))
       i.evidence.qualityIssues.push('Application log lines lack verified event timestamps; they cannot establish the current cause.');
     for(const [name,m] of Object.entries(i.evidence.logMetadata || {}) as [string,any][]) {
       if(Date.parse(m.modifiedAt)<Date.parse(i.alert.startsAt)-15*60000) {
@@ -172,7 +178,7 @@ export class Engine {
         i.evidence.logs='Historical log tails omitted; use time-filtered recentLogs.';
       }
     }
-    if(metadata.some(m=>Date.parse(m.modifiedAt)<Date.parse(i.alert.startsAt)-15*60000))
+    if(!timedWorker && !timedReadiness && metadata.some(m=>Date.parse(m.modifiedAt)<Date.parse(i.alert.startsAt)-15*60000))
       i.evidence.qualityIssues.push('Some log files predate the incident window.');
     if(Object.values(i.evidence.metrics).some((m:any)=>m.error || !m.samples?.length))
       i.evidence.qualityIssues.push('Some current metrics are missing.');

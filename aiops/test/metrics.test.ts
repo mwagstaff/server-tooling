@@ -64,3 +64,19 @@ test('queue canary is acknowledged without an incident and failed polling cannot
     assert.equal(store.setting('monitor:queue_poll',0),before);
   } finally {globalThis.fetch=previous;store.db.close();}
 });
+
+test('updater versions and freshness are exported without arbitrary version labels',()=>{
+  const store=new Store(':memory:');
+  const health=new HealthMonitor(config);
+  health.reports=[{name:'worker',host:'mini',status:'unhealthy',checkedAt:new Date().toISOString(),checks:{ollamaUpdateHealthy:false},
+    ollamaUpdate:{installedVersion:'0.40.12',latestVersion:'0.40.13',lastCheckAt:123,lastUpgradeAt:100}}];
+  try {
+    let output=metrics(config,store,health);
+    assert.match(output,/aiops_service_healthy\{service="worker"\} 0/);
+    assert.match(output,/aiops_ollama_update_info\{service="worker",installed="0.40.12",latest="0.40.13"\} 1/);
+    assert.match(output,/aiops_ollama_update_last_check_timestamp_seconds\{service="worker"\} 123/);
+    health.reports[0].ollamaUpdate!.latestVersion='untrusted text';
+    output=metrics(config,store,health);
+    assert.doesNotMatch(output,/aiops_ollama_update_info|untrusted text/);
+  } finally {store.db.close();}
+});

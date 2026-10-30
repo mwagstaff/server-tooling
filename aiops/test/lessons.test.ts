@@ -167,3 +167,52 @@ for (const fresh of [true,false]) test(`planner evidence uses event time and imp
  assert.deepEqual(store.get(i.id)!.runbook,{id:'planner-ingestion',version:1});
  assert.equal(store.get(i.id)!.action,'none');
 });
+
+for(const fresh of [true,false]) test(`Darwin readiness evidence distinguishes a stale feed from a crashed process (fresh=${fresh})`,async t=>{
+ const c={...config,services:[{name:'train-loading-service',host:'sky',owner:'mini',autoActions:[],approvalActions:['restart']}] } as unknown as Config;
+ const store=new Store(':memory:');t.after(()=>store.db.close());
+ const alert={...raw(),labels:{host:'sky',service:'train-loading-service',alertname:'PublicEndpointUnavailable'}};
+ const i=store.ingest(alertsFromWebhook({alerts:[alert]},c)[0]).incident;
+ const at=new Date(Date.parse(i.alert.startsAt)-(fresh?0:3600000)).toISOString();
+ const inspect=async()=>({healthy:false,status:{active:true},health:{ok:false,status:503},liveness:{ok:true},logs:{},
+   logMetadata:{'service.log':{modifiedAt:at,timestamped:false}},eventLogs:[],
+   loadingHealth:{status:503,checkedAt:at,ready:false,mongo:{healthy:true},feed:{healthy:false,state:'subscribed',messageAgeSeconds:450}}});
+ t.mock.method(globalThis,'fetch',async(url:any)=>String(url).includes('/api/v2/alerts')?Response.json([{...alert,startsAt:i.alert.startsAt,status:{state:'active'}}]):Response.json({status:'success',data:{result:[{value:[0,'0']}]}}));
+ let assessed=false;
+ const model=async(_c:any,_s:any,_i:any,e:any,actions:any)=>{
+   assessed=true;assert.equal(e.qualityIssues.some((x:string)=>x.includes('lack verified')), !fresh);
+   assert.equal(e.loadingHealth.feed.messageAgeSeconds,450);assert.equal(e.liveness.ok,true);
+   assert.ok(e.metrics.darwinMessageAge);assert.ok(!actions.includes('restart'));
+   return {action:'none',confidence:'high',diagnosis:'Darwin messages stale while process and Mongo are healthy',reason:'Upstream feed'};
+ };
+ await new Engine(c,store,inspect as any,model as any).investigate(i);
+ assert.equal(assessed,true);assert.deepEqual(store.get(i.id)!.runbook,{id:'darwin-feed',version:1});
+ assert.equal(store.get(i.id)!.action,'none');
+});
+
+ test('events worker job failures use a source-aware runbook without restart permission',()=>{
+   const book=selectRunbook({service:'kidsplorers-events-worker',alert:{name:'ServiceHealthFailing'}} as any);
+   assert.equal(book.id,'events-worker-job');
+   assert.deepEqual(book.allowedActions,['none']);
+   assert.match(book.steps.join(' '),/workerHealth/);
+   assert.match(book.recovery,/zero failed sources/);
+ });
+
+for(const fresh of [true,false]) test(`worker job evidence avoids HTTP-only diagnosis (fresh=${fresh})`,async t=>{
+ const c={...config,host:'sky',services:[{name:'kidsplorers-events-worker',host:'mini',owner:'sky',autoActions:[],approvalActions:['restart']}] } as unknown as Config;
+ const store=new Store(':memory:');t.after(()=>store.db.close());
+ const alert={...raw(),labels:{host:'mini',service:'kidsplorers-events-worker',alertname:'ServiceHealthFailing'}};
+ const i=store.ingest(alertsFromWebhook({alerts:[alert]},c)[0]).incident;
+ const at=new Date(Date.parse(i.alert.startsAt)-(fresh?0:3600000)).toISOString();
+ const inspect=async()=>({healthy:false,status:{active:true},health:{ok:true,status:200},logs:{},eventLogs:[],
+   workerHealth:{checkedAt:at,checks:{dailyJobSucceeded:false},lastRun:{ok:26,failed:1},failedSources:[{source:'barking-dagenham',at,error:'Invalid model JSON'}]}});
+ t.mock.method(globalThis,'fetch',async(url:any)=>String(url).includes('/api/v2/alerts')?Response.json([{...alert,startsAt:i.alert.startsAt,status:{state:'active'}}]):Response.json({status:'success',data:{result:[{value:[0,'0']}]}}));
+ const model=async(_c:any,_s:any,_i:any,e:any,actions:any)=>{
+   assert.equal(e.healthy,false);assert.equal(e.workerHealth.lastRun.failed,1);
+   assert.equal(e.qualityIssues.some((x:string)=>x.includes('lack verified')), !fresh);
+   assert.deepEqual(Object.keys(e.metrics),['restarts15m']);assert.ok(!actions.includes('restart'));
+   return {action:'none',confidence:'high',diagnosis:'Partial import failure',reason:'Retry exhausted'};
+ };
+ await new Engine(c,store,inspect as any,model as any).investigate(i);
+ assert.deepEqual(store.get(i.id)!.runbook,{id:'events-worker-job',version:3});
+});

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -58,6 +59,9 @@ def probe(url, user_agent=None):
             if expected is not None and size != int(expected):
                 return {'ok': False, 'error': 'IncompleteResponse'}
             return {'ok': 200 <= response.status < 300, 'status': response.status}
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return {'ok': False, 'status': exc.code, 'error': 'HTTPError'}
     except Exception as exc:
         return {'ok': False, 'error': type(exc).__name__}
 
@@ -87,13 +91,20 @@ def event_logs(text, source):
     result = []
     for line in text.splitlines():
         match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) ', line)
-        if not match:
+        at = match[1] if match else None
+        if at is None and line.startswith('{'):
+            try:
+                record = json.loads(line)
+                at = record.get('ts') or record.get('time')
+            except (ValueError, AttributeError):
+                pass
+        if not isinstance(at, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z', at):
             continue
         try:
-            datetime.fromisoformat(match[1].replace('Z', '+00:00'))
+            datetime.fromisoformat(at.replace('Z', '+00:00'))
         except ValueError:
             continue
-        result.append({'at': match[1], 'source': source, 'timestampSource': 'application', 'line': clean(line)[:500]})
+        result.append({'at': at, 'source': source, 'timestampSource': 'application', 'line': clean(line)[:500]})
     return result[-30:]
 
 
@@ -113,6 +124,30 @@ def planner_ingestion_evidence():
         return json.loads(clean(json.dumps(result)))
     except (OSError, ValueError, TypeError):
         return {'error': 'Ingestion state unavailable or invalid'}
+
+
+def loading_health_evidence(url):
+    """Read the fixed readiness endpoint, including its diagnostic HTTP 503 body."""
+    try:
+        try:
+            response = urllib.request.build_opener(NoRedirect).open(url, timeout=8)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            data = json.loads(response.read(65537))
+            if not isinstance(data, dict):
+                raise ValueError('Invalid readiness')
+            result = {'status': response.status, 'observedAt': datetime.now(timezone.utc).isoformat(),
+                      'checkedAt': data.get('checkedAt'), 'ready': data.get('ready')}
+            fields = {'mongo': ('healthy', 'checkedAt', 'error'),
+                      'feed': ('healthy', 'state', 'connectedAt', 'lastDataAt', 'lastMessageAt',
+                               'transportAgeSeconds', 'messageAgeSeconds', 'reconnectAttempts', 'sequenceGaps', 'lastError')}
+            for name, keys in fields.items():
+                source = data.get(name) or {}
+                result[name] = {key: source.get(key) for key in keys}
+            return json.loads(clean(json.dumps(result)))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {'error': 'Readiness details unavailable or invalid'}
 
 
 def inspect(item):
@@ -135,11 +170,15 @@ def inspect(item):
                 events.extend(event_logs(logs[path.name], path.name))
         except OSError:
             logs[path.name] = 'Unavailable'
+    worker = worker_health_evidence(item['healthUrl']) if item['name'] == 'kidsplorers-events-worker' else None
+    loading = loading_health_evidence(item['healthUrl']) if item['name'] == 'train-loading-service' else None
     dependencies = {name: probe(url) for name, url in item.get('dependencyProbes', {}).items()}
     release = ROOT / 'releases' / item['group'] / 'manifest.json'
     return {'service': item['name'], 'status': state, 'health': health,
-            'healthy': state['active'] and health['ok'], 'logs': logs, 'logMetadata': log_metadata,
+            'healthy': state['active'] and health['ok'] and (worker is None or all(worker['checks'].values())),
+            **({'workerHealth': worker} if worker is not None else {}), 'logs': logs, 'logMetadata': log_metadata,
             'eventLogs': sorted(events, key=lambda row: row['at'])[-30:],
+            **({'loadingHealth': loading, 'liveness': probe(item['healthUrl'].replace('/health/ready', '/health/live'))} if loading is not None else {}),
             **({'plannerIngestion': planner_ingestion_evidence()} if item['name'] == 'train-track-planner' else {}),
             'dependencies': dependencies, 'disk': shutil.disk_usage(item['directory'])._asdict(),
             'load': os.getloadavg(), 'releaseAvailable': release.is_file(),
@@ -150,6 +189,7 @@ def service_health(item):
     """Read-only dashboard checks, without collecting logs or invoking recovery."""
     checked = datetime.now(timezone.utc).isoformat()
     try:
+        update = None
         checks = {'process': status(item)['active'], 'endpoint': probe(item['healthUrl'])['ok']}
         if item.get('publicUrl'):
             checks['public'] = probe(item['publicUrl'], 'ServerToolingMonitoring/1.0')['ok']
@@ -157,20 +197,64 @@ def service_health(item):
             with urllib.request.build_opener(NoRedirect).open(item['healthUrl'], timeout=8) as response:
                 data = json.loads(response.read(65536))
             checks.update(worker_health(data))
+            update = ollama_update_evidence()
+            checks.update(update['checks'])
         return {'name': item['name'], 'status': 'healthy' if all(checks.values()) else 'unhealthy',
-                'checkedAt': checked, 'checks': checks}
+                'checkedAt': checked, 'checks': checks, **({'ollamaUpdate': update} if update is not None else {})}
     except Exception:
         return {'name': item['name'], 'status': 'unknown', 'checkedAt': checked, 'checks': {}}
 
 
-def worker_health(data):
+def ollama_update_evidence(now=None):
+    """Read-only updater journal; missing/stale state is never reported healthy."""
+    now = time.time() if now is None else now
+    path = Path.home() / '.local/share/ollama-updater/state.json'
+    keys = ('installedVersion', 'latestVersion', 'lastCheckAt', 'lastUpgradeAt', 'lastOutcome',
+            'healthError', 'phase', 'transactionStartedAt', 'pendingSince', 'deferredSince',
+            'reviewRequired', 'blockedVersions')
+    try:
+        with path.open('rb') as handle: data = json.loads(handle.read(1024 * 1024))
+        result = {key: data.get(key) for key in keys}
+        valid = all(re.fullmatch(r'\d+\.\d+\.\d+', data.get(k, '')) for k in ('installedVersion', 'latestVersion'))
+        checked = data.get('lastCheckAt') or 0
+        pending = data.get('pendingSince') or now
+        started = data.get('transactionStartedAt') or 0
+        checks = {'ollamaUpdateStateReadable': bool(valid),
+                  'ollamaUpdateCheckFresh': 0 <= now - checked < 72 * 3600,
+                  'ollamaUpdateHealthy': not bool(data.get('healthError')),
+                  'ollamaUpdateTimely': 0 <= now - pending < 14 * 86400,
+                  'ollamaUpdateNotStuck': data.get('phase') == 'idle' or 0 <= now - started < 45 * 60}
+        return {**json.loads(clean(json.dumps(result))), 'checks': checks}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {'error': 'Ollama updater state unavailable or invalid', 'checks': {'ollamaUpdateStateReadable': False}}
+
+
+def worker_health_evidence(url):
+    """Use the same job checks as the dashboard, plus bounded source failure evidence."""
+    checked = datetime.now(timezone.utc).isoformat()
+    try:
+        with urllib.request.build_opener(NoRedirect).open(url.replace('/healthcheck', '/status'), timeout=8) as response:
+            data = json.loads(response.read(65536))
+        failures = [{'source': key, 'at': value.get('lastRunAt'), 'error': clean(str(value['lastError']))[:500]}
+                    for key, value in data.get('sources', {}).items() if value.get('lastError')]
+        last = data.get('lastRun') or {}
+        update = ollama_update_evidence()
+        return {'checkedAt': checked, 'running': data.get('running'), 'ollamaUpdate': update,
+                'lastRun': {key: last.get(key) for key in ('startedAt', 'finishedAt', 'ok', 'failed')},
+                'checks': {**worker_health(data, persist=False), **update['checks']}, 'failedSources': failures[:50]}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {'checkedAt': checked, 'checks': {'jobEvidenceAvailable': False},
+                'error': 'Worker job details unavailable or invalid'}
+
+
+def worker_health(data, persist=True):
     # The worker's lastRun is in memory. Preserve observed results across restarts.
     path = ROOT / 'worker-last-run.json'
-    if isinstance(data.get('lastRun'), dict):
+    if isinstance(data.get('lastRun'), dict) and persist:
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(data['lastRun']))
         temporary.replace(path)
-    elif path.exists():
+    elif not isinstance(data.get('lastRun'), dict) and path.exists():
         data = {**data, 'lastRun': json.loads(path.read_text())}
     return worker_checks(data)
 

@@ -446,5 +446,26 @@
             "BHA_STORAGE": "mongo",
             "BHA_PUBLIC_HOSTS": "beckenham-historical-association.org,bha.skynolimit.dev"
         }
+    },
+    {
+        "name": "start-page",
+        "aliases": ["start"],
+        "path": "/Users/mwagstaff/dev/start-page",
+        "remote_dir": "~/dev/start-page",
+        "node_binary": "/opt/homebrew/bin/node",
+        "sync_env_local": false,
+        "start_command": "npm start",
+        "startup_port": 3060,
+        "healthcheck_path": "/healthcheck",
+        "metrics_port": false,
+        "service_label": "com.start-page.web",
+        "service_description": "Personal start page (news, weather, daily photo)",
+        "public_url": "https://start.skynolimit.dev",
+        "rsync_excludes": ["/test/", "/.claude/"],
+        "static_env": {
+            "PORT": "3060",
+            "NODE_ENV": "production",
+            "TZ": "Europe/London"
+        }
     }
 ]

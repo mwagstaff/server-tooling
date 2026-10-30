@@ -116,7 +116,6 @@ FAILURES=0
 # monitoring Grafana is tailnet-only on :13000. set-path never removes routes,
 # so retire a stale path with: tailscale funnel --https=443 --set-path <path> off
 apply_route /train-track-planner http://127.0.0.1:3014 || FAILURES=$((FAILURES+1))
-apply_route /iphone-duo     http://127.0.0.1:3015       || FAILURES=$((FAILURES+1))
 
 echo "Funnel configuration status:"
 # prefer non-sudo status, fall back to sudo

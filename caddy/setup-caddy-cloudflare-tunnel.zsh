@@ -2,6 +2,8 @@
 set -euo pipefail
 
 HOST="${1:-sky}"
+# Monitoring's sanitised access-log block lives outside the Caddyfile written below.
+ACCESS_LOGS_SCRIPT="${0:A:h}/../monitoring/platform/configure_access_logs.py"
 
 CADDY_LISTEN_IP="127.0.0.1"
 CADDY_PORT="4080"
@@ -38,6 +40,9 @@ BHA_LIVE_HOSTNAME="bha.skynolimit.dev"
 BHA_HOSTNAME="beckenham-historical-association.org"
 BHA_WWW_HOSTNAME="www.beckenham-historical-association.org"
 BHA_LIVE_UPSTREAM="http://127.0.0.1:3050"
+# The personal start page runs on mini; Caddy reaches it over Tailscale.
+START_PAGE_HOSTNAME="start.skynolimit.dev"
+START_PAGE_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3060"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
@@ -137,6 +142,17 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   @bha_live host ${BHA_LIVE_HOSTNAME} ${BHA_HOSTNAME}
   handle @bha_live {
     reverse_proxy ${BHA_LIVE_UPSTREAM} {
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
+  }
+
+  # Personal start page, hosted on mini.
+  @start_page host ${START_PAGE_HOSTNAME}
+  handle @start_page {
+    reverse_proxy ${START_PAGE_UPSTREAM} {
       header_up Host {host}
       header_up X-Forwarded-Host {host}
       header_up X-Forwarded-Proto https
@@ -354,6 +370,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
+  - hostname: ${START_PAGE_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${START_PAGE_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -434,6 +455,11 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
+  - hostname: ${START_PAGE_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${START_PAGE_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -510,6 +536,10 @@ curl -s -o /dev/null -w "  ${BHA_HOSTNAME}/healthcheck -> %{http_code}\n" -H "Ho
 curl -s -o /dev/null -w "  ${BHA_WWW_HOSTNAME}/events -> %{http_code} %{redirect_url}\n" -H "Host: ${BHA_WWW_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/events" || true
 
 echo
+echo "--> via Caddy (start page hostname, proxied to mini):"
+curl -i -H "Host: ${START_PAGE_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
+
+echo
 echo "--> via Caddy (Grafana /grafana and /grafana/):"
 # Show redirect for /grafana and confirm /grafana/ returns non-empty HTML
 curl -i "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/grafana" | head -n 20 || true
@@ -544,7 +574,17 @@ echo "    https://${KIDSPLORERS_HOSTNAME}"
 echo "    https://${API_HOSTNAME}/kidsplorers/v1/health"
 echo "    https://${BHA_PREVIEW_HOSTNAME}"
 echo "    https://${BHA_LIVE_HOSTNAME}"
+echo "    https://${START_PAGE_HOSTNAME}"
 EOF
+
+# The Caddyfile above is written whole, which drops the access-log block that
+# monitoring adds. Put it back straight away so this script never turns request
+# logging off. It validates, keeps a backup and reloads Caddy.
+echo
+echo "==> Re-applying Caddy access logs ($(basename "${ACCESS_LOGS_SCRIPT}"))..."
+ssh "${HOST}" 'python3 - --apply' < "${ACCESS_LOGS_SCRIPT}"
+ssh "${HOST}" 'grep -q "BEGIN server-tooling access logs" /etc/caddy/Caddyfile' \
+  || { echo "ERROR: access-log block missing from /etc/caddy/Caddyfile on ${HOST}" >&2; exit 1; }
 
 echo
 echo "==> Finished remote setup on ${HOST}"

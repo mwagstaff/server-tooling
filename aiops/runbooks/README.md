@@ -63,6 +63,19 @@ Executable source: `../lib/runbooks.ts`. Increment the version when changing dia
 - Recovery evidence: Fresh canary and no new drops, with storage and collector checks passing.
 - Escalation: Escalate data loss or unavailable historical evidence.
 
+## Kidsplorers nightly event ingestion (events-worker-job, v3)
+
+1. Read `workerHealth`: individual checks, running flag, run timestamps/counts and failed sources. HTTP 200 alone is liveness.
+2. Correlate JSON `time` event timestamps; one failed source means a partial import failure, not a crashed worker.
+3. Check `~/Library/Logs/ollama/serve.log` at the source failure time. On 29 October an MLX cache panic (`offset 5631 exceeds 5630 stored keys`) terminated a stream after HTTP 200; Ollama replaced its subprocess automatically. Invalid JSON alone does not prove that cause.
+4. The worker retries incomplete/malformed model output up to three times (four attempts total) in its existing queue. Persistent failures remain unhealthy; retain previous source data.
+5. Read `workerHealth.ollamaUpdate` and its individual checks. Inspect the updater journal, installed/latest versions, maintenance owner and active jobs. See [Ollama updater operations](../../ollama/README.md). The updater owns transactional rollback; AIOps does not install releases or clear gates.
+6. AIOps has no registered retry procedure. Do not restart/redeploy to repair source results. An operator can POST `/run` locally only after checking the worker and downstream work are idle.
+
+- Permitted runbook actions: none. Existing recovery permissions are unchanged.
+- Recovery evidence: completed full run with zero failed sources, fresh dashboard checks and source alert resolution.
+- Escalation: persistent source/model failures with timestamped evidence; do not reset state or weaken checks.
+
 ## Service health investigation (service-health, v1)
 
 1. Collect timestamped process, health, public endpoint, dependency, metrics and log evidence.

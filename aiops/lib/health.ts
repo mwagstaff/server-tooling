@@ -4,6 +4,7 @@ import {runTarget} from './runner.ts';
 export type ServiceHealth = {
   name:string; host:string; status:'healthy'|'unhealthy'|'unknown'|'stale';
   checkedAt:string|null; checks:Record<string,boolean>; reason?:string;
+  ollamaUpdate?: {installedVersion?:string;latestVersion?:string;lastCheckAt?:number;lastUpgradeAt?:number};
 };
 export const HEALTH_INTERVAL_MS=30000;
 export const HEALTH_STALE_MS=65000;

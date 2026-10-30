@@ -70,6 +70,71 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn('payload', json.dumps(evidence))
         self.assertNotIn('hidden', json.dumps(evidence))
 
+    def test_readiness_preserves_503_dependency_body_and_omits_unknown_fields(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        body = {'ready': False, 'checkedAt': '2026-10-28T12:46:22.000Z',
+                'mongo': {'healthy': True}, 'feed': {'healthy': False, 'state': 'subscribed',
+                'messageAgeSeconds': 450, 'credentials': 'must-not-escape'}, 'extra': 'private'}
+        response = HTTPError('http://localhost/health/ready', 503, 'Unavailable', {}, BytesIO(json.dumps(body).encode()))
+        with patch.object(runner.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = response
+            result = runner.loading_health_evidence('http://localhost/health/ready')
+        self.assertEqual(result['status'], 503)
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['feed']['messageAgeSeconds'], 450)
+        self.assertTrue(result['mongo']['healthy'])
+        self.assertNotIn('must-not-escape', json.dumps(result))
+        self.assertNotIn('private', json.dumps(result))
+
+    def test_event_logs_accept_json_event_times_not_collected_times(self):
+        rows = runner.event_logs('{"ts":"2026-10-28T12:46:22.000Z","event":"http_request"}\n{"message":"undated"}', 'service.log')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['timestampSource'], 'application')
+
+    def test_worker_inspection_matches_failed_dashboard_job(self):
+        from io import BytesIO
+        now = runner.datetime.now(runner.timezone.utc).isoformat()
+        data = {'running': False, 'lastRun': {'startedAt': now, 'finishedAt': now, 'ok': 26, 'failed': 1},
+                'sources': {'barking-dagenham': {'lastRunAt': now, 'lastError': 'Invalid model JSON', 'items': 'private'}}}
+        item = {**self.item, 'name': 'kidsplorers-events-worker'}
+        for failed in (1, 0):
+            data['lastRun']['failed'] = failed
+            with patch.object(runner.urllib.request, 'build_opener') as opener, \
+                    patch.object(runner, 'status', return_value={'active': True}), \
+                    patch.object(runner, 'probe', return_value={'ok': True}), \
+                    patch.object(runner, 'ollama_update_evidence', return_value={'checks': {'ollamaUpdateHealthy': True}}):
+                opener.return_value.open.return_value = BytesIO(json.dumps(data).encode())
+                result = runner.inspect(item)
+            self.assertEqual(result['healthy'], failed == 0)
+            self.assertEqual(result['workerHealth']['checks']['dailyJobSucceeded'], failed == 0)
+            self.assertNotIn('private', json.dumps(result))
+            self.assertFalse((runner.ROOT / 'worker-last-run.json').exists())
+        with patch.object(runner.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = OSError('offline')
+            self.assertFalse(runner.worker_health_evidence('http://localhost')['checks']['jobEvidenceAvailable'])
+
+    def test_updater_checks_cover_stale_failed_overdue_and_interrupted_states(self):
+        path = Path(self.temp.name) / '.local/share/ollama-updater'
+        path.mkdir(parents=True)
+        now = 2000000
+        healthy = {'installedVersion': '0.40.12', 'latestVersion': '0.40.13', 'lastCheckAt': now,
+                   'phase': 'idle', 'healthError': None}
+        with patch.object(runner.Path, 'home', return_value=Path(self.temp.name)):
+            self.assertFalse(runner.ollama_update_evidence(now)['checks']['ollamaUpdateStateReadable'])
+            for extra, failed in [({}, None), ({'lastCheckAt': now-72*3600}, 'ollamaUpdateCheckFresh'),
+                    ({'healthError': 'smoke failed'}, 'ollamaUpdateHealthy'),
+                    ({'pendingSince': now-14*86400}, 'ollamaUpdateTimely'),
+                    ({'phase': 'rollback', 'transactionStartedAt': now-3000}, 'ollamaUpdateNotStuck')]:
+                (path/'state.json').write_text(json.dumps({**healthy, **extra}))
+                checks = runner.ollama_update_evidence(now)['checks']
+                if failed: self.assertFalse(checks[failed])
+                else: self.assertTrue(all(checks.values()))
+
+    def test_worker_json_time_is_event_evidence(self):
+        rows = runner.event_logs('{"time":"2026-10-29T01:46:08.850Z","msg":"source failed"}', 'worker.log')
+        self.assertEqual(rows[0]['at'], '2026-10-29T01:46:08.850Z')
+
     def test_reject_unknown_service_and_command(self):
         with self.assertRaises(ValueError):
             runner.handle({**self.request, 'service': 'fixture; rm -rf /'}, self.config)
@@ -155,7 +220,8 @@ class RunnerTests(unittest.TestCase):
     def test_failed_service_check_does_not_hide_other_services(self):
         other = {**self.item, 'name': 'other'}
         with patch.object(runner, 'status', side_effect=lambda item: {'active': item['name'] != 'fixture'}), \
-                patch.object(runner, 'probe', return_value={'ok': True}):
+                patch.object(runner, 'probe', return_value={'ok': True}), \
+                    patch.object(runner, 'ollama_update_evidence', return_value={'checks': {'ollamaUpdateHealthy': True}}):
             result = runner.handle({'service': '__host__', 'operation': 'health_all'}, {'services': [self.item, other]})
         self.assertEqual([r['status'] for r in result['services']], ['unhealthy', 'healthy'])
 

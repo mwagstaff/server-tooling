@@ -317,6 +317,8 @@ logging. Request bodies and headers are never intentionally exported.
 
 `configure_access_logs.py --apply` on Sky validates/backups/reloads Caddy's
 existing listener to enable sanitized access logs and a generated request ID.
+`caddy/setup-caddy-cloudflare-tunnel.zsh` rewrites the whole Caddyfile, so it runs
+this script itself at the end; there's no need to re-apply it by hand.
 Queries, client addresses and headers are excluded. The shared Node runtime
 records completion status, duration, path without query, request ID and probe
 flag. It is active on Kidsplorers web now; other processes load it on their next

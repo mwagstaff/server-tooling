@@ -16,6 +16,18 @@ from log_config import alloy_config, loki_config
 from configure_access_logs import render
 
 class LoggingTests(unittest.TestCase):
+    def test_logs_dashboard_uses_full_width_and_preserves_wrapping(self):
+        from config import dashboards
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'logging.json').write_text('{}')
+            dashboards(root)
+            dashboard = json.loads((root / 'grafana/dashboards/logs.json').read_text())
+            panel = dashboard['panels'][0]
+            self.assertEqual(panel['gridPos'], {'x': 0, 'y': 0, 'w': 24, 'h': 24})
+            self.assertTrue(panel['options']['wrapLogMessage'])
+            self.assertEqual(panel['targets'][0]['expr'], '{host=~"$host",service=~"$service"}')
+
     def test_gateway_denies_missing_credentials_and_mutation_routes(self):
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         server.allowed = {'127.0.0.1'}
