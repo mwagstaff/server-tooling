@@ -49,11 +49,14 @@ put(root/'server-tooling-update-reboot.timer',
  '[Install]\\nWantedBy=timers.target\\n')
 for unit in units:
  put(root/(unit+'.d')/'60-reboot.conf','[Unit]\\nOnSuccess=server-tooling-update-reboot.service\\n')
+# Finish outstanding restarts before the report snapshot and the reboot check.
+put(root/'server-tooling-full-upgrade.service.d'/'40-restart-services.conf',
+ '[Service]\\nExecStartPost=-/usr/bin/python3 /usr/local/lib/server-tooling/weekly-reboot.py --restart-services\\n')
 subprocess.run(['systemctl','daemon-reload'],check=True)
 subprocess.run(['systemd-analyze','verify',str(root/'server-tooling-update-reboot.service'),str(root/'server-tooling-update-reboot.timer'),*units],check=True)
 subprocess.run(['systemctl','enable','--now','server-tooling-update-reboot.timer'],check=True)
 subprocess.run(['systemctl','restart','server-tooling-update-reboot.timer'],check=True)
-print('Conditional reboots restricted to 04:00-05:00 UK time; daily 04:00 check enabled. No update or reboot was run. Backups:',backup)
+print('Post-upgrade service restarts enabled. Conditional reboots restricted to 04:00-05:00 UK time; daily 04:00 check enabled. No update or reboot was run. Backups:',backup)
 '''
         ssh(args.host, ['sudo', '-n', 'python3', '-c', code, stage + '/weekly-reboot.py'])
     finally:
