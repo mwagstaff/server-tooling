@@ -72,6 +72,16 @@ The window is checked again after assessment/lock waits, and also applies to the
 existing Saturday reboot. Installation does not run updates
 or reboot immediately. This installer is for Ubuntu; it does not configure macOS.
 
+The same installer also adds `40-restart-services.conf` to the weekly upgrade. It runs
+after the upgrade and before the report. needrestart restarts the services it
+considers safe during the upgrade. containerd keeps its per-container shims across
+restarts, so it would otherwise stay flagged and force a reboot. When containerd is
+still flagged, the step restarts `containerd.service` and only the Docker containers
+whose shim runs a replaced binary. It opens a 300-second host-wide alert maintenance
+window first. Remaining items (dbus, user sessions, kernel) are left for the reboot
+check. A failure is recorded as an event but does not fail the upgrade. To disable,
+remove that drop-in and run `sudo systemctl daemon-reload`.
+
 To disable the post-update checks, remove `60-reboot.conf` from
 `/etc/systemd/system/apt-daily-upgrade.service.d/` and
 `/etc/systemd/system/server-tooling-full-upgrade.service.d/`, then run

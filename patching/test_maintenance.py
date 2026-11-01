@@ -67,6 +67,36 @@ class MaintenanceTests(unittest.TestCase):
                  patch.object(reboot.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output)):
                 self.assertEqual(reboot.reboot_needed(), expected)
 
+    def test_post_upgrade_restarts_containerd_and_stale_containers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            procs = Path(directory) / 'cgroup.procs'
+            procs.write_text('10\n11\n12\n')
+            exes = {'/proc/10/exe': '/usr/bin/containerd',
+                    '/proc/11/exe': '/usr/bin/containerd-shim-runc-v2 (deleted)',
+                    '/proc/12/exe': '/usr/bin/containerd-shim-runc-v2'}
+            cmdlines = {'/proc/10/cmdline': '/usr/bin/containerd\0',
+                        '/proc/11/cmdline': 'shim\0-namespace\0moby\0-id\0old\0',
+                        '/proc/12/cmdline': 'shim\0-namespace\0moby\0-id\0new\0'}
+            needrestart = subprocess.CompletedProcess([], 0, 'NEEDRESTART-SVC: containerd.service\n')
+            with patch.object(reboot, 'CONTAINERD_PROCS', procs), \
+                 patch.object(reboot.os, 'readlink', side_effect=lambda path: exes[path]), \
+                 patch.object(reboot.Path, 'read_text', autospec=True,
+                              side_effect=lambda path: cmdlines.get(str(path)) or procs.open().read()), \
+                 patch.object(reboot, 'record'), \
+                 patch.object(reboot.subprocess, 'run', return_value=needrestart) as run:
+                reboot.restart_services()
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[1:], [['systemctl', 'restart', 'containerd.service'], ['docker', 'restart', 'old']])
+        self.maintenance.assert_called_once()
+
+    def test_post_upgrade_restarts_skip_when_containerd_current(self):
+        for output in ('', 'NEEDRESTART-SVC: dbus.service\n'):
+            with self.subTest(output=output), \
+                 patch.object(reboot.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output)) as run:
+                reboot.restart_services()
+                run.assert_called_once()
+        self.maintenance.assert_not_called()
+
     def test_conditional_reboot_and_failed_assessment(self):
         for needed in (False, True, subprocess.CalledProcessError(1, 'needrestart')):
             with self.subTest(needed=needed), tempfile.TemporaryDirectory() as directory:
