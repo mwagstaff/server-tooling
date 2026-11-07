@@ -190,10 +190,10 @@ for(const fresh of [true,false]) test(`Darwin readiness evidence distinguishes a
  assert.equal(store.get(i.id)!.action,'none');
 });
 
- test('events worker job failures use a source-aware runbook without restart permission',()=>{
+ test('events worker job failures use a source-aware runbook that allows only a retry',()=>{
    const book=selectRunbook({service:'kidsplorers-events-worker',alert:{name:'ServiceHealthFailing'}} as any);
    assert.equal(book.id,'events-worker-job');
-   assert.deepEqual(book.allowedActions,['none']);
+   assert.deepEqual(book.allowedActions,['none','retry']);
    assert.match(book.steps.join(' '),/workerHealth/);
    assert.match(book.recovery,/zero failed sources/);
  });
@@ -214,5 +214,5 @@ for(const fresh of [true,false]) test(`worker job evidence avoids HTTP-only diag
    return {action:'none',confidence:'high',diagnosis:'Partial import failure',reason:'Retry exhausted'};
  };
  await new Engine(c,store,inspect as any,model as any).investigate(i);
- assert.deepEqual(store.get(i.id)!.runbook,{id:'events-worker-job',version:3});
+ assert.deepEqual(store.get(i.id)!.runbook,{id:'events-worker-job',version:4});
 });

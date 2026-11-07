@@ -23,7 +23,7 @@ class RuleTests(unittest.TestCase):
     def test_application_and_aiops_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            services=[{'name':n} for n in ['train-track-planner','tube-track-api','top-scores']]
+            services=[{'name':n} for n in ['train-track-planner','tube-track-api','top-scores','top-scores-bsd']]
             write_json(root/'rules.json', make_rules(services,'sky',aiops=True,monitor='mini'))
             shutil.copy(Path(__file__).with_name('coverage.test.json'),root/'coverage.test.json')
             subprocess.run([PROMTOOL,'test','rules','coverage.test.json'],cwd=root,check=True)

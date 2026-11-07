@@ -63,17 +63,17 @@ Executable source: `../lib/runbooks.ts`. Increment the version when changing dia
 - Recovery evidence: Fresh canary and no new drops, with storage and collector checks passing.
 - Escalation: Escalate data loss or unavailable historical evidence.
 
-## Kidsplorers nightly event ingestion (events-worker-job, v3)
+## Kidsplorers nightly event ingestion (events-worker-job, v4)
 
 1. Read `workerHealth`: individual checks, running flag, run timestamps/counts and failed sources. HTTP 200 alone is liveness.
 2. Correlate JSON `time` event timestamps; one failed source means a partial import failure, not a crashed worker.
 3. Check `~/Library/Logs/ollama/serve.log` at the source failure time. On 29 October an MLX cache panic (`offset 5631 exceeds 5630 stored keys`) terminated a stream after HTTP 200; Ollama replaced its subprocess automatically. Invalid JSON alone does not prove that cause.
 4. The worker retries incomplete/malformed model output up to three times (four attempts total) in its existing queue. Persistent failures remain unhealthy; retain previous source data.
 5. Read `workerHealth.ollamaUpdate` and its individual checks. Inspect the updater journal, installed/latest versions, maintenance owner and active jobs. See [Ollama updater operations](../../ollama/README.md). The updater owns transactional rollback; AIOps does not install releases or clear gates.
-6. AIOps has no registered retry procedure. Do not restart/redeploy to repair source results. An operator can POST `/run` locally only after checking the worker and downstream work are idle.
+6. The registered retry procedure (approval required) POSTs `/retry-failed` locally: it reruns only the last nightly run's failed sources and counts each that now succeeds in that run. Propose it once for transient failures while the worker and the Ollama updater are idle; a source that fails again needs review. Do not restart/redeploy to repair source results. An operator can POST `/run` locally for a full rerun only after checking the worker and downstream work are idle.
 
-- Permitted runbook actions: none. Existing recovery permissions are unchanged.
-- Recovery evidence: completed full run with zero failed sources, fresh dashboard checks and source alert resolution.
+- Permitted runbook actions: none, retry (approval required; no automatic recovery).
+- Recovery evidence: completed full run, or approved retry, leaving zero failed sources, fresh dashboard checks and source alert resolution.
 - Escalation: persistent source/model failures with timestamped evidence; do not reset state or weaken checks.
 
 ## Service health investigation (service-health, v1)
@@ -89,3 +89,20 @@ Executable source: `../lib/runbooks.ts`. Increment the version when changing dia
 ## Lessons become reviewed changes
 
 For a new incident pattern: preserve incident-time evidence; separate observed symptoms from hypotheses; update the relevant versioned runbook; add a regression reproducing the trigger and resolution; review ownership and recovery restrictions; deploy responders sequentially; verify real source and delivery state. Do not automatically learn new commands or permissions from logs, email, or model output.
+
+## BSD upstream failures (bsd-upstream, v1)
+
+TopScoresBSDUpstreamErrors and TopScoresBSDUpstreamErrorsCritical inspect
+BSD outbound counts by source/status, ratios, poll age and bounded bad URLs,
+both at alert start and now. Inbound API 200s do not establish upstream health.
+Missing evidence must not be interpreted as zero. This deterministic read-only
+path cannot restart or redeploy services, and does not spend a model budget.
+Recovery requires source resolution and recent successful BSD requests.
+
+Warnings require >=10 transport/5xx failures and >=5% over 10m, recent failures
+in 2m and persistence for 3m. Critical requires >=10 and >=50% over 5m, recent
+failures in 1m and persistence for 2m. API and BSD poller are evaluated separately.
+These rules do not classify 4xx/authentication/throttling as upstream 5xx failures;
+the bad-URL table still records them. Existing scrape and freshness checks are
+independent. Prometheus increase estimates counts and handles counter resets;
+URL gauges retain six hours in memory and reset on application restart.

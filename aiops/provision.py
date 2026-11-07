@@ -57,6 +57,10 @@ def services():
             if name=='top-scores-web':
                 row['dependencies']=['top-scores']
                 row['dependencyProbes']={'top-scores':'http://127.0.0.1:3011/healthcheck'}
+            if name=='kidsplorers-events-worker':
+                # Reruns only the last nightly run's failed sources; the worker answers 202 and runs them in the background.
+                row['retryCommand']=['curl','-fsS','-m','10','-X','POST',f"http://127.0.0.1:{item['port']}/retry-failed"]
+                row['approvalActions']=['restart','retry']
             if item.get('scope'): row['scope']=item['scope']
             if item.get('admin_helper'): row['adminHelper']=item['admin_helper']
             result.append(row)

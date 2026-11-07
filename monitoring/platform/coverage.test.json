@@ -269,28 +269,6 @@
       ]
     },
     {
-      "name": "TopScoresBSDUpstreamErrors detects failure",
-      "interval": "1m",
-      "input_series": [
-        {
-          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",status_code=\"500\"}",
-          "values": "0+1x60"
-        }
-      ],
-      "promql_expr_test": [
-        {
-          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
-          "eval_time": "50m",
-          "exp_samples": [
-            {
-              "labels": "{}",
-              "value": 1
-            }
-          ]
-        }
-      ]
-    },
-    {
       "name": "AIOpsUnavailable detects failure",
       "interval": "1m",
       "input_series": [
@@ -477,6 +455,232 @@
         {
           "expr": "count(ALERTS{alertname=\"ServiceHealthFailing\",alertstate=\"firing\"}) or vector(0)",
           "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TopScoresBSD isolated 502",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0 1+0x59"
+        },
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"200\"}",
+          "values": "0+20x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "30m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TopScoresBSD sustained failures",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0+4x60"
+        },
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"200\"}",
+          "values": "0+16x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "30m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TopScoresBSD below ratio",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0+2x60"
+        },
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"200\"}",
+          "values": "0+100x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "30m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TopScoresBSD resolved burst",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0+4x10 40+0x50"
+        },
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"200\"}",
+          "values": "0+16x60"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrors\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "30m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores critical",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0+3x240"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores brief burst",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores\",host=\"sky\",status_code=\"502\"}",
+          "values": "0 10+0x240"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores no samples",
+      "interval": "15s",
+      "input_series": [],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores-bsd critical",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores-bsd\",host=\"sky\",status_code=\"502\"}",
+          "values": "0+3x240"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores-bsd brief burst",
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "top_scores_bsd_http_requests_total{service=\"top-scores-bsd\",host=\"sky\",status_code=\"502\"}",
+          "values": "0 10+0x240"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BSD top-scores-bsd no samples",
+      "interval": "15s",
+      "input_series": [],
+      "promql_expr_test": [
+        {
+          "expr": "count(ALERTS{alertname=\"TopScoresBSDUpstreamErrorsCritical\",alertstate=\"firing\"}) or vector(0)",
+          "eval_time": "20m",
           "exp_samples": [
             {
               "labels": "{}",

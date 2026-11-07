@@ -55,6 +55,7 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
   const ratio=scalar('errors5m');
   const responses=metrics?.responses5m?.samples;
   const counts=Array.isArray(responses) && responses.length ? responses.filter((s:any)=>Number(s.value?.[1])>0).map((s:any)=>`${s.metric.status}: approximately ${Math.round(Number(s.value[1]))}`).join(', ') : 'unavailable';
+  const bsdCounts=(key:string) => { const rows=metrics?.[key]?.samples; return !rows?.length ? 'unavailable' : rows.map((s:any)=>`${s.metric.source || 'unknown'}/HTTP ${s.metric.status_code || 'unknown'}: approximately ${Math.round(Number(s.value?.[1]))}`).join('; '); };
   const grafana=new URL(config.publicUrl);grafana.port='13000';grafana.pathname='/';grafana.search='';
   const from=Date.parse(i.alert.startsAt)-15*60000;
   const to=Math.max(Date.parse(current.resolvedAt || current.updated),Date.parse(i.alert.startsAt))+5*60000;
@@ -64,7 +65,8 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
     `- Alert: ${i.alert.name} — ${compact(i.alert.summary,200)}`,
     `- Ref: ${ref}`,
     ...(logging ? [`- Evidence: ${logging.summary}`] : []),
-    ...(metrics ? [`- Evidence: Five-minute window at ${metrics.responses5m?.observedAt || 'unknown time'}; combined 5xx/abort ratio ${ratio===undefined ? 'unavailable' : (ratio*100).toFixed(2)+'%'}; responses ${counts}; restarts in 15 minutes: ${scalar('restarts15m') ?? 'unknown'}.`] : []),
+    ...(i.runbook?.id==='bsd-upstream' ? [`- Evidence: BSD upstream ten-minute responses by source/status: ${bsdCounts('bsdResponses10m')}; incident-time responses: ${bsdCounts('bsdResponses10mAtIncident')}. Inbound API health is not upstream health; inspect retained URL evidence in the incident.`] : []),
+    ...(metrics && i.runbook?.id!=='bsd-upstream' ? [`- Evidence: Five-minute window at ${metrics.responses5m?.observedAt || 'unknown time'}; combined 5xx/abort ratio ${ratio===undefined ? 'unavailable' : (ratio*100).toFixed(2)+'%'}; responses ${counts}; restarts in 15 minutes: ${scalar('restarts15m') ?? 'unknown'}.`] : []),
     ...(i.evidence?.qualityIssues?.length ? [`- Evidence gaps: ${i.evidence.qualityIssues.join(' ')}`] : []),
     ...(i.runbook ? [`- Runbook: ${i.runbook.id} v${i.runbook.version}`] : []),
     ...(i.related?.length ? [`- Related incidents: Possible shared cause; ${i.related.map(r=>r.name+' '+r.url).join('; ')}`] : []),

@@ -409,3 +409,16 @@ test('incident reference matches the Alertmanager fingerprint template and survi
   assert.match(noFingerprint.ref!,/^INC-[0-9a-f]{8}-20261025T1047Z$/);
   s.db.close();
 });
+
+ test('BSD incidents collect upstream evidence and never invoke recovery or generic diagnosis',async()=>{
+  const s=new Store(':memory:');s.ingest(makeAlert({name:'TopScoresBSDUpstreamErrors'}));
+  let actions=0,models=0;
+  const e=new Engine(config,s,async(_c,_s,op)=>{if(op!=='inspect')actions++;return {...unhealthy,healthy:true};},async()=>{models++;return decision();});
+  await e.tick();const i=s.list()[0];
+  assert.equal(i.runbook?.id,'bsd-upstream');
+  assert.ok(i.evidence.metrics.bsdResponses10m);
+  assert.ok(i.evidence.metrics.bsdResponses10mAtIncident);
+  assert.equal(i.evidence.metrics.responses5m,undefined);
+  assert.equal(i.status,'needs_review');
+  assert.equal(actions,0);assert.equal(models,0);s.db.close();
+ });

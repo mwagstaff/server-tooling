@@ -12,6 +12,12 @@ export const runbooks = {
     'Validate canonical host/service labels and owning responder; isolate malformed entries without hiding them.',
     'Correlate notification failures within ten minutes as a possible shared intake issue, not a proven root cause.'
   ],'Fresh completed reconciliation and source cleared.','Escalate persistence/storage/authentication failures; never bypass validation.'),
+  bsd:book('bsd-upstream','BSD upstream request failures',[
+    'Inspect BSD request counts by source/status, failure ratios, poll freshness and bad URL evidence for both the incident time and now.',
+    'Inbound API HTTP 200s and healthy processes do not establish BSD health. Missing BSD samples mean unavailable evidence, not zero failures.',
+    'URL evidence is bounded to a six-hour rolling window and resets on process restart. Do not infer missing query parameters or provider root causes.',
+    'Do not restart or redeploy a healthy application for upstream failures. Leave retries to the BSD client.'
+  ],'Source alert resolved with fresh successful BSD requests; application health alone is insufficient.','Escalate sustained failures with timestamps, sources, status codes and retained URLs. No automatic recovery permitted.'),
   upstream:book('upstream-import','Upstream import failure',[
     'Read the source HTTP/error evidence and reported last successful dataset update.',
     'Keep the last validated dataset and expose its age; do not replace it with empty or unvalidated data.',
@@ -30,8 +36,8 @@ export const runbooks = {
     'Inspect workerHealth.ollamaUpdate for update checks, installed/latest versions, lastOutcome, healthError, blockedVersions and phase. The local updater alone owns its bounded rollback. Never restart a draining worker, remove its maintenance gate, or replay a blocked version. Missing state, checks older than 72h, updates pending 14 days, or a transaction over 45 minutes require review.',
     'Ollama can return HTTP 200 and then lose its MLX subprocess. Correlate ~/Library/Logs/ollama/serve.log with failedSources times; the 29 October incident recorded cache: offset 5631 exceeds 5630 stored keys followed by automatic subprocess replacement. Do not infer a cache crash from invalid JSON alone.',
     'Malformed or incomplete model output gets up to three serialized retries (four attempts total) inside the worker. Persistent failures remain unhealthy; never suppress the failed-source check or mark a run successful manually.',
-    'There is no registered AIOps retry procedure. Do not restart or redeploy a healthy process to repair a source result. An operator may rerun POST /run on loopback after confirming the worker and downstream jobs are idle; retain state and verify every source.'
-  ],'Completed full run with zero failed sources, fresh healthy dashboard checks and source alert resolution.','Escalate persistent source/model failures with timestamped evidence. No new AIOps recovery permissions are granted.',['none'],3),
+    'The registered retry procedure (POST /retry-failed on loopback, approval required) reruns only the last nightly run\'s failed sources and counts each that now succeeds in that run. Propose it once for transient failures (timeouts, fetch failures, malformed model output) when running is false and the Ollama updater is idle; the rerun takes minutes, so verify after it finishes. A source that fails again after a retry needs review, not more retries. Never restart or redeploy a healthy process to repair a source result.'
+  ],'Completed full run, or approved retry, leaving zero failed sources, fresh healthy dashboard checks and source alert resolution.','Escalate persistent source/model failures with timestamped evidence. Retry requires approval; no automatic recovery is granted.',['none','retry'],4),
   loading:book('darwin-feed','Train loading readiness and Darwin feed',[
     'Read loadingHealth even on HTTP 503: compare ready, Mongo health, feed state, transport age, MESSAGE age and lastError with checkedAt and the incident window.',
     'Liveness and process uptime distinguish a running service with an unavailable dependency from a crash. A subscribed socket or fresh heartbeats alone do not prove fresh Darwin data.',
@@ -63,6 +69,7 @@ export function selectRunbook(i:Incident):Runbook {
   const n=i.alert.name;
   if(n==='MonitoringNotificationFailures'||n==='AIOpsNotificationFailures')return runbooks.notifications;
   if(n==='AIOpsReconciliationStalled')return runbooks.reconciliation;
+  if(n.startsWith('TopScoresBSDUpstream'))return runbooks.bsd;
   if(n==='TopScoresEloImportFailed')return runbooks.upstream;
   if(i.service==='train-track-planner' && n.startsWith('PlannerTimetable'))return runbooks.planner;
   if(i.service==='train-loading-service' && ['PublicEndpointUnavailable','ServiceHealthFailing','AppCheckFailing','AppCheckFailingLong'].includes(n))return runbooks.loading;

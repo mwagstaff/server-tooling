@@ -276,3 +276,24 @@ class PlatformTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MongoBackupMetricFilterTests(unittest.TestCase):
+    def test_backup_alert_metrics_survive_auxiliary_filter(self):
+        import re
+        config = json.loads(Path(__file__).with_name('auxiliary-mini.json').read_text())
+        # Locate the scrape job independently of the surrounding config layout.
+        def objects(value):
+            if isinstance(value, dict):
+                yield value
+                for child in value.values():
+                    yield from objects(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from objects(child)
+        job = next(x for x in objects(config) if x.get('job_name') == 'aux-node-2')
+        keep = next(x['regex'] for x in job['metric_relabel_configs'] if x.get('action') == 'keep')
+        for metric in ('mongo_backup_last_success_timestamp_seconds',
+                       'mongo_backup_restore_test_last_success_timestamp_seconds', 'mac_sleep_events_24h'):
+            self.assertIsNotNone(re.fullmatch(keep, metric), metric)
+        self.assertIsNone(re.fullmatch(keep, 'node_cpu_seconds_total'))

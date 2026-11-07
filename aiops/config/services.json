@@ -380,8 +380,18 @@
     "dependencies": [],
     "autoActions": [],
     "approvalActions": [
-      "restart"
+      "restart",
+      "retry"
     ],
-    "group": "kidsplorers-events-worker"
+    "group": "kidsplorers-events-worker",
+    "retryCommand": [
+      "curl",
+      "-fsS",
+      "-m",
+      "10",
+      "-X",
+      "POST",
+      "http://127.0.0.1:3310/retry-failed"
+    ]
   }
 ]

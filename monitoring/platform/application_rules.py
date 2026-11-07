@@ -40,9 +40,18 @@ def application_rules(services, host, alert):
     ]:
         add('tube-track-api', name, expr, duration, summary, severity)
 
-    # These metrics are exported by the main Top Scores API, not the BSD process.
-    bsd = 'top_scores_bsd_http_requests_total{service="top-scores",status_code=~"0|4..|5..",status_code!="404"}'
-    add('top-scores', 'TopScoresBSDUpstreamErrors',
-        f'sum by(status_code) (increase({bsd}[10m]) > 0 or ({bsd} unless {bsd} offset 10m)) > 0',
-        '1m', 'Top Scores BSD upstream failures (status {{ $labels.status_code }})')
+    # Keep API and poller separate so healthy traffic cannot mask either outage.
+    for service in ('top-scores', 'top-scores-bsd'):
+        metric = f'top_scores_bsd_http_requests_total{{service="{service}",host="{host}"}}'
+        bad = metric[:-1] + ',status_code=~"0|5.."}'
+        for name, window, recent, ratio, duration, severity in (
+            ('TopScoresBSDUpstreamErrors', '10m', '2m', 0.05, '3m', 'warning'),
+            ('TopScoresBSDUpstreamErrorsCritical', '5m', '1m', 0.5, '2m', 'critical'),
+        ):
+            failures = f'sum(increase({bad}[{window}]))'
+            total = f'sum(increase({metric}[{window}]))'
+            expression = (f'({failures} >= 10) and ({failures} / clamp_min({total}, 1) >= {ratio}) '
+                          f'and (sum(increase({bad}[{recent}])) > 0)')
+            add(service, name, expression, duration,
+                f'BSD sustained upstream failures: >=10 transport/5xx failures and >={ratio:.0%} over {window}', severity)
     return rules

@@ -137,11 +137,29 @@ export class Engine {
       errors5m:`monitoring:http_error_ratio5m{${selector}}`,
       responses5m:`sum by(status) (increase(monitoring_http_requests_total{${selector}}[5m]))`
     };
+    const bsdIncident=runbook.id==='bsd-upstream';
+    if(bsdIncident) {
+      delete queries.errors5m;delete queries.responses5m;
+      const bsd=`host=${JSON.stringify(s.host)},service=${JSON.stringify(s.name)}`;
+      const requests=`top_scores_bsd_http_requests_total{${bsd}}`;
+      const bad=`top_scores_bsd_http_requests_total{${bsd},status_code=~"0|5.."}`;
+      Object.assign(queries,{
+        bsdResponses10m:`sum by(source,status_code) (increase(${requests}[10m]))`,
+        bsdFailureRatio10m:`sum(increase(${bad}[10m])) / clamp_min(sum(increase(${requests}[10m])),1)`,
+        bsdSuccessfulRequests5m:`sum(increase(top_scores_bsd_http_requests_total{${bsd},status_code=~"[123].."}[5m]))`,
+        bsdBadUrls:`topk(20,top_scores_bsd_http_bad_url_requests{${bsd}})`,
+        bsdPollAge:`time() - top_scores_bsd_poll_last_success_timestamp_seconds{${bsd}}`
+      });
+      for(const [key,query] of Object.entries({...queries})) {
+        if(key.startsWith('bsd'))queries[key+'AtIncident']=query;
+      }
+    }
     if(s.name==='kidsplorers-events-worker') {delete queries.errors5m;delete queries.responses5m;}
     if(s.name==='train-loading-service') Object.assign(queries,{darwinConnected:`train_loading_stomp_connected{${selector}}`,darwinMessageAge:`time() - train_loading_stomp_last_message_timestamp_seconds{${selector}}`});
     i.evidence.metrics = Object.fromEntries(await Promise.all(Object.entries(queries).map(async ([name,query])=>{
       try {
         const url=new URL('/api/v1/query',this.config.prometheusUrl);url.searchParams.set('query',query);
+        if(name.endsWith('AtIncident'))url.searchParams.set('time',String(Date.parse(i.alert.startsAt)/1000));
         const response=await fetch(url,{signal:AbortSignal.timeout(5000),redirect:'error'});
         if(!response.ok) throw new Error('Metrics unavailable');
         const body=JSON.parse(await boundedBody(response,100000));
@@ -184,6 +202,15 @@ export class Engine {
       i.evidence.qualityIssues.push('Some current metrics are missing.');
     this.store.event(i.id,'evidence',i.evidence);
     const firing=await this.alertStillFiring(i);
+    if(bsdIncident) {
+      const successes=i.evidence.metrics.bsdSuccessfulRequests5m?.samples;
+      const recovered=firing===false && successes?.some((sample:any)=>Number(sample.value?.[1])>0);
+      i.action='none';
+      i.diagnosis='BSD upstream request incident. See BSD counts by source/status, ratios, retained URLs and incident-time samples. Inbound API health does not establish upstream health. Missing URL rows cannot reconstruct earlier failures. No application restart or redeploy is appropriate for upstream errors.';
+      i.verification={healthy:recovered?true:undefined,alertFiring:firing};
+      this.store.event(i.id,'evidence',i.evidence);
+      return this.finish(i,recovered?'source_resolved':'needs_review');
+    }
     if (i.evidence.healthy && i.evidence.public?.ok !== false && firing===false) {
       i.verification={...i.evidence,logs:undefined,alertFiring:false};
       i.diagnosis='Service and public checks are healthy; source alert has cleared without intervention.';

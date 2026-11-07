@@ -65,7 +65,7 @@
           "source_labels": [
             "__name__"
           ],
-          "regex": "mac_.*",
+          "regex": "mac_.*|mongo_backup_.*",
           "action": "keep"
         }
       ]

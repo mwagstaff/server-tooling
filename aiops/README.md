@@ -284,10 +284,14 @@ counts and timestamped failed sources. `healthy` is false when any job check
 fails, even when HTTP returns 200. JSON `time` and `ts` fields are event timestamps;
 file modification and collector timestamps are not. The worker retries malformed
 or incomplete model output up to three times (four attempts total) within its serialized model queue. A persistent
-failure remains visible and retains the previous source data. AIOps has no
-registered retry procedure and must not substitute restart/redeploy for a failed
-source import. Operator recovery: confirm `/status` is idle and the logs show
-post-run detail/discovery/audit work complete, then POST `/run` on loopback.
+failure remains visible and retains the previous source data. A listing page
+fetch that times out or fails is retried once inside the worker. The registered
+retry procedure (approval required) POSTs `/retry-failed` on loopback: it reruns
+only the last nightly run's failed sources and counts each that now succeeds in
+that run, so a transient failure clears without waiting for the next night.
+AIOps must not substitute restart/redeploy for a failed source import. Full
+operator rerun: confirm `/status` is idle and the logs show post-run
+detail/discovery/audit work complete, then POST `/run` on loopback.
 Verify a completed full run with zero failed sources, all dashboard checks,
 Prometheus health 1, Alertmanager resolution and the owning incident lifecycle.
 
@@ -596,4 +600,4 @@ runbook for upstream failure. See train-track-uk/api/train-loading-service/READM
 
 ### Managed Ollama upgrades
 
-Mini uses the [transactional Ollama updater](../ollama/README.md). The events-worker-job v3 runbook includes updater evidence. Worker service health includes missing/stale updater state, failed upgrades, stuck transactions and overdue versions, routed through the existing ServiceHealthFailing alert on Sky. Installed/latest version and last check/success timestamps are exported as `aiops_ollama_update_*` metrics. This does not grant AIOps permission to upgrade Ollama, restart a healthy worker or clear a maintenance gate.
+Mini uses the [transactional Ollama updater](../ollama/README.md). The events-worker-job v4 runbook includes updater evidence. Worker service health includes missing/stale updater state, failed upgrades, stuck transactions and overdue versions, routed through the existing ServiceHealthFailing alert on Sky. Installed/latest version and last check/success timestamps are exported as `aiops_ollama_update_*` metrics. This does not grant AIOps permission to upgrade Ollama, restart a healthy worker or clear a maintenance gate.
