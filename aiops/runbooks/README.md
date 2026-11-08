@@ -43,16 +43,18 @@ Executable source: `../lib/runbooks.ts`. Increment the version when changing dia
 - Recovery evidence: Unexpected restart rate cleared, process stable and service/public checks pass.
 - Escalation: Escalate crash/OOM causes or missing accounting evidence.
 
-## Upgrade and maintenance review (upgrade-review, v1)
+## Upgrade and maintenance review (upgrade-review, v2)
 
-1. Distinguish historical upgrade warnings from current failed services.
-2. Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions.
-3. Treat phased updates as pending rollout, not a failed upgrade; verify package policy before classifying.
-4. Treat recovered tunnel shutdowns separately from ongoing tunnel failures; verify current connectivity.
+1. Read only the report's Needs attention list; table labels such as "Failed system services: None" are not warnings. Each warning describes the report time.
+2. Check the host now through the read-only runner: boot time, running and newest installed kernel, `/run/reboot-required`, failed system units and core unit activity.
+3. Mark a warning resolved only from current evidence. Package, needrestart and log warnings need root, so they stay unverified with the exact command to run.
+4. Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions. Phased or held updates are pending rollout, not failed upgrades.
 
 - Permitted runbook actions: none (still subject to registry, ownership, source-state, budget and approval checks).
-- Recovery evidence: Current service checks pass; deferred work remains explicitly listed until completed.
-- Escalation: Review unresolved failures or stale sessions in the scheduled maintenance window.
+- Recovery evidence: Every reported warning verified resolved on the host now (status `healthy`).
+- Escalation: List each pending or unverified warning with its specific next step; the daily 04:00 UK reboot check handles pending reboots.
+
+v1 matched keywords anywhere in the report, so table labels produced findings, and it never inspected the host. On 8 November 2026 it reported REVIEW NEEDED with five generic findings, three of them false. In fact Sky had rebooted into the new kernel 27 seconds after the report and both real warnings were resolved.
 
 ## Logging pipeline failure (logging-pipeline, v1)
 

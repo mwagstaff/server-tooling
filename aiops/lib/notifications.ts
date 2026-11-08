@@ -9,7 +9,13 @@ import {incidentRef} from './alerts.ts';
 export function summaryHtml(text: string): string {
   const escape = (value:string) => value.replaceAll('&','&amp;').replaceAll('<','&lt;')
     .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
-  const items = text.split(/\r?\n/).filter(line=>line.trim()).map(line=>{
+  // Indented "  - " lines become a nested list under the preceding item.
+  const rows: {line:string;children:string[]}[] = [];
+  for (const line of text.split(/\r?\n/).filter(line=>line.trim())) {
+    if (/^\s+- /.test(line) && rows.length) rows.at(-1)!.children.push(line.trim().slice(2));
+    else rows.push({line,children:[]});
+  }
+  const items = rows.map(({line,children})=>{
     const content=line.replace(/^- /,'');
     const colon=content.indexOf(':');
     const label=colon<0 ? '' : `<strong>${escape(content.slice(0,colon+1))}</strong> `;
@@ -17,7 +23,8 @@ export function summaryHtml(text: string): string {
     const linked = ['Incident','Service metrics','Host metrics','Logs'].includes(content.slice(0,colon));
     const body=linked && /^https?:\/\//.test(value)
       ? `<a href="${escape(value)}">${content.startsWith('Incident:') ? 'Open incident console' : 'Open dashboard'}</a>` : escape(value);
-    return `<li style="margin:0 0 12px;padding-left:4px;">${label}${body}</li>`;
+    const nested=children.length ? `<ul style="margin:4px 0 0;padding-left:20px;">${children.map(child=>`<li style="margin:0 0 4px;">${escape(child)}</li>`).join('')}</ul>` : '';
+    return `<li style="margin:0 0 12px;padding-left:4px;">${label}${body}${nested}</li>`;
   }).join('\n');
   return `<html><body><div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;max-width:720px;">` +
     `<ul style="margin:0;padding-left:24px;">${items}</ul></div></body></html>`;
@@ -60,9 +67,12 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
   const from=Date.parse(i.alert.startsAt)-15*60000;
   const to=Math.max(Date.parse(current.resolvedAt || current.updated),Date.parse(i.alert.startsAt))+5*60000;
   const dashboard=(uid:string)=>`${grafana.origin}/d/${uid}?${new URLSearchParams({'var-host':i.host,'var-service':i.service,from:String(from),to:String(to)})}`;
+  const nested=(items:string[]) => items.map(item=>`  - ${compact(item,300)}`);
+  const findings=(i.diagnosis || '').split('\n').filter(line=>line.trim());
+  const maintenance=i.runbook?.id==='upgrade-review';
   const text = [
-    `- Summary: ${status}. ${logging ? checks.replace('Service',infrastructure?'Infrastructure':'Logging').replace('service',infrastructure?'infrastructure':'logging') : checks}; source alert ${source}. Workflow: ${current.status.replaceAll('_',' ')}.`,
-    `- Alert: ${i.alert.name} — ${compact(i.alert.summary,200)}`,
+    `- Summary: ${status}. ${logging ? checks.replace('Service',infrastructure?'Infrastructure':'Logging').replace('service',infrastructure?'infrastructure':'logging') : maintenance ? checks.replace('Last service','Current host').replace('Service health','Host state') : checks}; ${i.alert.source==='email' ? 'source: email report' : 'source alert '+source}. Workflow: ${current.status.replaceAll('_',' ')}.`,
+    `- Alert: ${i.alert.name} — ${compact(i.alert.source==='email' ? i.alert.summary.split('\n')[0] : i.alert.summary,200)}`,
     `- Ref: ${ref}`,
     ...(logging ? [`- Evidence: ${logging.summary}`] : []),
     ...(i.runbook?.id==='bsd-upstream' ? [`- Evidence: BSD upstream ten-minute responses by source/status: ${bsdCounts('bsdResponses10m')}; incident-time responses: ${bsdCounts('bsdResponses10mAtIncident')}. Inbound API health is not upstream health; inspect retained URL evidence in the incident.`] : []),
@@ -70,9 +80,9 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
     ...(i.evidence?.qualityIssues?.length ? [`- Evidence gaps: ${i.evidence.qualityIssues.join(' ')}`] : []),
     ...(i.runbook ? [`- Runbook: ${i.runbook.id} v${i.runbook.version}`] : []),
     ...(i.related?.length ? [`- Related incidents: Possible shared cause; ${i.related.map(r=>r.name+' '+r.url).join('; ')}`] : []),
-    `- Assessment: ${compact(i.diagnosis || 'Evidence gathering incomplete.')}`,
+    ...(findings.length>1 ? ['- Assessment:',...nested(findings)] : [`- Assessment: ${compact(findings[0] || 'Evidence gathering incomplete.')}`]),
     `- Actions: ${actions.length ? actions.map(e=>compact(String(e.data.action),40)).join(', ') + '; see incident for outcomes.' : 'No recovery action taken.'}`,
-    `- Next step: ${logging ? (healthy===true && source.startsWith('cleared') ? 'Infrastructure checks passed and the source cleared; retain the incident evidence for review.' : logging.nextStep) : current.status === 'needs_approval' && !current.resolvedAt ? 'Review the proposed action in the console.' : healthy === true && source.startsWith('cleared') ? 'No immediate recovery needed; review any remaining cause uncertainty.' : 'Review the evidence and unresolved cause in the console.'}`,
+    ...(i.evidence?.actionItems?.length ? ['- Next steps:',...nested(i.evidence.actionItems)] : [`- Next step: ${logging ? (healthy===true && source.startsWith('cleared') ? 'Infrastructure checks passed and the source cleared; retain the incident evidence for review.' : logging.nextStep) : current.status === 'needs_approval' && !current.resolvedAt ? 'Review the proposed action in the console.' : healthy === true && source.startsWith('cleared') ? 'No immediate recovery needed; review any remaining cause uncertainty.' : 'Review the evidence and unresolved cause in the console.'}`]),
     `- AI cost/reservation: $${i.spent.toFixed(4)} of $${incidentBudget(config,store).toFixed(2)} incident allowance.`,
     `- Incident: ${config.publicUrl}/?incident=${i.id}`,
     `- Service metrics: ${dashboard(infrastructure?.dashboard || (logging?'monitoring-logging':'monitoring-service'))}`,

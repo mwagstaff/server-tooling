@@ -150,10 +150,37 @@ def loading_health_evidence(url):
         return {'error': 'Readiness details unavailable or invalid'}
 
 
+MAINTENANCE_UNITS = ('caddy', 'cloudflared', 'unattended-upgrades',
+                     'server-tooling-full-upgrade.timer', 'server-tooling-weekly-reboot.timer')
+
+
+def maintenance_evidence(root=Path('/')):
+    """Current reboot, kernel and unit state for weekly upgrade reviews. Unprivileged reads only."""
+    try:
+        boot = next(int(line.split()[1]) for line in (root / 'proc/stat').read_text().splitlines() if line.startswith('btime '))
+        kernels = sorted((path.name.removeprefix('vmlinuz-') for path in (root / 'boot').glob('vmlinuz-*')),
+                         key=lambda name: [int(part) for part in re.findall(r'\d+', name)])
+        packages = root / 'run/reboot-required.pkgs'
+        failed = command(['systemctl', '--failed', '--no-legend', '--plain'])
+        units = command(['systemctl', 'is-active', *MAINTENANCE_UNITS])
+        timer = command(['systemctl', 'show', 'server-tooling-update-reboot.timer', '-p', 'NextElapseUSecRealtime', '--value'])
+        return {'observedAt': datetime.now(timezone.utc).isoformat(),
+                'bootedAt': datetime.fromtimestamp(boot, timezone.utc).isoformat(),
+                'runningKernel': platform.release(), 'newestKernel': kernels[-1] if kernels else None,
+                'rebootRequired': (root / 'run/reboot-required').exists(),
+                'rebootPackages': packages.read_text().split()[:20] if packages.exists() else [],
+                'failedUnits': [line.split()[0] for line in failed['stdout'].splitlines() if line.strip()] if failed['code'] == 0 else None,
+                'units': dict(zip(MAINTENANCE_UNITS, units['stdout'].split())),
+                'nextRebootCheck': timer['stdout'].strip() or None if timer['code'] == 0 else None}
+    except (OSError, ValueError, StopIteration, subprocess.SubprocessError):
+        return {'error': 'Maintenance state unavailable'}
+
+
 def inspect(item):
     if item is None:
         return {'host': platform.node(), 'disk': shutil.disk_usage(Path.home())._asdict(),
-                'load': os.getloadavg(), 'healthy': None}
+                'load': os.getloadavg(), 'healthy': None,
+                **({'maintenance': maintenance_evidence()} if platform.system() == 'Linux' else {})}
     state = status(item)
     health = probe(item['healthUrl'])
     logs = {}

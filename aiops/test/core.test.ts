@@ -208,7 +208,8 @@ test('summary leads with source resolution without claiming service recovery',()
   const summary=s.events(i.id).find(e=>e.kind==='summary')!.data;
   assert.match(summary.title,/SOURCE CLEARED/);
   assert.match(summary.text,/^- Summary: SOURCE CLEARED. Service health not verified/);
-  assert.ok(summary.text.split('\n').every((line:string)=>line.startsWith('- ')));
+  assert.ok(summary.text.split('\n').every((line:string)=>/^(  )?- /.test(line)));
+  assert.match(summary.text,/^- Assessment:\n  - Old startup lines\.\n  - Possible restart loop\.$/m);
   assert.ok(!summary.text.includes('Final verification: {'));
   s.db.close();
 });
@@ -275,6 +276,12 @@ test('HTML renderer also handles queued plain-text summaries and CRLF',()=>{
   const html=summaryHtml('- Summary: Review\r\n- Assessment: "quoted" <unsafe>');
   assert.equal((html.match(/<li /g)||[]).length,2);
   assert.match(html,/&quot;quoted&quot; &lt;unsafe&gt;/);
+});
+test('HTML renderer nests indented bullets under the preceding item',()=>{
+  const html=summaryHtml('- Assessment:\n  - First <finding>\n  - Second\n- Actions: none');
+  assert.equal((html.match(/<ul /g)||[]).length,2);
+  assert.match(html,/<strong>Assessment:<\/strong> <ul style="margin:4px 0 0;padding-left:20px;"><li style="margin:0 0 4px;">First &lt;finding&gt;<\/li><li style="margin:0 0 4px;">Second<\/li><\/ul><\/li>\n<li /);
+  assert.match(html,/<strong>Actions:<\/strong> none<\/li>/);
 });
 
 test('evidence gaps force escalation even when the local assessment claims high confidence',async t=>{

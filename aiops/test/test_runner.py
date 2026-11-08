@@ -52,6 +52,34 @@ class RunnerTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
+    def test_maintenance_evidence_reads_reboot_kernel_and_unit_state(self):
+        root = Path(self.temp.name)
+        for name in ('proc', 'boot', 'run'):
+            (root / name).mkdir()
+        (root / 'proc/stat').write_text('cpu  1 2 3\nbtime 1794111526\n')
+        for kernel in ('6.8.0-99-generic', '6.8.0-149-generic', '6.8.0-147-generic'):
+            (root / 'boot' / ('vmlinuz-' + kernel)).write_text('')
+        (root / 'run/reboot-required').write_text('')
+        (root / 'run/reboot-required.pkgs').write_text('linux-image-6.8.0-149-generic\nlinux-base\n')
+        outputs = {'--failed': (0, 'caddy.service loaded failed failed Caddy\n'),
+                   'is-active': (3, 'active\nfailed\nactive\nactive\nactive\n'),
+                   'show': (0, 'Mon 2026-11-09 04:00:00 UTC\n')}
+        def systemctl(args, timeout=15):
+            code, stdout = next(value for key, value in outputs.items() if key in args)
+            return {'code': code, 'stdout': stdout, 'stderr': ''}
+        with patch.object(runner, 'command', side_effect=systemctl), \
+                patch.object(runner.platform, 'release', return_value='6.8.0-147-generic'):
+            result = runner.maintenance_evidence(root)
+        self.assertEqual(result['bootedAt'], '2026-11-08T04:18:46+00:00')
+        self.assertEqual(result['runningKernel'], '6.8.0-147-generic')
+        self.assertEqual(result['newestKernel'], '6.8.0-149-generic')  # numeric order, not lexical
+        self.assertTrue(result['rebootRequired'])
+        self.assertEqual(result['rebootPackages'], ['linux-image-6.8.0-149-generic', 'linux-base'])
+        self.assertEqual(result['failedUnits'], ['caddy.service'])
+        self.assertEqual(result['units']['cloudflared'], 'failed')
+        self.assertEqual(result['nextRebootCheck'], 'Mon 2026-11-09 04:00:00 UTC')
+        self.assertEqual(runner.maintenance_evidence(root / 'missing'), {'error': 'Maintenance state unavailable'})
+
     def test_event_logs_require_valid_explicit_event_time(self):
         rows = runner.event_logs('old startup\n2026-10-26T21:14:34.123Z failed\n2026-99-26T21:14:34.123Z invalid\n', 'service.log')
         self.assertEqual(len(rows), 1)

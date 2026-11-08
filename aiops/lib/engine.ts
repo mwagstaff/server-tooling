@@ -5,7 +5,7 @@ import {runTarget} from './runner.ts';
 import {enqueueSummary} from './notifications.ts';
 import {boundedBody, redact} from './security.ts';
 
-import {selectRunbook,maintenanceFindings} from './runbooks.ts';
+import {selectRunbook,assessMaintenance} from './runbooks.ts';
 import {isLoggingIncident,inspectLogging} from './logging.ts';
 import {identityLabels,canonicalHost} from './alerts.ts';
 import {infrastructureSpec,infrastructureOwner,inspectInfrastructure} from './infrastructure.ts';
@@ -78,9 +78,16 @@ export class Engine {
       this.store.put(i);
     }
     if(i.alert.name==='WeeklyUpgradeReview') {
-      i.action='none';i.evidence={reportedFindings:maintenanceFindings(i.alert.summary)};
-      i.diagnosis=i.evidence.reportedFindings.join(' ');i.verification={healthy:null,alertFiring:null};
-      return this.finish(i,'needs_review');
+      // Read-only: the report describes the upgrade time; current host state decides each warning.
+      i.action='none';i.status='investigating';this.store.put(i);
+      let host:any;
+      try {host=(await this.run(this.config,{host:i.host,name:'__host__'},'inspect')).maintenance;}
+      catch(e) {host={error:'Host inspection unavailable: '+redact(String(e)).slice(0,200)};}
+      const review=assessMaintenance(i.alert.summary,i.host,i.alert.startsAt,host);
+      i.evidence={reportedWarnings:review.warnings,host,checks:review.checks,actionItems:review.actionItems};
+      i.diagnosis=review.findings.join('\n');i.verification={healthy:review.healthy,alertFiring:null};
+      this.store.event(i.id,'evidence',i.evidence);
+      return this.finish(i,review.healthy===true?'healthy':'needs_review');
     }
     if(i.alert.name==='TopScoresEloImportFailed') {
       const service=this.config.services.find(s=>s.name===i.service && s.host===i.host);

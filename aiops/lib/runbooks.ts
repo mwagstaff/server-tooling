@@ -50,11 +50,11 @@ export const runbooks = {
     'Historical startup log lines alone do not prove a loop; a further restart is not a remedy.'
   ],'Unexpected restart rate cleared, process stable and service/public checks pass.','Escalate crash/OOM causes or missing accounting evidence.'),
   maintenance:book('upgrade-review','Upgrade and maintenance review',[
-    'Distinguish historical upgrade warnings from current failed services.',
-    'Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions.',
-    'Treat phased updates as pending rollout, not a failed upgrade; verify package policy before classifying.',
-    'Treat recovered tunnel shutdowns separately from ongoing tunnel failures; verify current connectivity.'
-  ],'Current service checks pass; deferred work remains explicitly listed until completed.','Review unresolved failures or stale sessions in the scheduled maintenance window.'),
+    'Read only the report\'s Needs attention list; table labels such as "Failed system services: None" are not warnings. Each warning describes the report time.',
+    'Check the host now through the read-only runner: boot time, running and newest installed kernel, /run/reboot-required, failed system units and core unit activity.',
+    'Mark a warning resolved only from current evidence. Package, needrestart and log warnings need root, so they stay unverified with the exact command to run.',
+    'Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions. Phased or held updates are pending rollout, not failed upgrades.'
+  ],'Every reported warning verified resolved on the host now.','List each pending or unverified warning with its specific next step; the daily 04:00 UK reboot check handles pending reboots.',['none'],2),
   logging:book('logging-pipeline','Logging pipeline failure',[
     'Check collector health, drop reason, canary freshness, backpressure and storage space.',
     'Compare current and incident-time evidence; preserve buffered logs and do not clear state to hide failures.'
@@ -79,12 +79,65 @@ export function selectRunbook(i:Incident):Runbook {
   if(n.startsWith('Log'))return runbooks.logging;
   return runbooks.service;
 }
-export function maintenanceFindings(text:string):string[] {
-  const findings:string[]=[];
-  if(/old binaries|Restart required/i.test(text))findings.push('Reported outdated services or sessions: verify current needrestart output; preserve active sessions.');
-  if(/reboot|inhibitor/i.test(text))findings.push('Reboot/maintenance outcome needs current verification; active-session blocks are deferred work, not permission to force reboot.');
-  if(/packages.*upgrades available|Remaining upgrades/i.test(text))findings.push('Pending package updates: check phased/held status before treating this as an upgrade failure.');
-  if(/Tunnel.*shutdown timeout|cloudflared/i.test(text))findings.push('Tunnel warning is historical until current service/connectivity checks confirm a continuing failure.');
-  if(/Failed system services/i.test(text))findings.push('Check the named failed units now; a historical failed state may already have recovered.');
-  return findings.length?findings:['Review the original report and current service/package state; report text alone cannot verify recovery.'];
+// The report's "Needs attention" list (HTML relayed as text) or "ATTENTION" list (plain text).
+export function reportedWarnings(text:string):string[] {
+  const lines=text.split(/\r?\n/).map(line=>line.trim());
+  const start=lines.findIndex(line=>/^(Needs attention|ATTENTION)$/i.test(line));
+  const warnings:string[]=[];
+  for(const line of start<0?[]:lines.slice(start+1)) {
+    if(!line)continue;
+    const item=/^[-*•]\s+(.+)$/.exec(line);
+    if(!item)break;
+    warnings.push(item[1].slice(0,300));
+  }
+  return warnings.slice(0,30);
+}
+type MaintenanceCheck={label:string;state:'resolved'|'pending'|'unverified';detail:string;action?:string};
+// Compare each reported warning with current host evidence; unverifiable warnings get the exact command to run.
+export function assessMaintenance(text:string,hostName:string,reportedAt:string,host:any) {
+  const warnings=reportedWarnings(text), ok=Boolean(host && !host.error);
+  const at=(iso:string)=>iso.slice(0,19).replace('T',' ')+' UTC';
+  const run=(command:string)=>`Run \`${command}\` on ${hostName}`;
+  const rebooted=ok && Date.parse(host.bootedAt)>Date.parse(reportedAt);
+  const rebootCheck=ok && host.nextRebootCheck ? `the automatic reboot check at ${host.nextRebootCheck}` : 'the daily 04:00 UK automatic reboot check';
+  const unknown=(label:string,command:string):MaintenanceCheck=>({label,state:'unverified',detail:ok?'needs root; not checked by AIOps':'host state unavailable',action:run(command)});
+  const unit=(label:string,name:string):MaintenanceCheck=>!ok || !host.units?.[name] ? unknown(label,`systemctl status ${name}`) :
+    host.units[name]==='active' ? {label,state:'resolved',detail:`${name} is active now`} :
+    {label,state:'pending',detail:`${name} is ${host.units[name]} now`,action:run(`journalctl -u ${name} -b`)};
+  const check=(warning:string):MaintenanceCheck=>{
+    if(/reboot required|Running kernel/i.test(warning)) {
+      if(!ok)return unknown('Reboot/kernel','cat /run/reboot-required.pkgs; uname -r');
+      if(!host.rebootRequired && host.runningKernel===host.newestKernel)
+        return {label:'Reboot/kernel',state:'resolved',detail:`${hostName} booted ${at(host.bootedAt)}${rebooted?', after this report':''}; running ${host.runningKernel}, the newest installed kernel; no reboot pending`};
+      return {label:'Reboot/kernel',state:'pending',detail:`reboot pending${host.rebootPackages?.length?' for '+host.rebootPackages.join(', '):''}; running ${host.runningKernel}, newest installed ${host.newestKernel}`,
+        action:`Reboot ${hostName} to load ${host.newestKernel}: ${rebootCheck} does this unless sessions or inhibitors defer it (check \`loginctl list-sessions\`)`};
+    }
+    if(/Failed system services/i.test(warning)) {
+      if(!ok || !Array.isArray(host.failedUnits))return unknown('Failed units','systemctl --failed');
+      if(!host.failedUnits.length)return {label:'Failed units',state:'resolved',detail:'no failed system units now'};
+      const first=host.failedUnits[0];
+      return {label:'Failed units',state:'pending',detail:`failed now: ${host.failedUnits.join(', ')}`,action:run(`systemctl status ${first}`)+` and \`journalctl -u ${first} -b\``};
+    }
+    if(/old binaries|needrestart/i.test(warning))return rebooted ?
+      {label:'Old binaries',state:'resolved',detail:`${hostName} rebooted at ${at(host.bootedAt)}, after this report, restarting every process`} :
+      {...unknown('Old binaries','sudo needrestart -b -r l'),action:run('sudo needrestart -b -r l')+`; ${rebootCheck} reboots if anything is still outdated`};
+    if(/Cloudflare Tunnel/i.test(warning))return unit('Tunnel','cloudflared');
+    const inactive=/^(\S+) is not active$/.exec(warning);
+    if(inactive)return unit(inactive[1],inactive[1]);
+    if(/Ubuntu security update|Pro\/ESM/i.test(warning))return unknown('Ubuntu Pro/ESM','pro security-status');
+    if(/upgrades available|security updates available|Security update assessment/i.test(warning))
+      return {...unknown('Package updates','apt list --upgradable'),action:run('apt list --upgradable')+'; phased or held packages need no action'};
+    if(/Held packages/i.test(warning))return unknown('Held packages','apt-mark showhold');
+    if(/Package database/i.test(warning))return unknown('Package database','sudo dpkg --audit');
+    return {label:warning.replace(/:.*/,'').slice(0,60),state:'unverified',detail:'historical report finding; not checked by AIOps',
+      action:`Read "${warning.slice(0,120)}" in the report's upgrade-details.txt attachment`};
+  };
+  const checks=[...new Map(warnings.map(check).map(c=>[c.label,c])).values()];
+  const findings=checks.map(c=>`${c.label} — ${c.state}: ${c.detail}.`);
+  if(!warnings.length)findings.push('Could not read the report\'s Needs attention list; nothing was verified.');
+  if(!ok)findings.push(`Host evidence unavailable: ${host?.error || 'the runner did not report maintenance state'}.`);
+  const resolved=warnings.length>0 && checks.every(c=>c.state==='resolved');
+  const actionItems=resolved ? [`None — all ${warnings.length} reported warnings are resolved on ${hostName} now.`] :
+    warnings.length ? checks.filter(c=>c.action).map(c=>c.action+'.') : ['Open the original weekly upgrade report and review its Needs attention list.'];
+  return {warnings,checks,findings,actionItems,healthy:resolved?true:checks.some(c=>c.state==='pending')?false:null};
 }

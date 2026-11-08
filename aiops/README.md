@@ -539,8 +539,14 @@ selected ID/version and a runbook event. Model prompts receive the trusted
 catalogue entry separately from untrusted incident evidence. The available action
 set is intersected with the runbook; registry and approval checks remain in force.
 Upstream import and weekly upgrade reviews follow deterministic read-only paths.
-Weekly reports identify `maintenance / WeeklyUpgradeReview`, preserve reported
-findings, and never claim current recovery from historical email alone.
+Weekly reports identify `maintenance / WeeklyUpgradeReview`. The review reads
+the report's Needs attention list, then asks the host's runner (`__host__`
+inspect, Linux only) for current boot time, kernels, `/run/reboot-required`,
+failed units and core unit states. A review closes as `healthy` only when every
+reported warning is verified resolved now. Otherwise the summary lists each
+pending or unverified warning with a specific next step. Email text alone never
+establishes recovery. Deploy the runner before the application: an older runner
+returns no maintenance state, so reviews stay in review with that evidence gap.
 
 Misdirected registered application alerts are relayed over the existing private
 peer connection using the peer credential to `POST /api/relay-alerts`. The receiver

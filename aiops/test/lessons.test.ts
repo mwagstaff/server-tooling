@@ -4,7 +4,7 @@ import {Store} from '../lib/store.ts';
 import {Engine} from '../lib/engine.ts';
 import {alertsFromWebhook,alertFromEmail} from '../lib/alerts.ts';
 import {relayApplication,receiveRelay} from '../lib/routing.ts';
-import {selectRunbook,maintenanceFindings} from '../lib/runbooks.ts';
+import {selectRunbook} from '../lib/runbooks.ts';
 import {enqueueSummary} from '../lib/notifications.ts';
 import {createApp,reconcileAlerts} from '../server.ts';
 import type {Config} from '../lib/types.ts';
@@ -93,14 +93,64 @@ test('upstream 403 follows recorded read-only runbook, reports age and never cal
  assert.equal(saved.status,'needs_review');assert.match(saved.diagnosis,/Retain the last validated dataset/);
  assert.equal(s.events(i.id).filter(e=>e.kind==='runbook').length,1);
 });
-test('weekly report maps to maintenance and preserves uncertainty about historical warnings',async()=>{
- const a=alertFromEmail({id:'report',subject:'[REVIEW] sky weekly upgrade report',text:'Failed system services. Remaining upgrades. Tunnel shutdown timeout. old binaries',receivedAt:new Date().toISOString()},config);
+// Text as relayed by the email worker for the 8 November 2026 report (HTML converted by the SMTP relay).
+const relayedReport='REVIEW\n\n\nWeekly upgrade\n\nsky · weekly maintenance\n\nService result\n\nsuccess\n\n\nNeeds attention\n\n * Host reboot required to finish applying updates\n * Running kernel status needs review\n\n\n'+
+ 'Package changes (9)\n\nlinux-image-6.8.0-149-generic\n\n(new)\n\n6.8.0-149.149\n\nSecurity and system checks\n\nFailed system services\n\nNone\n\nRestart required\n\nNone reported\n\nRemaining upgrades\n\nNone\n\ncloudflared\n\nactive';
+const weeklyReport=(text=relayedReport)=>alertFromEmail({id:'report-'+text.length,subject:'[REVIEW] sky weekly upgrade report',text,receivedAt:new Date(Date.now()-60000).toISOString()},config);
+const skyHost=(maintenance:any)=>async(_c:any,target:any,operation:any)=>{
+ assert.deepEqual([target.host,target.name,operation],['sky','__host__','inspect']);
+ return {host:'sky',healthy:null,maintenance:{bootedAt:new Date(Date.now()-30000).toISOString(),runningKernel:'6.8.0-149-generic',newestKernel:'6.8.0-149-generic',
+  rebootRequired:false,rebootPackages:[],failedUnits:[],units:{cloudflared:'active'},nextRebootCheck:'Mon 2026-11-09 04:00:00 UTC',...maintenance}};
+};
+const noModel=async()=>{throw new Error('must not invoke model');};
+test('weekly report checks only reported warnings against the host and closes when all are resolved',async t=>{
+ const a=weeklyReport();
  assert.equal(a.service,'maintenance');assert.equal(a.name,'WeeklyUpgradeReview');assert.equal(a.host,'sky');
- const s=new Store(':memory:');const i=s.ingest(a).incident;
- await new Engine(config,s).investigate(i);
- assert.equal(s.get(i.id)!.verification.healthy,null);assert.equal(s.get(i.id)!.action,'none');
- assert.match(s.get(i.id)!.diagnosis,/phased/);assert.equal(selectRunbook(i).id,'upgrade-review');s.db.close();
- assert.match(maintenanceFindings('active session reboot deferred').join(' '),/not permission to force reboot/);
+ const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(a).incident;
+ await new Engine(config,s,skyHost({}) as any,noModel as any).investigate(i);
+ const saved=s.get(i.id)!;
+ assert.deepEqual(saved.runbook,{id:'upgrade-review',version:2});assert.equal(selectRunbook(i).id,'upgrade-review');
+ assert.equal(saved.status,'healthy');assert.equal(saved.verification.healthy,true);assert.equal(saved.action,'none');assert.equal(saved.spent,0);
+ assert.deepEqual(saved.evidence.reportedWarnings,['Host reboot required to finish applying updates','Running kernel status needs review']);
+ // Table labels ("Failed system services / None", "Remaining upgrades", "cloudflared") are not warnings.
+ assert.deepEqual(saved.evidence.checks.map((c:any)=>c.label),['Reboot/kernel']);
+ assert.match(saved.diagnosis,/^Reboot\/kernel — resolved: sky booted \S+ \S+ UTC, after this report; running 6\.8\.0-149-generic, the newest installed kernel; no reboot pending\.$/);
+ const summary=s.events(i.id).find(e=>e.kind==='summary')!.data;
+ assert.match(summary.title,/^\[AIOps HEALTHY\] maintenance · sky · WeeklyUpgradeReview/);
+ assert.match(summary.text,/^- Summary: HEALTHY\. Current host checks passed; source: email report\./m);
+ assert.match(summary.text,/^- Alert: WeeklyUpgradeReview — \[REVIEW\] sky weekly upgrade report$/m);
+ assert.match(summary.text,/^- Next steps:\n  - None — all 2 reported warnings are resolved on sky now\.$/m);
+});
+test('weekly report gives a specific next step for each pending or unverifiable warning',async t=>{
+ const report='Weekly upgrade — sky — REVIEW\n\nATTENTION\n- Host reboot required to finish applying updates\n- Failed system services detected\n- Services or user sessions still use old binaries; review restart list\n'+
+  '- 3 packages still have upgrades available (may include held packages)\n- Cloudflare Tunnel encountered a shutdown timeout or service failure during the upgrade\n- com.top-scores.api is not active\n\nPACKAGES CHANGED\nNo package changes detected.';
+ const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(weeklyReport(report)).incident;
+ await new Engine(config,s,skyHost({bootedAt:new Date(Date.now()-2*86400000).toISOString(),runningKernel:'6.8.0-147-generic',newestKernel:'6.8.0-149-generic',
+  rebootRequired:true,rebootPackages:['linux-image-6.8.0-149-generic'],failedUnits:['caddy.service']}) as any,noModel as any).investigate(i);
+ const saved=s.get(i.id)!;
+ assert.equal(saved.status,'needs_review');assert.equal(saved.verification.healthy,false);
+ assert.deepEqual(saved.evidence.checks.map((c:any)=>c.label+':'+c.state),['Reboot/kernel:pending','Failed units:pending','Old binaries:unverified','Package updates:unverified','Tunnel:resolved','com.top-scores.api:unverified']);
+ const actions=saved.evidence.actionItems.join('\n');
+ assert.match(actions,/^Reboot sky to load 6\.8\.0-149-generic: the automatic reboot check at Mon 2026-11-09 04:00:00 UTC does this/m);
+ assert.match(actions,/^Run `systemctl status caddy\.service` on sky and `journalctl -u caddy\.service -b`\.$/m);
+ assert.match(actions,/^Run `sudo needrestart -b -r l` on sky/m);
+ assert.match(actions,/^Run `apt list --upgradable` on sky; phased or held packages need no action\.$/m);
+ assert.match(actions,/^Run `systemctl status com\.top-scores\.api` on sky\.$/m);
+ assert.equal(saved.evidence.actionItems.length,5);
+ const text=s.events(i.id).find(e=>e.kind==='summary')!.data.text;
+ assert.match(text,/^- Assessment:\n  - Reboot\/kernel — pending: reboot pending for linux-image-6\.8\.0-149-generic; running 6\.8\.0-147-generic, newest installed 6\.8\.0-149-generic\.$/m);
+ assert.match(text,/^  - Tunnel — resolved: cloudflared is active now\.$/m);
+ assert.match(text,/^- Next steps:\n  - Reboot sky/m);
+});
+test('weekly report without host evidence never claims recovery',async t=>{
+ for(const run of [async()=>{throw new Error('ssh refused');},async()=>({host:'sky',healthy:null})]) {
+  const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(weeklyReport()).incident;
+  await new Engine(config,s,run as any,noModel as any).investigate(i);
+  const saved=s.get(i.id)!;
+  assert.equal(saved.status,'needs_review');assert.equal(saved.verification.healthy,null);
+  assert.match(saved.diagnosis,/Reboot\/kernel — unverified: host state unavailable\.\nHost evidence unavailable: /);
+  assert.deepEqual(saved.evidence.actionItems,['Run `cat /run/reboot-required.pkgs; uname -r` on sky.']);
+ }
 });
 test('incident correlation links same-host intake symptoms across peers without merging identity',async t=>{
  const s=new Store(':memory:');t.after(()=>s.db.close());const a=alertsFromWebhook({alerts:[{...raw(),labels:{host:'sky',service:'aiops',alertname:'AIOpsReconciliationStalled'}}]},config)[0];
