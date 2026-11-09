@@ -22,7 +22,7 @@ typeset -A PROJECT_DEFAULT_HOSTS=(
   kidsplorers-events-worker mini
   bha-website            mini
   bha-website-live       sky
-  start-page             mini
+  tab1.net               mini
 )
 
 get_project_default_host() {

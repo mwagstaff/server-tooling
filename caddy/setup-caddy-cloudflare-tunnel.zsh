@@ -41,8 +41,10 @@ BHA_HOSTNAME="beckenham-historical-association.org"
 BHA_WWW_HOSTNAME="www.beckenham-historical-association.org"
 BHA_LIVE_UPSTREAM="http://127.0.0.1:3050"
 # The personal start page runs on mini; Caddy reaches it over Tailscale.
-START_PAGE_HOSTNAME="start.skynolimit.dev"
-START_PAGE_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3060"
+TAB1_HOSTNAME="tab1.net"
+TAB1_WWW_HOSTNAME="www.tab1.net"
+TAB1_LEGACY_HOSTNAME="start.skynolimit.dev"
+TAB1_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3060"
 CLOUDFLARED_CONFIG_DIR="${HOME}/.cloudflared"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG_DIR}/config.yml"
 SYSTEM_CLOUDFLARED_CONFIG_DIR="/etc/cloudflared"
@@ -149,10 +151,16 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
     }
   }
 
-  # Personal start page, hosted on mini.
-  @start_page host ${START_PAGE_HOSTNAME}
-  handle @start_page {
-    reverse_proxy ${START_PAGE_UPSTREAM} {
+  # Redirect the old address and www to the official domain.
+  @tab1_redirect host ${TAB1_LEGACY_HOSTNAME} ${TAB1_WWW_HOSTNAME}
+  handle @tab1_redirect {
+    redir https://${TAB1_HOSTNAME}{uri} 308
+  }
+
+  # tab1.net, hosted on mini.
+  @tab1 host ${TAB1_HOSTNAME}
+  handle @tab1 {
+    reverse_proxy ${TAB1_UPSTREAM} {
       header_up Host {host}
       header_up X-Forwarded-Host {host}
       header_up X-Forwarded-Proto https
@@ -370,11 +378,21 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
-  - hostname: ${START_PAGE_HOSTNAME}
+  - hostname: ${TAB1_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
       http2Origin: false
-      httpHostHeader: ${START_PAGE_HOSTNAME}
+      httpHostHeader: ${TAB1_HOSTNAME}
+  - hostname: ${TAB1_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TAB1_WWW_HOSTNAME}
+  - hostname: ${TAB1_LEGACY_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TAB1_LEGACY_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -455,11 +473,21 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
-  - hostname: ${START_PAGE_HOSTNAME}
+  - hostname: ${TAB1_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
       http2Origin: false
-      httpHostHeader: ${START_PAGE_HOSTNAME}
+      httpHostHeader: ${TAB1_HOSTNAME}
+  - hostname: ${TAB1_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TAB1_WWW_HOSTNAME}
+  - hostname: ${TAB1_LEGACY_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${TAB1_LEGACY_HOSTNAME}
   - service: http_status:404
 YAML
 
@@ -537,7 +565,7 @@ curl -s -o /dev/null -w "  ${BHA_WWW_HOSTNAME}/events -> %{http_code} %{redirect
 
 echo
 echo "--> via Caddy (start page hostname, proxied to mini):"
-curl -i -H "Host: ${START_PAGE_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
+curl -i -H "Host: ${TAB1_HOSTNAME}" "http://${CADDY_LISTEN_IP}:${CADDY_PORT}/healthcheck" | head -n 5 || true
 
 echo
 echo "--> via Caddy (Grafana /grafana and /grafana/):"
@@ -574,7 +602,7 @@ echo "    https://${KIDSPLORERS_HOSTNAME}"
 echo "    https://${API_HOSTNAME}/kidsplorers/v1/health"
 echo "    https://${BHA_PREVIEW_HOSTNAME}"
 echo "    https://${BHA_LIVE_HOSTNAME}"
-echo "    https://${START_PAGE_HOSTNAME}"
+echo "    https://${TAB1_HOSTNAME}"
 EOF
 
 # The Caddyfile above is written whole, which drops the access-log block that
