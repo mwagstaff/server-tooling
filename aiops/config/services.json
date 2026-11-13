@@ -378,7 +378,9 @@
     "publicUrl": null,
     "runtimePort": 19201,
     "dependencies": [],
-    "autoActions": [],
+    "autoActions": [
+      "update_ollama"
+    ],
     "approvalActions": [
       "restart",
       "retry"

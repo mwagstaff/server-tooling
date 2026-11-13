@@ -82,6 +82,25 @@ class Tests(unittest.TestCase):
         f=FakeUpdater(self.root);f.busy=True;f.apply({'tag_name':'v0.40.12'})
         self.assertEqual(f.switched,[]);self.assertFalse(f.paused)
         self.assertEqual(f.state['lastOutcome'],'deferred_busy')
+    def test_success_resets_patch_wait_but_preserves_major_review(self):
+        for review in (False, True):
+            f=FakeUpdater(self.root)
+            f.save(pendingSince=1, latestVersion='0.41.0' if review else '0.40.13', reviewRequired=review)
+            f.apply({'tag_name':'v0.40.12'})
+            self.assertEqual(f.state['pendingSince']==1, review)
+        f.save(latestVersion='0.40.12', reviewRequired=False)
+        f.apply({'tag_name':'v0.40.12'})
+        self.assertIsNone(f.state['pendingSince'])
+
+    def test_legacy_pending_clock_repaired_without_installing(self):
+        f=FakeUpdater(self.root)
+        f.save(pendingSince=1,lastUpgradeAt=100,latestVersion='0.40.13',lastCheckAt=u.time.time())
+        f.tick(install=False)
+        self.assertEqual(f.state['pendingSince'],100)
+        self.assertEqual(f.switched,[])
+        f.save(pendingSince=1,reviewRequired=True)
+        f.tick(install=False)
+        self.assertEqual(f.state['pendingSince'],1)
     def test_failed_generation_restores_previous_and_blocks_release(self):
         f=FakeUpdater(self.root);f.fail_target=True
         with self.assertRaisesRegex(RuntimeError,'smoke'): f.apply({'tag_name':'v0.40.12'})
@@ -128,5 +147,27 @@ class Tests(unittest.TestCase):
         f.tick(install=False)
         self.assertEqual(f.switched,[]);self.assertFalse(f.paused)
         self.assertEqual(f.state['phase'],'idle')
+
+    def test_aiops_request_enforces_patch_policy_and_preserves_transaction_safety(self):
+        now = datetime(2026, 11, 12, tzinfo=timezone.utc).timestamp()
+        for scenario in ('success', 'busy', 'blocked', 'major', 'young', 'expired', 'interrupted', 'failed', 'not_overdue'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                f = FakeUpdater(Path(directory))
+                f.busy = scenario == 'busy'; f.fail_target = scenario == 'failed'
+                f.save(phase='idle',pendingSince=now-(86400 if scenario=='not_overdue' else 20*86400),
+                       aiopsRequest={'id':'fixture-request','status':'running' if scenario=='interrupted' else 'queued',
+                                     'requestedAt':now-700 if scenario=='expired' else now,'expiresAt':now-100 if scenario=='expired' else now+600},
+                       blockedVersions=['v0.40.12'] if scenario=='blocked' else [])
+                release={'tag_name':'v0.41.0' if scenario=='major' else 'v0.40.12',
+                         'published_at':'2026-11-11T00:00:00Z' if scenario=='young' else '2026-10-20T00:00:00Z'}
+                with patch.object(f,'installed',return_value='0.40.0'), patch.object(u,'request',return_value=[release]), patch.object(u.time,'time',return_value=now):
+                    f.process_aiops_request()
+                    switches=len(f.switched)
+                    f.process_aiops_request()  # Terminal requests never replay.
+                self.assertEqual(len(f.switched),switches)
+                expected='succeeded' if scenario in ('success','not_overdue') else 'deferred' if scenario=='busy' else 'failed'
+                self.assertEqual(f.state['aiopsRequest']['status'],expected)
+                if scenario not in ('success','failed'): self.assertEqual(f.switched,[])
+                if scenario=='failed': self.assertIn('v0.40.12',f.state['blockedVersions'])
 
 if __name__=='__main__':unittest.main()

@@ -1,4 +1,4 @@
-export type Action = 'none' | 'restart' | 'retry' | 'redeploy';
+export type Action = 'none' | 'restart' | 'retry' | 'redeploy' | 'update_ollama';
 export type Service = {
   name: string; host: string; owner: string; unit: string; directory: string;
   logs: string[]; healthUrl: string; publicUrl?: string; runtimePort?: number;

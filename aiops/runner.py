@@ -225,7 +225,6 @@ def service_health(item):
                 data = json.loads(response.read(65536))
             checks.update(worker_health(data))
             update = ollama_update_evidence()
-            checks.update(update['checks'])
         return {'name': item['name'], 'status': 'healthy' if all(checks.values()) else 'unhealthy',
                 'checkedAt': checked, 'checks': checks, **({'ollamaUpdate': update} if update is not None else {})}
     except Exception:
@@ -238,7 +237,7 @@ def ollama_update_evidence(now=None):
     path = Path.home() / '.local/share/ollama-updater/state.json'
     keys = ('installedVersion', 'latestVersion', 'lastCheckAt', 'lastUpgradeAt', 'lastOutcome',
             'healthError', 'phase', 'transactionStartedAt', 'pendingSince', 'deferredSince',
-            'reviewRequired', 'blockedVersions')
+            'reviewRequired', 'blockedVersions', 'aiopsRequest')
     try:
         with path.open('rb') as handle: data = json.loads(handle.read(1024 * 1024))
         result = {key: data.get(key) for key in keys}
@@ -268,7 +267,7 @@ def worker_health_evidence(url):
         update = ollama_update_evidence()
         return {'checkedAt': checked, 'running': data.get('running'), 'ollamaUpdate': update,
                 'lastRun': {key: last.get(key) for key in ('startedAt', 'finishedAt', 'ok', 'failed')},
-                'checks': {**worker_health(data, persist=False), **update['checks']}, 'failedSources': failures[:50]}
+                'checks': worker_health(data, persist=False), 'failedSources': failures[:50]}
     except (OSError, ValueError, TypeError, AttributeError):
         return {'checkedAt': checked, 'checks': {'jobEvidenceAvailable': False},
                 'error': 'Worker job details unavailable or invalid'}
@@ -351,6 +350,32 @@ def restore(item):
     return restart(item)
 
 
+def request_ollama_update(item, action_id):
+    """Queue one bounded request; only the transactional updater may install anything."""
+    if item['name'] != 'kidsplorers-events-worker' or platform.system() != 'Darwin':
+        raise ValueError('Ollama update target is not registered')
+    root = Path.home() / '.local/share/ollama-updater'
+    with (root / 'update.lock').open('a') as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return {'code': 1, 'reason': 'Updater is busy; retry after inspection'}
+        evidence = ollama_update_evidence()
+        checks = evidence['checks']
+        if (checks.get('ollamaUpdateTimely') is not False or
+                any(checks.get(k) is not True for k in ('ollamaUpdateStateReadable', 'ollamaUpdateCheckFresh', 'ollamaUpdateHealthy', 'ollamaUpdateNotStuck')) or
+                evidence.get('phase') != 'idle' or evidence.get('reviewRequired') is not False):
+            return {'code': 1, 'reason': 'No safe overdue patch update is eligible'}
+        state_path = root / 'state.json'
+        state = json.loads(state_path.read_text())
+        if (state.get('aiopsRequest') or {}).get('status') in ('queued', 'running'):
+            return {'code': 1, 'reason': 'An updater request is already pending'}
+        now = time.time()
+        state['aiopsRequest'] = {'id': action_id, 'status': 'queued', 'requestedAt': now, 'expiresAt': now + 600}
+        temporary = state_path.with_suffix('.aiops.tmp')
+        temporary.write_text(json.dumps(state))
+        temporary.replace(state_path)
+        return {'code': 0, 'queued': True, 'actionId': action_id}
+
+
 def handle(request, config):
     operation = request.get('operation')
     name = request.get('service')
@@ -362,7 +387,7 @@ def handle(request, config):
         raise ValueError('Unregistered service')
     if operation == 'inspect':
         return inspect(item)
-    if operation not in ('restart', 'retry', 'redeploy'):
+    if operation not in ('restart', 'retry', 'redeploy', 'update_ollama'):
         raise ValueError('Unregistered operation')
     if platform.system() == 'Linux':
         # The existing weekly upgrade owns package/service maintenance. Observe its
@@ -399,11 +424,13 @@ def handle(request, config):
                 return {'ok': False, 'reason': 'Service recovery cooldown'}
             if any(not probe(url)['ok'] for url in item.get('dependencyProbes', {}).values()):
                 return {'ok': False, 'reason': 'Dependency unhealthy'}
-            if inspect(item)['healthy'] and request.get('allowHealthy') is not True:
+            if operation != 'update_ollama' and inspect(item)['healthy'] and request.get('allowHealthy') is not True:
                 return {'ok': False, 'reason': 'Service is already healthy'}
             db.execute('INSERT INTO actions VALUES(?,?,?,NULL)', (action_id, name, time.time()))
             db.commit()  # Crash after this point must never replay an uncertain mutation.
-            if operation == 'restart':
+            if operation == 'update_ollama':
+                result = request_ollama_update(item, action_id)
+            elif operation == 'restart':
                 result = restart(item)
             elif operation == 'redeploy':
                 result = restore(item)

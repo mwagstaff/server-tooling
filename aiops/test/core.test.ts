@@ -206,8 +206,8 @@ test('summary leads with source resolution without claiming service recovery',()
   s.ingest({...i.alert,status:'resolved'});
   enqueueSummary(config,s,i);
   const summary=s.events(i.id).find(e=>e.kind==='summary')!.data;
-  assert.match(summary.title,/SOURCE CLEARED/);
-  assert.match(summary.text,/^- Summary: SOURCE CLEARED. Service health not verified/);
+  assert.match(summary.title,/RESOLVED/);
+  assert.match(summary.text,/^- Summary: RESOLVED. No immediate action required. Service health not verified/);
   assert.ok(summary.text.split('\n').every((line:string)=>/^(  )?- /.test(line)));
   assert.match(summary.text,/^- Assessment:\n  - Old startup lines\.\n  - Possible restart loop\.$/m);
   assert.ok(!summary.text.includes('Final verification: {'));
@@ -322,7 +322,7 @@ test('source resolution queues one updated summary despite repeated webhooks',as
   }
   const rows=s.db.prepare('SELECT data FROM notifications').all();
   assert.equal(rows.length,2);
-  assert.match(JSON.parse(rows[1].data as string).title,/SOURCE CLEARED/);
+  assert.match(JSON.parse(rows[1].data as string).title,/RESOLVED/);
 });
 
 test('legacy Sky hostname is canonicalized without accepting another host',()=>{

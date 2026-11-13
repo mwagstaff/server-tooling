@@ -25,3 +25,7 @@
 .fleet-service.health-unhealthy p{color:var(--danger)}
 .health-unknown,.health-stale{color:var(--warn)}
 @media(max-width:700px){.fleet-services{grid-template-columns:1fr}.fleet-heading{gap:8px}}
+
+.workspace{margin-bottom:36px}#detail{scroll-margin-top:20px}.investigation-links{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-size:13px}.detail-section pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font-size:12px}.detail-section li{margin-bottom:8px}
+
+#failure-evidence{scroll-margin-top:20px}.evidence-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:6px 14px;font-size:13px}.evidence-fields dt{color:var(--muted)}.evidence-fields dd{margin:0;overflow-wrap:anywhere}

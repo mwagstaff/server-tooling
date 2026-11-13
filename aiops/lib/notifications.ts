@@ -4,6 +4,7 @@ import type {Config, Incident} from './types.ts';
 import type {Store} from './store.ts';
 import {boundedBody, redact} from './security.ts';
 import {incidentRef} from './alerts.ts';
+import {incidentGuide,updaterFailureEvidence} from './investigation.ts';
 
 // Explicit block elements survive mail gateways that collapse plain-text newlines.
 export function summaryHtml(text: string): string {
@@ -20,9 +21,9 @@ export function summaryHtml(text: string): string {
     const colon=content.indexOf(':');
     const label=colon<0 ? '' : `<strong>${escape(content.slice(0,colon+1))}</strong> `;
     const value=colon<0 ? content : content.slice(colon+1).trim();
-    const linked = ['Incident','Service metrics','Host metrics','Logs'].includes(content.slice(0,colon));
+    const linked = ['Incident','Failure evidence','Worker request logs','Service metrics','Host metrics','Logs'].includes(content.slice(0,colon));
     const body=linked && /^https?:\/\//.test(value)
-      ? `<a href="${escape(value)}">${content.startsWith('Incident:') ? 'Open incident console' : 'Open dashboard'}</a>` : escape(value);
+      ? `<a href="${escape(value)}">${content.startsWith('Incident:') ? 'Open incident console' : content.startsWith('Failure evidence:') ? 'View recorded updater failure' : 'Open dashboard'}</a>` : escape(value);
     const nested=children.length ? `<ul style="margin:4px 0 0;padding-left:20px;">${children.map(child=>`<li style="margin:0 0 4px;">${escape(child)}</li>`).join('')}</ul>` : '';
     return `<li style="margin:0 0 12px;padding-left:4px;">${label}${body}${nested}</li>`;
   }).join('\n');
@@ -32,31 +33,46 @@ export function summaryHtml(text: string): string {
 
 export function enqueueSummary(config: Config, store: Store, i: Incident) {
   const current = store.get(i.id) || i;
-  if(current.resolvedAt && (store.setting('summary:resolved:'+i.id,false) || store.events(i.id).some(e=>e.kind==='summary' && e.data.title?.startsWith('[AIOps SOURCE CLEARED]')))) {
+  const updater=current.runbook?.id==='ollama-updater';
+  i=current; // Titles and bodies must use the same latest persisted incident.
+  const publicRecovered=current.alert.name==='SharedPublicOutage' && current.status==='healthy' &&
+    current.verification?.healthy===true && current.verification?.alertFiring===false;
+  const healthRecovered=(current.alert.name==='ServiceHealthFailing' || updater) && current.status==='healthy' &&
+    current.verification?.healthy===true && current.verification?.alertFiring===false;
+  if(healthRecovered && store.setting('summary:health-verified:'+i.id,false))return;
+  if(publicRecovered && store.setting('summary:public-healthy:'+i.id,false))return;
+  if(!publicRecovered && !healthRecovered && current.resolvedAt && (store.setting('summary:resolved:'+i.id,false) || store.events(i.id).some(e=>e.kind==='summary' && e.data.title?.startsWith('[AIOps SOURCE CLEARED]')))) {
     store.set('summary:resolved:'+i.id,true);return;
   }
   const v = current.verification;
-  const status = current.resolvedAt || v?.alertFiring === false ? 'SOURCE CLEARED' :
-    ['healthy','recovered'].includes(current.status) ? 'HEALTHY' :
-    current.status === 'still_failing' ? 'STILL FAILING' :
-    current.status === 'needs_approval' ? 'APPROVAL NEEDED' : 'REVIEW NEEDED';
+  const samples = v?.samples;
+  const healthy = samples?.length ? samples.every((s:any)=>s.healthy && s.public?.ok !== false) : v?.healthy;
+  const sourceResolved=Boolean(current.resolvedAt) || v?.alertFiring===false;
+  // An explicit failed health check still needs attention even after the source resolves.
+  const resolved=healthy!==false && (sourceResolved ||
+    (['healthy','recovered'].includes(current.status) && v?.alertFiring!==true));
+  const status=resolved?'RESOLVED':current.status==='needs_approval'?'APPROVAL NEEDED':'ACTION REQUIRED';
+  const action=resolved?'No immediate action required.':
+    current.status==='needs_approval'?'Approval required before recovery can proceed.':
+    v?.alertFiring===true?'The incident is still active. Action required.':
+    healthy===false?'Health checks still show a problem. Action required.':
+    'Recovery is not verified. Review required.';
   const compact = (value: string, max = 600) => {
     const text=redact(value).replace(/\s+/g,' ').trim();
     if(text.length<=max) return text;
     const sentences=text.slice(0,max).match(/^.*[.!?](?=\s)/);
-    return (sentences?.[0] || 'Assessment requires the full incident record.') + ' See incident for details.';
+    return (sentences?.[0] || text.slice(0,max).replace(/\s+\S*$/, '')+'…') + ' See incident for details.';
   };
   const ref = i.alert.ref || incidentRef(i.key,i.alert.startsAt);
-  const title = `[AIOps ${status}] ${i.service} · ${i.host} · ${i.alert.name} · ${ref}`;
+  const title = `[AIOps ${status}] ${resolved?'Resolved':status==='APPROVAL NEEDED'?'Approval needed':'Action required'}: ${updater?'Ollama updater (Kidsplorers)':i.service} · ${i.host} · ${i.alert.name} · ${ref}`;
   const events = store.events(i.id);
+  const updaterFailure=updaterFailureEvidence(i,events);
   const actions = events.filter(e=>e.kind === 'action_requested');
-  const samples = v?.samples;
-  const healthy = samples?.length ? samples.every((s:any)=>s.healthy && s.public?.ok !== false) : v?.healthy;
   const infrastructure=i.evidence?.infrastructure;
   const logging=i.evidence?.logging || infrastructure;
-  const checks = healthy === true ? 'Last service checks passed' : healthy === false ? 'Last service checks failed' : 'Service health not verified';
-  const source = current.resolvedAt ? `cleared at ${current.resolvedAt}` :
-    v?.alertFiring === false ? 'cleared' : v?.alertFiring === true ? 'firing at last check' : 'unknown';
+  const checks = updater ? (healthy===true?'Updater maintenance checks passed':healthy===false?'Updater maintenance checks need attention':'Updater state not verified') : healthy === true ? 'Last service checks passed' : healthy === false ? 'Last service checks failed' : 'Service health not verified';
+  const source = current.resolvedAt ? `resolved at ${current.resolvedAt}` :
+    v?.alertFiring === false ? 'resolved' : v?.alertFiring === true ? 'firing at last check' : 'unknown';
   const metrics=i.evidence?.metrics;
   const scalar=(name:string) => { const v=metrics?.[name]?.samples?.[0]?.value?.[1]; return v!==undefined && Number.isFinite(Number(v)) ? Number(v) : undefined; };
   const ratio=scalar('errors5m');
@@ -68,26 +84,30 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
   const to=Math.max(Date.parse(current.resolvedAt || current.updated),Date.parse(i.alert.startsAt))+5*60000;
   const dashboard=(uid:string)=>`${grafana.origin}/d/${uid}?${new URLSearchParams({'var-host':i.host,'var-service':i.service,from:String(from),to:String(to)})}`;
   const nested=(items:string[]) => items.map(item=>`  - ${compact(item,300)}`);
-  const findings=(i.diagnosis || '').split('\n').filter(line=>line.trim());
+  const guide=incidentGuide(i);
+  const findings=guide.failures.length ? [guide.summary,guide.context].filter(Boolean) : (i.diagnosis || '').split('\n').filter(line=>line.trim());
   const maintenance=i.runbook?.id==='upgrade-review';
   const text = [
-    `- Summary: ${status}. ${logging ? checks.replace('Service',infrastructure?'Infrastructure':'Logging').replace('service',infrastructure?'infrastructure':'logging') : maintenance ? checks.replace('Last service','Current host').replace('Service health','Host state') : checks}; ${i.alert.source==='email' ? 'source: email report' : 'source alert '+source}. Workflow: ${current.status.replaceAll('_',' ')}.`,
+    `- Summary: ${status}. ${action} ${logging ? checks.replace('Service',infrastructure?'Infrastructure':'Logging').replace('service',infrastructure?'infrastructure':'logging') : maintenance ? checks.replace('Last service','Current host').replace('Service health','Host state') : checks}; ${i.alert.source==='email' ? 'source: email report' : 'source alert '+source}. Workflow: ${current.status.replaceAll('_',' ')}.`,
     `- Alert: ${i.alert.name} — ${compact(i.alert.source==='email' ? i.alert.summary.split('\n')[0] : i.alert.summary,200)}`,
     `- Ref: ${ref}`,
+    ...(updater ? [`- Kidsplorers impact: ${i.verification?.workerHealthy===true?'No failure detected in worker process and ingestion checks.':i.verification?.workerHealthy===false?'Worker checks also show a problem; investigate separately.':'Worker health is unverified.'}`,`- Automation: ${i.evidence?.workerHealth?.ollamaUpdate?.aiopsRequest?.status || 'No update requested'}. ${i.evidence?.workerHealth?.ollamaUpdate?.aiopsRequest?.reason || 'Only eligible overdue patches may be installed automatically; major/minor upgrades and failed versions require review.'}`] : []),
     ...(logging ? [`- Evidence: ${logging.summary}`] : []),
     ...(i.runbook?.id==='bsd-upstream' ? [`- Evidence: BSD upstream ten-minute responses by source/status: ${bsdCounts('bsdResponses10m')}; incident-time responses: ${bsdCounts('bsdResponses10mAtIncident')}. Inbound API health is not upstream health; inspect retained URL evidence in the incident.`] : []),
-    ...(metrics && i.runbook?.id!=='bsd-upstream' ? [`- Evidence: Five-minute window at ${metrics.responses5m?.observedAt || 'unknown time'}; combined 5xx/abort ratio ${ratio===undefined ? 'unavailable' : (ratio*100).toFixed(2)+'%'}; responses ${counts}; restarts in 15 minutes: ${scalar('restarts15m') ?? 'unknown'}.`] : []),
+    ...(metrics?.responses5m && i.runbook?.id!=='bsd-upstream' ? [`- Evidence: Five-minute window at ${metrics.responses5m?.observedAt || 'unknown time'}; combined 5xx/abort ratio ${ratio===undefined ? 'unavailable' : (ratio*100).toFixed(2)+'%'}; responses ${counts}; restarts in 15 minutes: ${scalar('restarts15m') ?? 'unknown'}.`] : []),
     ...(i.evidence?.qualityIssues?.length ? [`- Evidence gaps: ${i.evidence.qualityIssues.join(' ')}`] : []),
     ...(i.runbook ? [`- Runbook: ${i.runbook.id} v${i.runbook.version}`] : []),
     ...(i.related?.length ? [`- Related incidents: Possible shared cause; ${i.related.map(r=>r.name+' '+r.url).join('; ')}`] : []),
     ...(findings.length>1 ? ['- Assessment:',...nested(findings)] : [`- Assessment: ${compact(findings[0] || 'Evidence gathering incomplete.')}`]),
     `- Actions: ${actions.length ? actions.map(e=>compact(String(e.data.action),40)).join(', ') + '; see incident for outcomes.' : 'No recovery action taken.'}`,
-    ...(i.evidence?.actionItems?.length ? ['- Next steps:',...nested(i.evidence.actionItems)] : [`- Next step: ${logging ? (healthy===true && source.startsWith('cleared') ? 'Infrastructure checks passed and the source cleared; retain the incident evidence for review.' : logging.nextStep) : current.status === 'needs_approval' && !current.resolvedAt ? 'Review the proposed action in the console.' : healthy === true && source.startsWith('cleared') ? 'No immediate recovery needed; review any remaining cause uncertainty.' : 'Review the evidence and unresolved cause in the console.'}`]),
+    ...(guide.nextSteps.length ? ['- Next steps:',...nested(guide.nextSteps)] : [`- Next step: ${logging ? (healthy===true && source.startsWith('resolved') ? 'Infrastructure checks passed and the source resolved; retain the incident evidence for review.' : logging.nextStep) : current.status === 'needs_approval' && !current.resolvedAt ? 'Review the proposed action in the console.' : healthy === true && source.startsWith('resolved') ? 'No immediate recovery needed; review any remaining cause uncertainty.' : 'Review the evidence and unresolved cause in the console.'}`]),
     `- AI cost/reservation: $${i.spent.toFixed(4)} of $${incidentBudget(config,store).toFixed(2)} incident allowance.`,
     `- Incident: ${config.publicUrl}/?incident=${i.id}`,
+    ...(updaterFailure ? [`- Failure evidence: ${config.publicUrl}/?incident=${i.id}#failure-evidence`,
+      '- Log scope: Worker request logs show HTTP requests, not the updater state that triggered this alert. The original failed check and updater timestamps are retained under Failure evidence.'] : []),
     `- Service metrics: ${dashboard(infrastructure?.dashboard || (logging?'monitoring-logging':'monitoring-service'))}`,
     `- Host metrics: ${dashboard('monitoring-host')}`,
-    `- Logs: ${logging ? dashboard('monitoring-logs').replace(/var-service=[^&]*/, 'var-service=.%2A') : dashboard('monitoring-logs')}`
+    `- ${i.service==='kidsplorers-events-worker'?'Worker request logs':'Logs'}: ${logging ? dashboard('monitoring-logs').replace(/var-service=[^&]*/, 'var-service=.%2A') : dashboard('monitoring-logs')}`
   ].join('\n');
   for (const channel of ['pushover','email']) {
     const n = config.notification;
@@ -96,6 +116,8 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
     store.db.prepare('INSERT INTO notifications(incident,channel,data) VALUES(?,?,?)').run(i.id,channel,JSON.stringify({title,text}));
   }
   store.event(i.id,'summary',{title,text});
+  if(publicRecovered)store.set('summary:public-healthy:'+i.id,true);
+  if(healthRecovered)store.set('summary:health-verified:'+i.id,true);
   if(current.resolvedAt)store.set('summary:resolved:'+i.id,true);
 }
 

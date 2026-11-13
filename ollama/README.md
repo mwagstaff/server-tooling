@@ -66,13 +66,18 @@ Staged archives and rollback releases are retained; review storage during mainte
 
 ## AIOps runbook
 
-The events-worker-job v3 runbook reads updater evidence through the private runner.
-Existing `ServiceHealthFailing` routing on Sky covers these checks:
+The events-worker-job v5 runbook reads updater evidence through the private runner.
+Dedicated warning alerts on Sky cover updater maintenance separately from worker
+process/ingestion health: `OllamaUpdateOverdue`, `OllamaUpdaterUnhealthy`, and
+`OllamaUpdaterTelemetryMissing`. They retain the worker association and identify
+`component=ollama-updater`. These checks do not make the worker unhealthy:
 
 - state readable, installed/latest versions valid;
 - release check less than 72 hours old;
 - no persisted upgrade error;
 - available newer version pending less than 14 days (including review-required series);
+  successful patch upgrades reset this waiting period, while a major/minor release
+  awaiting review retains its original age. Older journals are corrected on the next tick;
 - transaction idle or less than 45 minutes old.
 
 Metrics: `aiops_ollama_update_info` (installed/latest labels),
@@ -83,7 +88,7 @@ For failures, inspect the journal, worker `/maintenance`, service health and Oll
 logs first. Do not delete state, clear a gate or restart a busy model to silence an
 alert. Let the updater retry interrupted rollback. If rollback cannot validate,
 repair the retained previous distribution/service under the gate, validate real
-inference, then resume using the recorded owner. AIOps has no new recovery privileges.
+inference, then resume using the recorded owner. AIOps may request an eligible overdue patch through the registered `update_ollama` procedure; it cannot select commands, releases, remove gates or bypass validation.
 After diagnosis, an operator can clear `healthError` or a reviewed blocked version
 in the journal only while the scheduler is stopped and its lock is free. Preserve
 history. Re-enable and check the full source-alert lifecycle.
@@ -123,3 +128,46 @@ rollback, failed rollback and crash recovery without stopping production jobs.
 - Last full ingestion before the upgrade completed 27/27 sources at 09:06:25 UTC.
   The next overnight ingestion on 0.40.12 remains to be observed through normal job
   health checks; smoke tests do not substitute for that verification.
+
+## AIOps overdue-patch recovery
+
+With automatic recovery enabled, an authoritative firing `OllamaUpdateOverdue`
+alert may queue a fixed `update_ollama` request. The restricted Mini runner
+requires a fresh, readable, idle, error-free updater with a genuinely overdue
+update and no major/minor review pending. It records one idempotent request in
+`state.json` under the updater lock; no worker restart is performed.
+
+The five-minute updater scheduler consumes requests within ten minutes. It
+refreshes release discovery and retains the 48-hour age, same-series patch,
+blocked-version, archive, signature, drain, maintenance, inference and rollback
+checks. Only the weekly installation window is bypassed. Each accepted request
+is a bounded authorization; pausing AIOps prevents further requests, but does
+not cancel one already accepted or interrupt a transaction in progress.
+
+Busy work yields a deferred result. AIOps can issue another request after thirty
+minutes, at most three requests per incident. Failures, interrupted requests,
+expiry and unavailable eligibility evidence require review rather than replay.
+AIOps checks pending results once per minute and limits verification to 24 hours.
+It waits quietly while queued/running/deferred, then reports verified recovery
+or required review. Alertmanager's independent maintenance-warning delivery is
+preserved. Updater recovery requires fresh updater checks plus source resolution;
+worker impact is reported separately. Ordinary scheduled updates remain enabled.
+
+### Deployment verification — 12 November 2026
+
+- Both AIOps responders, Mini's restricted runner and transactional updater, and
+  Sky's Mini-facing monitoring rules deployed. Automatic policy enabled; only
+  `update_ollama` added to the worker's automatic procedure list.
+- Live worker health = 1, updater health = 1, overdue = 0; all three new rules
+  evaluate without errors. Worker process/ingestion checks exclude updater checks.
+- 123 Node tests passed with the existing Mongo investigation-coverage failure;
+  29 runner and 16 updater tests passed. 37 monitoring tests passed on Sky using
+  its installed promtool, including overdue/resolution and missing telemetry.
+- Disposable bounded `AIOpsUpdaterAcceptance` rule for unregistered service
+  `aiops-updater-verification` exercised Prometheus → Alertmanager → Sky AIOps →
+  email/Pushover, then source resolution. Incident
+  `43640148-2856-4316-b508-f5d9e118ae54`, zero actions, both initial and resolved
+  notifications accepted. Temporary rule removed; no acceptance alert active.
+- No production update was forced: 0.40.15 remains installed; 0.40.16 is not
+  overdue. Installation/deferral/rollback outcomes were exercised with fixtures;
+  a future genuine overdue update remains the production proof of that action.

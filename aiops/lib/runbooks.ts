@@ -2,6 +2,12 @@ import type {Incident} from './types.ts';
 export type Runbook={id:string;version:number;title:string;steps:string[];allowedActions:string[];recovery:string;escalation:string};
 const book=(id:string,title:string,steps:string[],recovery:string,escalation:string,allowedActions=['none'],version=1):Runbook=>({id,version,title,steps,allowedActions,recovery,escalation});
 export const runbooks = {
+  publicOutage:book('shared-public-outage','Shared public endpoint outage',[
+    'Compare incident-time public failures, HTTP status and duration with current probes.',
+    'Verify every registered and observed public target, successful collection and fresh samples.',
+    'Recheck recent incidents once per minute; close only after public checks pass and the source alert clears.',
+    'Persistent failures require proxy/tunnel, network and local-origin evidence. Shared infrastructure restarts require approval.'
+  ],'Fresh complete public probes pass and source alert clears.','Missing telemetry or persistent failures require review.'),
   notifications:book('notification-delivery','Notification delivery failures',[
     'Identify the failing integration and reason, and correlate Alertmanager logs with the incident window.',
     'Check rejected intake records and reconciliation alerts on the same host before assuming an SMTP failure.',
@@ -30,14 +36,20 @@ export const runbooks = {
     'A full feed may be revised on the same date. Only a newer publication with the next sequence can replace a same-day baseline; retain validation and rollback.',
     'Never infer the cause from old startup errors or collection timestamps. Missing state or a generic error code is an evidence gap.'
   ],'Successful ingestion result and source alert resolved, with a validated active dataset.','Inspect rejected delivery metadata; do not restart a healthy service or delete locks.'),
+  updater:book('ollama-updater','Ollama updater maintenance',[
+    'Report worker ingestion/process health separately from updater maintenance. HTTP 200 does not verify an update.',
+    'Only an overdue same-series patch may be requested automatically, after fresh checks and a firing source alert. The registered updater owns release age, draining, signatures, validation and rollback.',
+    'Busy deferrals can be retried after 30 minutes, at most three requests per incident. Failed, interrupted, blocked or major/minor upgrades require review. Never clear a maintenance gate or replay a blocked version.'
+  ],'Updater checks pass and the dedicated source alert resolves; report worker impact independently.','Inspect updater evidence and request outcome. Review failed upgrades or major/minor releases.',['none','update_ollama']),
   events:book('events-worker-job','Kidsplorers nightly event ingestion',[
     'Read workerHealth checks, running, lastRun and failedSources. HTTP 200 proves liveness only; dailyJobSucceeded requires zero failed sources and at least one success.',
     'Correlate source failure times and explicit JSON time fields with the run. A single failed source is a partial import failure, not a process outage.',
     'Inspect workerHealth.ollamaUpdate for update checks, installed/latest versions, lastOutcome, healthError, blockedVersions and phase. The local updater alone owns its bounded rollback. Never restart a draining worker, remove its maintenance gate, or replay a blocked version. Missing state, checks older than 72h, updates pending 14 days, or a transaction over 45 minutes require review.',
+    'Every false workerHealth.checks value is a failed requirement, even when the nightly import succeeds. Name the failing check and its threshold before assessing health. For ollamaUpdateTimely, compare pendingSince with lastUpgradeAt; an older patch waiting timestamp after a successful upgrade indicates updater accounting needs repair. Updater failures require updater investigation, never a successful-job retry.',
     'Ollama can return HTTP 200 and then lose its MLX subprocess. Correlate ~/Library/Logs/ollama/serve.log with failedSources times; the 29 October incident recorded cache: offset 5631 exceeds 5630 stored keys followed by automatic subprocess replacement. Do not infer a cache crash from invalid JSON alone.',
     'Malformed or incomplete model output gets up to three serialized retries (four attempts total) inside the worker. Persistent failures remain unhealthy; never suppress the failed-source check or mark a run successful manually.',
     'The registered retry procedure (POST /retry-failed on loopback, approval required) reruns only the last nightly run\'s failed sources and counts each that now succeeds in that run. Propose it once for transient failures (timeouts, fetch failures, malformed model output) when running is false and the Ollama updater is idle; the rerun takes minutes, so verify after it finishes. A source that fails again after a retry needs review, not more retries. Never restart or redeploy a healthy process to repair a source result.'
-  ],'Completed full run, or approved retry, leaving zero failed sources, fresh healthy dashboard checks and source alert resolution.','Escalate persistent source/model failures with timestamped evidence. Retry requires approval; no automatic recovery is granted.',['none','retry'],4),
+  ],'Completed full run, or approved retry, leaving zero failed sources, fresh healthy dashboard checks and source alert resolution.','Escalate persistent source/model failures with timestamped evidence. Retry requires approval; no automatic recovery is granted.',['none','retry'],5),
   loading:book('darwin-feed','Train loading readiness and Darwin feed',[
     'Read loadingHealth even on HTTP 503: compare ready, Mongo health, feed state, transport age, MESSAGE age and lastError with checkedAt and the incident window.',
     'Liveness and process uptime distinguish a running service with an unavailable dependency from a crash. A subscribed socket or fresh heartbeats alone do not prove fresh Darwin data.',
@@ -67,6 +79,8 @@ export const runbooks = {
 };
 export function selectRunbook(i:Incident):Runbook {
   const n=i.alert.name;
+  if(i.service==='kidsplorers-events-worker' && ['OllamaUpdateOverdue','OllamaUpdaterUnhealthy','OllamaUpdaterTelemetryMissing'].includes(n))return runbooks.updater;
+  if(n==='SharedPublicOutage')return runbooks.publicOutage;
   if(n==='MonitoringNotificationFailures'||n==='AIOpsNotificationFailures')return runbooks.notifications;
   if(n==='AIOpsReconciliationStalled')return runbooks.reconciliation;
   if(n.startsWith('TopScoresBSDUpstream'))return runbooks.bsd;

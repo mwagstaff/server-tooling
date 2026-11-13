@@ -21,8 +21,8 @@ display the estate; incident investigation and approvals belong to the owner.
 Host-level alerts without a registered service receive manual triage.
 
 Adding detection does not grant recovery permission. Existing policy allows
-automatic recovery for the Top Scores pilot only; other services require
-approval. Review the generated policy explicitly, especially for new names
+automatic recovery for the Top Scores pilot and the bounded Ollama updater
+overdue-patch procedure (`update_ollama`) only; other actions require approval. Review the generated policy explicitly, especially for new names
 beginning `top-scores-`, which the current generator treats as pilot services.
 
 ## Source of truth
@@ -168,6 +168,13 @@ goes only to AIOps. Do not use reserved watchdog/canary names for application
 alerts because intake intentionally excludes them from incident creation.
 
 ### Pushover email mirror, references and duplicate suppression
+
+Email subjects include both the bracketed status and ordinary status text:
+`[FIRING] Firing: ...` or `[RESOLVED] Resolved: ...`. Gmail grouped the earlier
+subjects that differed only in brackets under the original firing title, even
+when the recovery message's actual Subject was correct. Keep the ordinary status
+text so recovery notifications can appear separately; the incident reference
+still connects both messages. Existing Gmail conversations are not renamed.
 
 The Alertmanager `pushover` receiver also emails every notification, including
 resolutions and 4-hour repeats, directly to Gmail through the shared Plunk SMTP
@@ -346,3 +353,15 @@ metrics path for new producers. Relays preserve source expiry and resolution and
 do not grant actions. Validate both owner intake and source checks when changing
 producer labels or routing. Reconciliation includes suppressed alerts and requires
 two full snapshots before interpreting disappearance as source resolution.
+
+### Ollama maintenance versus Kidsplorers service health
+
+The worker's `aiops_service_healthy` describes process/HTTP/ingestion checks only.
+Updater maintenance is exported separately by `aiops_ollama_updater_healthy` and
+`aiops_ollama_update_overdue`, with explicit missing-telemetry detection. The
+three `Ollama*` rules in `application_rules.py` are warnings, retain
+`service=kidsplorers-events-worker`, and label `component=ollama-updater`.
+AIOps presents the component as Ollama updater and reports worker impact
+independently. Only a current `OllamaUpdateOverdue` source can authorize the
+registered fixed updater procedure; neither other updater faults nor an
+AI-generated diagnosis can authorize an upgrade. See [updater operations](../ollama/README.md).

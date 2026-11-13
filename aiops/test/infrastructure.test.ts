@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {enqueueSummary} from '../lib/notifications.ts';
 import {Store} from '../lib/store.ts';
 import {Engine} from '../lib/engine.ts';
 import {alertsFromWebhook} from '../lib/alerts.ts';
@@ -78,4 +79,85 @@ inventory=json.load(open('../monitoring/platform/inventory.json'))['hosts']
 registry={(s['host'],s['name']) for s in json.load(open('config/services.json'))}
 print(json.dumps([(host,s['name']) for host,info in inventory.items() for s in info['services'] if (host,s['name']) not in registry]))`],{encoding:'utf8'}));
  assert.deepEqual(missing,[]);
+});
+
+const publicAlert:Alert={...alert,key:'public',host:'sky',service:'unknown',name:'SharedPublicOutage',
+ labels:{host:'sky',alertname:'SharedPublicOutage'}};
+const publicRows=[sample(1,{service:'a',job:'public-a',instance:'https://a'}),
+ sample(1,{service:'b',job:'public-b',instance:'https://b'})];
+function publicMock(t:any,options:{missing?:boolean;stale?:boolean;failed?:boolean;active?:boolean;down?:boolean}={}) {
+ t.mock.method(globalThis,'fetch',async(input:any)=>{
+  const u=new URL(input);
+  if(u.host==='alerts')return Response.json(options.active?[{labels:publicAlert.labels,startsAt:publicAlert.startsAt,status:{state:'active'}}]:[]);
+  const q=u.searchParams.get('query')!;
+  let rows=publicRows.map(r=>({...r,value:[...r.value]}));
+  if(q.startsWith('timestamp'))rows=rows.map(r=>({...r,value:[Date.now()/1000,String(Date.now()/1000-(options.stale?120:2))]}));
+  else if(q.startsWith('up') && options.down)rows[0].value[1]='0';
+  else if(q.startsWith('probe_success') && !u.searchParams.has('time')) {
+    if(options.missing)rows.pop();
+    if(options.failed)rows[0].value[1]='0';
+  }
+  return Response.json({status:'success',data:{result:rows}});
+ });
+}
+test('shared outage closes only with fresh complete probes and cleared source, without commands/models',async t=>{
+ publicMock(t);const s=new Store(':memory:');t.after(()=>s.db.close());
+ const i=s.ingest(publicAlert).incident;const forbidden=async()=>{throw Error('forbidden');};
+ await new Engine(config,s,forbidden as any,forbidden as any).investigate(i);
+ const result=s.get(i.id)!;assert.equal(result.status,'healthy');assert.equal(result.runbook?.id,'shared-public-outage');
+ assert.equal(result.attempts,0);assert.equal(result.spent,0);
+});
+for(const [name,options,expected] of [
+ ['missing',{missing:true},undefined],['stale',{stale:true},undefined],
+ ['collector down',{down:true},undefined],['failed',{failed:true},false]
+] as const)test('shared outage does not close with '+name+' probes',async t=>{
+ publicMock(t,options);const s=new Store(':memory:');t.after(()=>s.db.close());
+ const i=s.ingest(publicAlert).incident;
+ await new Engine(config,s).investigate(i);
+ assert.equal(s.get(i.id)!.status,'needs_review');assert.equal(s.get(i.id)!.verification.healthy,expected);
+});
+test('shared outage rechecks after delayed source resolution and closes once',async t=>{
+ const options={active:true};publicMock(t,options);
+ const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(publicAlert).incident;
+ const forbidden=async()=>{throw Error('forbidden');};const engine=new Engine(config,s,forbidden as any,forbidden as any);
+ await engine.investigate(i);assert.equal(s.get(i.id)!.status,'needs_review');
+ options.active=false;s.ingest({...publicAlert,status:'resolved',receivedAt:new Date().toISOString()});
+ enqueueSummary(config,s,s.get(i.id)!);
+ await engine.tick();assert.equal(s.get(i.id)!.status,'healthy');
+ assert.match(s.events(i.id).filter(e=>e.kind==='summary').at(-1)!.data.title,/AIOps RESOLVED/);
+ const count=s.events(i.id).filter(e=>e.kind==='summary').length;
+ await engine.tick();assert.equal(s.events(i.id).filter(e=>e.kind==='summary').length,count);
+});
+test('shared outage rechecks are bounded and respect pause and maintenance',async t=>{
+ publicMock(t,{active:true});const s=new Store(':memory:');t.after(()=>s.db.close());
+ const i=s.ingest(publicAlert).incident;const engine=new Engine(config,s);
+ await engine.investigate(i);s.set('paused',true);await engine.tick();
+ assert.equal(s.events(i.id).filter(e=>e.kind==='recovery_check').length,0);
+ s.set('paused',false);
+ s.set('maintenance:windows',[{host:'sky',services:[],endsAt:Date.now()+60000}]);await engine.tick();
+ assert.equal(s.events(i.id).filter(e=>e.kind==='recovery_check').length,0);
+ s.set('maintenance:windows',[]);await engine.tick();await engine.tick();
+ assert.equal(s.events(i.id).filter(e=>e.kind==='recovery_check').length,1);
+ assert.equal(s.get(i.id)!.status,'needs_review');
+});
+
+for(const [workflow,verification,sourceResolved,expected] of [
+ ['healthy',{healthy:true,alertFiring:false},true,'RESOLVED'],
+ ['needs_review',{alertFiring:false},true,'RESOLVED'],
+ ['needs_review',{healthy:false,alertFiring:false},true,'ACTION REQUIRED'],
+ ['healthy',{healthy:true,alertFiring:true},false,'ACTION REQUIRED'],
+ ['needs_review',{alertFiring:null},false,'ACTION REQUIRED'],
+ ['needs_approval',{healthy:false,alertFiring:true},false,'APPROVAL NEEDED']
+] as const)test('notification title communicates action: '+workflow+' '+JSON.stringify(verification),t=>{
+ const s=new Store(':memory:');t.after(()=>s.db.close());
+ const original=s.ingest(publicAlert).incident;
+ const updated={...original,status:workflow,verification,...(sourceResolved?{resolvedAt:new Date().toISOString()}:{})};
+ s.put(updated);
+ const cfg={...config,notification:{smtpHost:'smtp',emailTo:'test@example.test',pushoverToken:'test',pushoverUser:'test'}};
+ enqueueSummary(cfg,s,original);
+ const rows=s.db.prepare('SELECT data FROM notifications').all().map(r=>JSON.parse(r.data as string));
+ assert.equal(rows.length,2);assert.equal(rows[0].title,rows[1].title);
+ assert.ok(rows[0].title.startsWith('[AIOps '+expected+']'));
+ assert.match(rows[0].title,/\] (Resolved|Action required|Approval needed):/);
+ assert.doesNotMatch(rows[0].text,/SOURCE CLEARED|source alert cleared/);
 });

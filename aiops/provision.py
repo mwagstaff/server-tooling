@@ -61,6 +61,7 @@ def services():
                 # Reruns only the last nightly run's failed sources; the worker answers 202 and runs them in the background.
                 row['retryCommand']=['curl','-fsS','-m','10','-X','POST',f"http://127.0.0.1:{item['port']}/retry-failed"]
                 row['approvalActions']=['restart','retry']
+                row['autoActions']=['update_ollama']
             if item.get('scope'): row['scope']=item['scope']
             if item.get('admin_helper'): row['adminHelper']=item['admin_helper']
             result.append(row)

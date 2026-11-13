@@ -11,6 +11,10 @@ export function metrics(config:Config,store:Store,health:HealthMonitor,now=Date.
     emit('aiops_service_healthy',report.status==='healthy'?1:0,report.name);
     if(report.ollamaUpdate) {
       const u=report.ollamaUpdate;
+      const fresh=report.status!=='stale' && report.status!=='unknown';
+      const checks=u.checks || {};
+      emit('aiops_ollama_updater_healthy',fresh && ['ollamaUpdateStateReadable','ollamaUpdateCheckFresh','ollamaUpdateHealthy','ollamaUpdateNotStuck'].every(k=>checks[k]===true)?1:0,report.name);
+      emit('aiops_ollama_update_overdue',fresh && checks.ollamaUpdateTimely===false?1:0,report.name);
       if(/^\d+\.\d+\.\d+$/.test(u.installedVersion||'') && /^\d+\.\d+\.\d+$/.test(u.latestVersion||''))
         lines.push(`aiops_ollama_update_info{service=${JSON.stringify(report.name)},installed=${JSON.stringify(u.installedVersion)},latest=${JSON.stringify(u.latestVersion)}} 1`);
       emit('aiops_ollama_update_last_check_timestamp_seconds',Number(u.lastCheckAt)||0,report.name);

@@ -35,7 +35,7 @@ test('logging incident retains historical drop cause, verifies current health an
   assert.match(result.diagnosis,/147/);assert.match(result.diagnosis,/rate limiter/);
   assert.equal(result.attempts,0);assert.equal(result.spent,0);
   const text=s.events(i.id).find(e=>e.kind==='summary')!.data.text;
-  assert.match(text,/SOURCE CLEARED/);assert.match(text,/canary age 35s/);
+  assert.match(text,/RESOLVED/);assert.match(text,/canary age 35s/);
   assert.match(text,/monitoring-logging/);assert.match(text,/var-service=.%2A/);
   assert.doesNotMatch(text,/combined 5xx|No unambiguous/);
 });

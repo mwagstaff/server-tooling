@@ -3,8 +3,10 @@ const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 const time=s=>new Date(s).toLocaleString('en-GB',{timeZone:'Europe/London',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const label=s=>s.replaceAll('_',' ');
 const good=['healthy','recovered','source_resolved'];
-const active=['queued','investigating','acting','verifying'];
+const active=['queued','investigating','acting','verifying','waiting_update'];
+const incidentName=i=>i.alert.name.startsWith('Ollama')?'Ollama updater':i.service;
 const badge=s=>`<span class="badge ${good.includes(s)?'good':active.includes(s)?'':'warn'}">${escape(label(s))}</span>`;
+let focusedIncident;
 let state,selected=new URLSearchParams(location.search).get('incident'),refreshing=false,editing=false,fleetUnavailable=false;
 async function api(path,body) {
   const r=await fetch(path,{method:body===undefined?'GET':'POST',
@@ -48,8 +50,12 @@ function renderFleet() {
   $('fleet-summary').innerHTML=`<strong>${rows.length} services</strong><span class="health-healthy">${counts('healthy')} healthy</span><span class="health-unhealthy">${counts('unhealthy')} unhealthy</span><span class="health-unknown">${counts('unknown')+counts('stale')} unknown / stale</span>`;
   $('fleet-services').innerHTML=rows.map(s=>{
     const failed=Object.entries(s.checks||{}).filter(([,ok])=>ok===false).map(([key])=>names[key]||key);
-    const detail=s.status==='healthy'?'All configured checks passed':s.status==='unhealthy'?failed.join(' · '):s.reason||'Waiting for health checks';
-    return `<li class="fleet-service health-${escape(s.status)}"><div class="fleet-heading"><strong>${escape(s.name)}</strong><span class="health-label">${escape(label(s.status))}</span></div><div class="meta">${escape(s.host)} · ${s.checkedAt?'Checked '+time(s.checkedAt):'Not checked yet'}</div><p>${escape(detail)}</p></li>`;
+    const detail=s.status==='healthy'?'All configured checks passed':s.status==='unhealthy'?(s.failures||[]).map(f=>f.title).join(' · ')||failed.join(' · '):s.reason||'Waiting for health checks';
+    const incidents=[...state.incidents,...state.peers.flatMap(p=>(p.incidents||[]).map(i=>({...i,peerUrl:p.url})))].filter(i=>i.host===s.host&&i.service===s.name).sort((a,b)=>Number(good.includes(a.status))-Number(good.includes(b.status))||Date.parse(b.created)-Date.parse(a.created));
+    const incident=incidents[0];
+    const updaterFailures=(s.updaterFailures||[]).map(f=>f.title);
+    const updaterIncident=incidents.find(i=>i.alert.name.startsWith('Ollama'));
+    return `<li class="fleet-service health-${escape(s.status)}"><div class="fleet-heading"><strong>${escape(s.name)}</strong><span class="health-label">${escape(label(s.status))}</span></div><div class="meta">${escape(s.host)} · ${s.checkedAt?'Checked '+time(s.checkedAt):'Not checked yet'}</div><p>${escape(detail)}</p>${s.ollamaUpdate?`<p class="updater-status">Ollama updater maintenance: ${['stale','unknown'].includes(s.status)?'status unavailable':updaterFailures.length?'needs attention ('+escape(updaterFailures.join(', '))+')':'checks passed'}. ${updaterIncident?`<a href="${escape(updaterIncident.peerUrl||'')}/?incident=${encodeURIComponent(updaterIncident.id)}#failure-evidence">View updater incident</a>`:''}</p>`:''}${s.status==='unhealthy'?(s.failures||[]).map(f=>`<p>${escape(f.nextStep)}</p>`).join(''):''}<nav class="investigation-links" aria-label="Investigate ${escape(s.name)}">${incident?`<a href="${escape(incident.peerUrl||'')}/?incident=${encodeURIComponent(incident.id)}">Open incident</a>`:'<span class="meta">No incident recorded yet</span>'}${s.links?`<a href="${escape(s.links.logs)}" target="_blank" rel="noopener">${s.name==='kidsplorers-events-worker'?'Worker request logs':'Logs'} ↗</a><a href="${escape(s.links.serviceMetrics)}" target="_blank" rel="noopener">Metrics ↗</a>`:''}</nav></li>`;
   }).join('');
 }
 function renderList() {
@@ -58,7 +64,7 @@ function renderList() {
   if($('filter').value==='attention')items=items.filter(i=>!good.includes(i.status));
   if($('filter').value==='resolved')items=items.filter(i=>good.includes(i.status));
   $('incidents').innerHTML=items.length?items.map(i=>{
-    const content=`<div class="incident-head"><span class="incident-title">${escape(i.service)}</span>${badge(i.status)}</div><p>${escape(i.alert.name)}</p><div class="meta">${escape(i.host)}${i.alert.ref?' · '+escape(i.alert.ref):''} · ${time(i.created)} · $${i.spent.toFixed(4)}</div>`;
+    const content=`<div class="incident-head"><span class="incident-title">${escape(incidentName(i))}</span>${badge(i.status)}</div><p>${escape(i.alert.name)}</p><div class="meta">${escape(i.host)}${i.alert.ref?' · '+escape(i.alert.ref):''} · ${time(i.created)} · $${i.spent.toFixed(4)}</div>`;
     if(i.peerUrl) {
       const destination=i.responder.charAt(0).toUpperCase()+i.responder.slice(1);
       const current=state.host.charAt(0).toUpperCase()+state.host.slice(1);
@@ -74,10 +80,18 @@ function renderList() {
 async function renderDetail(id) {
   const data=await api(`/api/incidents/${id}`);if(id!==selected)return;
   const i=data.incident;
-  $('detail').innerHTML=`<div class="detail-top"><div><p class="eyebrow">${escape(i.host)} · ${escape(i.alert.source)}</p><h2>${escape(i.service)}</h2><span class="meta">${time(i.created)}</span></div>${badge(i.status)}</div>
-    <p>${escape(i.alert.summary)}</p><div class="detail-section"><h3>Assessment</h3><p class="diagnosis">${escape(i.diagnosis||'Waiting for investigation.')}</p></div>
+  $('detail').innerHTML=`<div class="detail-top"><div><p class="eyebrow">${escape(i.host)} · ${escape(i.alert.source)}</p><h2>${escape(incidentName(i))}</h2><span class="meta">${time(i.created)}</span></div>${badge(i.status)}</div>
+    <p>${escape(i.alert.summary)}</p>${i.alert.name.startsWith('Ollama')?`<p>Kidsplorers impact: ${i.verification?.workerHealthy===true?'no failure detected in worker process and ingestion checks':i.verification?.workerHealthy===false?'worker checks also need attention':'worker health is unverified'}.</p>`:''}
+    <nav class="investigation-links" aria-label="Incident investigation">${data.failureEvidence?'<a href="#failure-evidence">Updater failure evidence</a>':''}${Object.entries(data.links||{}).map(([key,url])=>`<a href="${escape(url)}" target="_blank" rel="noopener">${escape({logs:i.service==='kidsplorers-events-worker'?'Worker request logs':'Logs',serviceMetrics:'Service metrics',hostMetrics:'Host metrics'}[key])} ↗</a>`).join('')}<a href="#incident-evidence">Collected evidence</a>${i.alert.name==='ServiceHealthFailing'&&!active.includes(i.status)&&i.status!=='needs_approval'?'<button id="recheck">Recheck health</button>':''}</nav>
+    ${data.failureEvidence?`<section class="detail-section" id="failure-evidence" tabindex="-1"><h3>Recorded updater failure</h3><p class="meta">Observed ${time(data.failureEvidence.observedAt)} · Retained from the incident, even after recovery</p><p>${escape(data.failureEvidence.explanation)}</p><ul>${data.failureEvidence.failures.map(f=>`<li>${escape(f.title)} <code>${escape(f.key)}</code></li>`).join('')}</ul><dl class="evidence-fields">${Object.entries(data.failureEvidence.fields).map(([key,value])=>`<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join('')}</dl>${data.failureEvidence.clockMismatch?'<p>The pending-update timestamp predates a successful upgrade, with no major/minor review pending. This is evidence of the stale pending-clock problem; it is not an HTTP request failure.</p>':''}<details><summary>Original health snapshot</summary><pre>${escape(JSON.stringify(data.failureEvidence.snapshot,null,2))}</pre></details></section>`:''}
+    <div class="detail-section"><h3>Health findings</h3><p>${escape(data.guide?.summary||(i.verification?.healthy===true?(i.alert.name.startsWith('Ollama')?'Updater maintenance checks passed.':'Last service checks passed.'):'No individual failed check was retained. Review the collected evidence.'))}</p><p>${escape(data.guide?.context||'')}</p><p class="meta">These are investigation-time observations. Current service status is shown below.</p></div>
+    <div class="detail-section"><h3>Next steps</h3><ul>${(data.guide?.nextSteps?.length?data.guide.nextSteps:[i.verification?.healthy===true&&i.verification?.alertFiring===false?'No immediate action required. Fresh checks passed and the source alert cleared.':data.runbook?.escalation||'Review the evidence and service logs.']).map(step=>`<li>${escape(step)}</li>`).join('')}</ul><p>${i.action==='update_ollama'?`Updater automation: ${escape(i.evidence?.workerHealth?.ollamaUpdate?.aiopsRequest?.status||i.status)}. ${escape(i.evidence?.workerHealth?.ollamaUpdate?.aiopsRequest?.reason||'The transactional updater owns installation and validation.')}`:i.action&&i.action!=='none'?`Proposed recovery: ${escape(i.action)}.`:'No recovery action proposed.'}</p></div>
+    ${data.guide?.summary?'':`<div class="detail-section"><h3>Assessment</h3><p class="diagnosis">${escape(i.diagnosis||'Waiting for investigation.')}</p></div>`}
     ${i.status==='needs_approval'?`<div class="approval"><h3>Approval requested</h3><p><strong>${escape(i.action)}</strong> on <strong>${escape(i.service)}</strong> (${escape(i.host)}). Approval expires ${time(i.approvalExpires)}. The service will be checked again before execution.</p><button class="primary" id="approve">Approve ${escape(i.action)}</button><button id="reject">Reject action</button></div>`:''}
+    <div class="detail-section" id="incident-evidence"><h3>Collected evidence</h3><details ${i.evidence?.workerHealth?'open':''}><summary>Health checks and updater state</summary><pre>${escape(JSON.stringify(i.evidence?.workerHealth||i.evidence||{},null,2))}</pre></details><details><summary>Investigation procedure</summary><ol>${(data.runbook?.steps||[]).map(step=>`<li>${escape(step)}</li>`).join('')}</ol></details></div>
     <div class="detail-section"><h3>Recovery timeline</h3><ol class="timeline">${data.events.map(e=>`<li><time>${time(e.at)}</time><details ${['action_result','verification'].includes(e.kind)?'open':''}><summary>${escape(label(e.kind))}</summary><pre>${escape(JSON.stringify(e.data,null,2))}</pre></details></li>`).join('')}</ol></div>`;
+  if(focusedIncident!==id){focusedIncident=id;const target=location.hash==='#failure-evidence'&&$('failure-evidence')?$('failure-evidence'):$('detail');target.focus({preventScroll:true});target.scrollIntoView({block:'start'});}
+  if($('recheck'))$('recheck').onclick=async()=>{const b=$('recheck');b.disabled=true;b.textContent='Checking…';try{await api(`/api/incidents/${id}/recheck`,{});await refresh();}catch(e){error(e);b.disabled=false;b.textContent='Recheck health';}};
   if($('approve'))$('approve').onclick=async()=>{const b=$('approve');b.disabled=true;b.textContent='Executing and verifying…';try{await api(`/api/incidents/${id}/approve`,{action:i.action});await refresh();}catch(e){error(e);b.disabled=false;}};
   if($('reject'))$('reject').onclick=async()=>{try{await api(`/api/incidents/${id}/reject`,{});await refresh();}catch(e){error(e);}};
 }

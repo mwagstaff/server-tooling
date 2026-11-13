@@ -211,7 +211,9 @@ def render(root, monitor, target, target_ip, monitor_ip, services, watchdog=Fals
             'to': ALERT_EMAIL_TO, 'from': 'Monitoring <alerts@skynolimit.dev>',
             'smarthost': 'next-smtp.useplunk.com:2587', 'auth_username': 'plunk',
             'auth_password_file': str(root / 'secrets/SMTP_PASSWORD'), 'require_tls': True, 'send_resolved': True,
-            'headers': {'Subject': '[{{ .Status | toUpper }}] {{ .CommonLabels.host }} {{ .CommonLabels.service }} '
+            # Gmail can group messages whose subjects differ only in bracketed tags.
+            # Keep the state in the ordinary subject text too, so recovery is visible.
+            'headers': {'Subject': '[{{ .Status | toUpper }}] {{ if eq .Status "resolved" }}Resolved:{{ else }}Firing:{{ end }} {{ .CommonLabels.host }} {{ .CommonLabels.service }} '
                                    '{{ .CommonLabels.alertname }} · {{ with index .Alerts 0 }}' + INCIDENT_REF + '{{ end }}'
                                    '{{ if gt (len .Alerts) 1 }} ({{ len .Alerts }} alerts){{ end }}',
                         'Auto-Submitted': 'auto-generated'},

@@ -65,7 +65,7 @@ v1 matched keywords anywhere in the report, so table labels produced findings, a
 - Recovery evidence: Fresh canary and no new drops, with storage and collector checks passing.
 - Escalation: Escalate data loss or unavailable historical evidence.
 
-## Kidsplorers nightly event ingestion (events-worker-job, v4)
+## Kidsplorers nightly event ingestion (events-worker-job, v5)
 
 1. Read `workerHealth`: individual checks, running flag, run timestamps/counts and failed sources. HTTP 200 alone is liveness.
 2. Correlate JSON `time` event timestamps; one failed source means a partial import failure, not a crashed worker.
@@ -108,3 +108,15 @@ These rules do not classify 4xx/authentication/throttling as upstream 5xx failur
 the bad-URL table still records them. Existing scrape and freshness checks are
 independent. Prometheus increase estimates counts and handles counter resets;
 URL gauges retain six hours in memory and reset on application restart.
+
+Updater check failures are assessed from structured evidence before model diagnosis. A successful nightly import and HTTP 200 do not override a failed updater check. The console and summary name each failing requirement, its observation time and investigation steps. Compare `pendingSince` with `lastUpgradeAt` when update timeliness fails; successful patch upgrades reset the patch waiting period, while major/minor review retains its age. No worker retry/restart is proposed for updater failures.
+
+## Ollama updater maintenance (ollama-updater, v1)
+
+`OllamaUpdateOverdue`, `OllamaUpdaterUnhealthy` and `OllamaUpdaterTelemetryMissing`
+are component maintenance alerts, not worker outages. Read updater checks and
+request outcomes separately from worker ingestion. The only automatic procedure
+is `update_ollama`, limited to an authoritative overdue patch alert, fresh safe
+state and enabled policy. Requests expire after ten minutes, defer busy work,
+retry at thirty-minute intervals at most three times, and preserve the existing
+transactional updater safeguards. Escalate failed/blocked/major/minor changes.

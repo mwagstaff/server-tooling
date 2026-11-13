@@ -146,6 +146,8 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(email['auth_password_file'], str(root / 'secrets/SMTP_PASSWORD'))
             ref = 'INC-{{ slice .Fingerprint 0 8 }}-{{ .StartsAt.UTC.Format "20060102T1504Z" }}'
             self.assertIn(ref, email['headers']['Subject'])
+            self.assertTrue(email['headers']['Subject'].startswith(
+                '[{{ .Status | toUpper }}] {{ if eq .Status "resolved" }}Resolved:{{ else }}Firing:{{ end }} '))
             self.assertIn(ref, email['text'])
             self.assertIn(ref, email['html'])
             self.assertIn('<li style="margin:0 0 12px;padding-left:4px;"><strong>Ref:</strong>', email['html'])

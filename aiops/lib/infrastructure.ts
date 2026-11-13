@@ -70,6 +70,12 @@ export async function inspectInfrastructure(config:Config,i:Incident) {
   const spec=specs[i.alert.name];
   const base=spec.query.replaceAll('$host',i.host);
   const queries:Record<string,{query:string;time?:string}>={current:{query:base},atAlert:{query:base,time:i.alert.startsAt}};
+  if(i.alert.name==='SharedPublicOutage') {
+    queries.freshness={query:`timestamp(${base})`};
+    queries.targets={query:`up{kind="public",host="${i.host}"}`};
+    queries.httpAtAlert={query:`probe_http_status_code{kind="public",host="${i.host}"}`,time:i.alert.startsAt};
+    queries.durationAtAlert={query:`probe_duration_seconds{kind="public",host="${i.host}"}`,time:i.alert.startsAt};
+  }
   if(i.alert.name==='MonitoringNotificationFailures') {
     queries.atAlert.query=base.replace('[2m]','[10m]');
     queries.attempts={query:`increase(alertmanager_notifications_total{host="${i.host}"}[2m])`};
@@ -113,7 +119,24 @@ export async function inspectInfrastructure(config:Config,i:Incident) {
       (recovered?'The affected integration has subsequent successful notification attempts; delivery has resumed.':'Recovery is not yet verified for every affected integration.')+
       ' A webhook failure is not an SMTP failure; successful attempts do not prove device/inbox receipt.';
   }
-  const summary=`Observed ${observedAt}. Current measurements: ${describe(samples.current,i.alert.name==='MonitoringNotificationFailures')}.`;
+  if(i.alert.name==='SharedPublicOutage') {
+    const key=(row:any)=>JSON.stringify([row.metric.service,row.metric.job,row.metric.instance]);
+    const current=samples.current,targets=samples.targets,freshness=samples.freshness;
+    const expected=new Set([...(samples.atAlert||[]),...(targets||[])].map(key));
+    const registered=config.services.filter(s=>s.host===i.host && s.publicUrl);
+    const complete=Boolean(current?.length && targets?.length && freshness?.length &&
+      expected.size>=2 && [...expected].every(k=>current.some((r:any)=>key(r)===k)) &&
+      registered.every(s=>current.some((r:any)=>r.metric.service===s.name)) &&
+      current.every((r:any)=>targets.some((t:any)=>key(t)===key(r) && Number(t.value[1])===1) &&
+        freshness.some((f:any)=>key(f)===key(r) && Date.now()/1000-Number(f.value[1])>=0 && Date.now()/1000-Number(f.value[1])<65)));
+    if(complete)healthy=current.every((r:any)=>Number(r.value[1])===1);
+    const failed=(samples.atAlert||[]).filter((r:any)=>Number(r.value[1])===0);
+    diagnosis=`Public endpoint checks: ${healthy===true?'all '+current.length+' passed with fresh, complete telemetry':healthy===false?'one or more endpoints still failing':'recovery unverified because probe coverage or freshness is incomplete'}. `+
+      `Failed at alert start: ${failed.map((r:any)=>r.metric.service||r.metric.instance).join(', ')||'unavailable'}. `+
+      `HTTP status at alert start: ${describe(samples.httpAtAlert?.filter((r:any)=>failed.some((f:any)=>key(f)===key(r))))}. Probe duration seconds: ${describe(samples.durationAtAlert?.filter((r:any)=>failed.some((f:any)=>key(f)===key(r))))}. `+
+      'A timeout or shared alert does not establish a tunnel fault. No restart is needed when public checks recover; persistent failures require proxy/tunnel and origin investigation.';
+  }
+  const summary=i.alert.name==='SharedPublicOutage' ? `Observed ${observedAt}. ${diagnosis.split('HTTP status at alert start:')[0]}Historical HTTP statuses and durations are retained in the incident evidence.` : `Observed ${observedAt}. Current measurements: ${describe(samples.current,i.alert.name==='MonitoringNotificationFailures')}.`;
   return {observedAt,samples,healthy,diagnosis,summary,nextStep:spec.next,
     dashboard:spec.family==='host'?'monitoring-host':'monitoring-monitor',family:spec.family};
 }

@@ -64,7 +64,7 @@ test('two full snapshots close a missing source and deliver resolution once afte
  s.set('maintenance:windows',[]);
  await reconcileAlerts(config,s);await reconcileAlerts(config,s);
  assert.equal(s.events(i.id).filter(e=>e.kind==='summary').length,2);
- assert.match(s.events(i.id).filter(e=>e.kind==='summary')[1].data.title,/SOURCE CLEARED/);
+ assert.match(s.events(i.id).filter(e=>e.kind==='summary')[1].data.title,/RESOLVED/);
 });
 test('suppressed or unprocessed sources prevent false resolution; failed snapshots cannot clear',async t=>{
  const s=new Store(':memory:');t.after(()=>s.db.close());const r=raw();const i=s.ingest(alertsFromWebhook({alerts:[r]},config)[0]).incident;
@@ -116,8 +116,8 @@ test('weekly report checks only reported warnings against the host and closes wh
  assert.deepEqual(saved.evidence.checks.map((c:any)=>c.label),['Reboot/kernel']);
  assert.match(saved.diagnosis,/^Reboot\/kernel — resolved: sky booted \S+ \S+ UTC, after this report; running 6\.8\.0-149-generic, the newest installed kernel; no reboot pending\.$/);
  const summary=s.events(i.id).find(e=>e.kind==='summary')!.data;
- assert.match(summary.title,/^\[AIOps HEALTHY\] maintenance · sky · WeeklyUpgradeReview/);
- assert.match(summary.text,/^- Summary: HEALTHY\. Current host checks passed; source: email report\./m);
+ assert.match(summary.title,/^\[AIOps RESOLVED\] Resolved: maintenance · sky · WeeklyUpgradeReview/);
+ assert.match(summary.text,/^- Summary: RESOLVED\. No immediate action required\. Current host checks passed; source: email report\./m);
  assert.match(summary.text,/^- Alert: WeeklyUpgradeReview — \[REVIEW\] sky weekly upgrade report$/m);
  assert.match(summary.text,/^- Next steps:\n  - None — all 2 reported warnings are resolved on sky now\.$/m);
 });
@@ -264,5 +264,40 @@ for(const fresh of [true,false]) test(`worker job evidence avoids HTTP-only diag
    return {action:'none',confidence:'high',diagnosis:'Partial import failure',reason:'Retry exhausted'};
  };
  await new Engine(c,store,inspect as any,model as any).investigate(i);
- assert.deepEqual(store.get(i.id)!.runbook,{id:'events-worker-job',version:4});
+ assert.deepEqual(store.get(i.id)!.runbook,{id:'events-worker-job',version:5});
+});
+
+test('updater failure with successful ingestion is deterministic and cannot request recovery',async t=>{
+ const c={...config,host:'sky',services:[{name:'kidsplorers-events-worker',host:'mini',owner:'sky',autoActions:[],approvalActions:['retry']}] } as unknown as Config;
+ const store=new Store(':memory:');t.after(()=>store.db.close());
+ const alert={...raw(),labels:{host:'mini',service:'kidsplorers-events-worker',alertname:'ServiceHealthFailing'}};
+ const i=store.ingest(alertsFromWebhook({alerts:[alert]},c)[0]).incident;
+ const inspect=async()=>({healthy:false,status:{active:true},health:{ok:true,status:200},logs:{},
+   workerHealth:{checkedAt:new Date().toISOString(),checks:{dailyJobSucceeded:true,ollamaUpdateTimely:false},lastRun:{ok:28,failed:0}}});
+ t.mock.method(globalThis,'fetch',async(url:any)=>String(url).includes('/api/v2/alerts')?Response.json([{...alert,startsAt:i.alert.startsAt,status:{state:'active'}}]):Response.json({status:'success',data:{result:[]}}));
+ await new Engine(c,store,inspect as any,async()=>{throw new Error('Model must not override a measured updater failure');}).investigate(i);
+ const saved=store.get(i.id)!;
+ assert.equal(saved.status,'needs_review');assert.equal(saved.action,'none');
+ assert.equal(saved.verification.healthy,false);assert.match(saved.diagnosis,/ollamaUpdateTimely/);
+ assert.match(saved.evidence.actionItems.join(' '),/pendingSince with lastUpgradeAt/);
+});
+
+for(const healthy of [true,false]) test(`cleared health alerts are rechecked without recovery (healthy=${healthy})`,async t=>{
+ const c={...config,services:[{name:'top-scores',host:'sky',owner:'mini',autoActions:[],approvalActions:[]}] } as unknown as Config;
+ const store=new Store(':memory:');t.after(()=>store.db.close());
+ const alert={...raw(),labels:{host:'sky',service:'top-scores',alertname:'ServiceHealthFailing'}};
+ const i=store.ingest(alertsFromWebhook({alerts:[alert]},c)[0]).incident;
+ i.status='needs_review';i.resolvedAt=new Date().toISOString();i.verification={healthy:false,alertFiring:true};store.put(i);
+ store.set('summary:resolved:'+i.id,true);
+ let inspections=0;
+ const inspect=async(_c:any,_s:any,operation:string)=>{assert.equal(operation,'inspect');inspections++;return {healthy,status:{active:healthy},health:{ok:healthy},logs:{}};};
+ t.mock.method(globalThis,'fetch',async()=>Response.json([]));
+ const engine=new Engine(c,store,inspect as any,async()=>{throw new Error('No model on read-only recheck');});
+ await engine.tick();await engine.tick();
+ assert.equal(inspections,1);assert.equal(store.get(i.id)!.status,healthy?'healthy':'needs_review');
+ assert.equal(store.get(i.id)!.verification.alertFiring,false);
+ assert.equal(store.events(i.id).filter(e=>e.kind==='summary').length,healthy?1:0);
+ if(healthy){await engine.recheckHealth(i.id);assert.equal(store.events(i.id).filter(e=>e.kind==='summary').length,1);}
+ i.status='needs_approval';store.put(i);
+ await assert.rejects(engine.recheckHealth(i.id),/not available/);
 });

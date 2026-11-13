@@ -4,6 +4,7 @@ import {diagnose} from './providers.ts';
 import {runTarget} from './runner.ts';
 import {enqueueSummary} from './notifications.ts';
 import {boundedBody, redact} from './security.ts';
+import {incidentGuide} from './investigation.ts';
 
 import {selectRunbook,assessMaintenance} from './runbooks.ts';
 import {isLoggingIncident,inspectLogging} from './logging.ts';
@@ -54,12 +55,137 @@ export class Engine {
     }
     i.status=status; this.store.put(i); enqueueSummary(this.config,this.store,i);
   }
+  async recheckHealth(id:string) {
+    const i=this.store.get(id);
+    const s=i && this.config.services.find(s=>s.name===i.service && s.host===i.host && s.owner===this.config.host);
+    if(!i || !s || i.alert.name!=='ServiceHealthFailing' ||
+      ['queued','investigating','acting','verifying','needs_approval'].includes(i.status)) throw new Error('Health recheck is not available for this incident');
+    if(this.busy)throw new Error('Another investigation is running; retry shortly');
+    this.busy=true;
+    try {
+      const fresh=await this.collect(s);
+      const firing=await this.alertStillFiring(i);
+      i.evidence=fresh;
+      i.verification={healthy:fresh.healthy,public:fresh.public,alertFiring:firing};
+      const guide=incidentGuide(i);
+      i.evidence.actionItems=guide.nextSteps;
+      i.diagnosis=[guide.summary,guide.context].filter(Boolean).join('\n') ||
+        (fresh.healthy===true?'Service checks passed; source resolution must also be confirmed.':'Health is not verified; inspect the collected evidence.');
+      i.action='none';
+      this.store.event(i.id,'health_recheck',{evidence:fresh,verification:i.verification});
+      if(fresh.healthy===true && fresh.public?.ok!==false && firing===false) {
+        i.diagnosis='Fresh service checks passed and the source alert has cleared. No recovery action is needed.';
+        this.finish(i,'healthy');
+      } else {i.status='needs_review';this.store.put(i);}
+    } finally {this.busy=false;}
+  }
+  async investigateUpdater(i:Incident,s:Service) {
+    const evidence=await this.collect(s),worker=evidence.workerHealth,u=worker?.ollamaUpdate;
+    i.evidence=evidence;
+    const checks=u?.checks || {}, entries=Object.values(checks);
+    const fresh=Number.isFinite(Date.parse(worker?.checkedAt)) && Date.now()-Date.parse(worker.checkedAt)>=-5000 && Date.now()-Date.parse(worker.checkedAt)<65000;
+    const healthy=fresh && entries.length>=5 && entries.every(v=>v===true);
+    const firing=await this.alertStillFiring(i);
+    i.verification={healthy,alertFiring:firing,workerHealthy:evidence.healthy};
+    const guide=incidentGuide(i);
+    i.diagnosis=['Ollama updater maintenance; worker health is assessed separately.',guide.summary,
+      `Worker impact: ${evidence.healthy===true?'no failure detected in process and ingestion checks':'worker checks also need attention'}.`].filter(Boolean).join('\n');
+    i.evidence.actionItems=guide.nextSteps;
+    this.store.event(i.id,'evidence',evidence);
+    const latest=this.store.get(i.id);if(latest?.resolvedAt)i.resolvedAt=latest.resolvedAt;
+    if(healthy && firing===false)return this.finish(i,'healthy');
+    const req=u?.aiopsRequest;
+    const requestId=this.store.setting<string>('updater:request:'+i.id,'');
+    const wait=()=>{
+      i.status='waiting_update';
+      i.evidence.actionItems=[healthy?'Updater checks passed; AIOps is waiting for the source alert to clear. No action required.':
+        req?.status==='deferred'?'Active work deferred the update. AIOps will check again and may retry after 30 minutes. No action required unless retries are exhausted.':
+        'AIOps requested a safe patch update and is monitoring the updater. No action required while it is queued or running.'];
+      this.store.put(i);
+    };
+    if(Date.now()-Date.parse(i.created)>24*3600000) {
+      i.diagnosis+='\nAutomatic update verification exceeded 24 hours; review required.';return this.finish(i,'needs_review');
+    }
+    if(requestId) {
+      if(req?.id!==requestId) {i.diagnosis+='\nThe recorded update request cannot be verified.';return this.finish(i,'needs_review');}
+      i.diagnosis+=`\nAutomation: ${req.status}. ${req.reason || ''}`;
+      if(['queued','running'].includes(req.status)) {
+        if(req.status==='queued' && Date.now()/1000>req.expiresAt || req.status==='running' && Date.now()/1000-req.requestedAt>3600)
+          return this.finish(i,'needs_review');
+        return wait();
+      }
+      if(req.status==='failed')return this.finish(i,'needs_review');
+      if(req.status==='succeeded') {
+        if(healthy)return wait(); // Allow Prometheus/Alertmanager to observe recovery.
+        return this.finish(i,'needs_review');
+      }
+      if(req.status!=='deferred')return this.finish(i,'needs_review');
+      if(Date.now()/1000-req.finishedAt<1800)return wait();
+    }
+    if(healthy)return wait();
+    const safe=fresh && checks.ollamaUpdateTimely===false &&
+      ['ollamaUpdateStateReadable','ollamaUpdateCheckFresh','ollamaUpdateHealthy','ollamaUpdateNotStuck'].every(k=>checks[k]===true) &&
+      u?.phase==='idle' && u?.reviewRequired===false;
+    if(i.alert.name!=='OllamaUpdateOverdue' || !safe || i.attempts>=3 ||
+      !this.store.setting('automatic',this.config.automatic) || !s.autoActions.includes('update_ollama') ||
+      i.alert.source!=='alertmanager' || firing!==true || i.resolvedAt) return this.finish(i,'needs_review');
+    if(this.paused(s.name))return wait();
+    i.action='update_ollama';i.attempts++;i.status='acting';this.store.put(i);
+    const actionId=`${i.id}_ollama_${i.attempts}`;
+    this.store.event(i.id,'action_requested',{action:i.action,actionId,service:s.name});
+    const result=await this.run(this.config,s,'update_ollama',{actionId});
+    this.store.event(i.id,'action_result',result);
+    if(!result.ok){i.diagnosis+='\nUpdater request was not accepted; inspect action result.';return this.finish(i,'needs_review');}
+    this.store.set('updater:request:'+i.id,actionId);
+    i.diagnosis+='\nAutomatic patch update requested. The updater will recheck eligibility and drain active work; no operator action is needed while it waits.';
+    wait();
+  }
   async tick() {
     if (this.busy) return;
     for(const incident of this.store.list().filter(i=>i.status==='queued' && this.store.maintenance(i.host,i.service)))
       this.store.set(`maintenance:deferred:${incident.id}`,true);
     const i=this.store.list().reverse().find(i=>i.status==='queued' && !this.paused(i.service) && !this.store.maintenance(i.host,i.service));
-    if (!i) return;
+    if (!i) {
+      const update=this.store.list().find(x=>(x.status==='waiting_update' || x.runbook?.id==='ollama-updater' && x.status==='needs_review' && x.resolvedAt && Date.now()-Date.parse(x.resolvedAt)<24*3600000) && !this.paused(x.service) &&
+        Date.now()-this.store.setting('updater:poll:'+x.id,0)>=60000);
+      if(update) {
+        const service=this.config.services.find(s=>s.name===update.service && s.host===update.host && s.owner===this.config.host);
+        if(service) {
+          this.store.set('updater:poll:'+update.id,Date.now());this.busy=true;
+          try {await this.investigateUpdater(update,service);} catch(e){update.diagnosis+='\n'+redact(String(e));this.finish(update,'needs_review');}
+          finally {this.busy=false;}
+        }
+        return;
+      }
+      const cleared=this.store.list().find(x=>x.alert.name==='ServiceHealthFailing' && x.resolvedAt &&
+        x.status==='needs_review' && !this.paused(x.service) &&
+        this.config.services.some(s=>s.name===x.service && s.host===x.host && s.owner===this.config.host) &&
+        Date.now()-Date.parse(x.resolvedAt)<this.config.staleAfterMs &&
+        Date.now()-this.store.setting('health:recheck:'+x.id,0)>=60000);
+      if(cleared) {
+        this.store.set('health:recheck:'+cleared.id,Date.now());
+        try {await this.recheckHealth(cleared.id);} catch(e) {this.store.event(cleared.id,'health_recheck_failed',{error:redact(String(e))});}
+        return;
+      }
+      const pending=this.store.list().find(x=>x.alert.name==='SharedPublicOutage' && x.status==='needs_review' &&
+        infrastructureOwner(x)===this.config.host && !this.paused(x.service) && !this.store.maintenance(x.host,x.service) &&
+        Date.now()-Date.parse(x.alert.receivedAt)<this.config.staleAfterMs &&
+        Date.now()-this.store.setting('public:recheck:'+x.id,0)>=60000);
+      if(!pending)return;
+      this.busy=true;
+      this.store.set('public:recheck:'+pending.id,Date.now());
+      try {
+        const evidence=await inspectInfrastructure(this.config,pending);
+        const runbook=selectRunbook(pending);pending.runbook={id:runbook.id,version:runbook.version};
+        pending.evidence={infrastructure:evidence};pending.diagnosis=evidence.diagnosis;
+        pending.verification={healthy:evidence.healthy,alertFiring:await this.alertStillFiring(pending)};
+        const latest=this.store.get(pending.id);if(latest?.resolvedAt)pending.resolvedAt=latest.resolvedAt;
+        this.store.event(pending.id,'recovery_check',pending.verification);
+        if(evidence.healthy===true && pending.verification.alertFiring===false)this.finish(pending,'healthy');
+        else this.store.put(pending);
+      } finally {this.busy=false;}
+      return;
+    }
     this.busy=true;
     try { await this.investigate(i); }
     catch(e) { i.diagnosis += '\n' + redact(String(e)).slice(0,1000); this.finish(i,'needs_review'); }
@@ -135,6 +261,7 @@ export class Engine {
       return this.finish(i,'stale');
     }
     i.status='investigating';this.store.put(i);
+    if(runbook.id==='ollama-updater')return this.investigateUpdater(i,s);
     try {i.evidence=await this.collect(s);}
     catch(e) {i.diagnosis='Cannot reach the host or inspect this service. '+redact(String(e));return this.finish(i,'unreachable');}
     // Fixed, read-only queries: model output never controls a query or URL.
@@ -209,6 +336,14 @@ export class Engine {
       i.evidence.qualityIssues.push('Some current metrics are missing.');
     this.store.event(i.id,'evidence',i.evidence);
     const firing=await this.alertStillFiring(i);
+    const guide=incidentGuide(i);
+    if(timedWorker && guide.failures.some(f=>f.key.startsWith('ollamaUpdate'))) {
+      i.action='none';
+      i.diagnosis=[guide.summary,guide.context].filter(Boolean).join('\n');
+      i.evidence.actionItems=guide.nextSteps;
+      i.verification={healthy:false,alertFiring:firing};
+      return this.finish(i,'needs_review');
+    }
     if(bsdIncident) {
       const successes=i.evidence.metrics.bsdSuccessfulRequests5m?.samples;
       const recovered=firing===false && successes?.some((sample:any)=>Number(sample.value?.[1])>0);

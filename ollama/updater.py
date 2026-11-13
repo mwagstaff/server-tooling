@@ -284,7 +284,9 @@ class Updater:
             self.smoke(release['tag_name'])
             # Persist validation before resuming; a crash before commit safely rolls back.
             self.save(installedVersion=release['tag_name'].lstrip('v'), lastUpgradeAt=time.time(),
-                      lastOutcome='upgraded', healthError=None, deferredSince=None, phase='committed')
+                      lastOutcome='upgraded', healthError=None, deferredSince=None, phase='committed',
+                      pendingSince=self.state.get('pendingSince') if self.state.get('reviewRequired') else
+                      (time.time() if self.state.get('latestVersion') != release['tag_name'].lstrip('v') else None))
             self.release_gate()
             self.event('upgraded', version=release['tag_name'])
         except Exception as exc:
@@ -294,6 +296,47 @@ class Updater:
             else:
                 self.recover()
             raise
+
+    def process_aiops_request(self):
+        """Consume one short-lived request; retries after busy deferral require fresh AIOps authorization."""
+        req = self.state.get('aiopsRequest') or {}
+        if req.get('status') not in ('queued', 'running'):
+            return
+        def outcome(status, reason):
+            self.save(aiopsRequest={**req, 'status': status, 'reason': reason, 'finishedAt': time.time()})
+            self.event('aiops_' + status, actionId=req.get('id'), reason=reason)
+        if req.get('status') == 'running':
+            outcome('failed', 'Previous request was interrupted; transaction recovery owns rollback, no automatic replay')
+            return
+        now = time.time()
+        if (not isinstance(req.get('expiresAt'), (int, float)) or not isinstance(req.get('requestedAt'), (int, float)) or
+                not req['requestedAt'] <= now < req['expiresAt'] <= req['requestedAt'] + 600):
+            outcome('failed', 'Update request expired or invalid')
+            return
+        if self.state.get('phase') != 'idle':
+            outcome('deferred', 'Updater transaction is already active')
+            return
+        try:
+            # Discovery re-applies the 48-hour age and same-series patch policy.
+            self.tick(check_now=True, install=False)
+            pending = self.state.get('pendingSince')
+            if not pending or now - pending < 14 * 86400:
+                outcome('succeeded', 'No overdue update remains after fresh discovery')
+                return
+            candidate = self.state.get('candidate')
+            if (self.state.get('reviewRequired') or self.state.get('healthError') or not candidate or
+                    candidate['tag_name'] in self.state.get('blockedVersions', [])):
+                outcome('failed', 'Update requires review or no eligible unblocked patch exists')
+                return
+            self.save(aiopsRequest={**req, 'status': 'running'})
+            self.apply(candidate)
+            if self.state.get('lastOutcome') == 'deferred_busy':
+                outcome('deferred', 'Active work did not drain; AIOps may retry after 30 minutes')
+            else:
+                outcome('succeeded', 'Patch installed and inference validated')
+        except Exception as exc:
+            outcome('failed', type(exc).__name__ + ': ' + str(exc)[:300])
+
 
     def tick(self, apply_now=False, check_now=False, install=True):
         if self.state.get('phase', 'idle') == 'committed':
@@ -306,6 +349,12 @@ class Updater:
                 raise
         else: self.recover()
         now = time.time()
+        # Repair journals written before successful patch upgrades reset this clock.
+        # Preserve the age of a major/minor release awaiting operator review.
+        if (not self.state.get('reviewRequired') and self.state.get('pendingSince') and
+                self.state.get('lastUpgradeAt', 0) > self.state['pendingSince']):
+            self.save(pendingSince=self.state['lastUpgradeAt'] if
+                      self.state.get('installedVersion') != self.state.get('latestVersion') else None)
         if check_now or apply_now or now - self.state.get('lastCheckAt', 0) >= 86400:
             installed = self.installed()
             try: releases = request(RELEASES, timeout=45)
@@ -338,7 +387,9 @@ def main():
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return
         updater = Updater()
-        try: updater.tick(args.apply_now, args.check_now)
+        try:
+            updater.tick(args.apply_now, args.check_now)
+            updater.process_aiops_request()
         except Exception as exc:
             updater.save(healthError=type(exc).__name__ + ': ' + str(exc)[:300])
             updater.event('failed', error=type(exc).__name__ + ': ' + str(exc)[:300])

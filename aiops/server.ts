@@ -14,6 +14,8 @@ import {metrics} from './lib/metrics.ts';
 import {relayApplication,receiveRelay,applicationOwner} from './lib/routing.ts';
 import {beginMaintenance} from './lib/maintenance.ts';
 import {pathToFileURL} from 'node:url';
+import {explainChecks,incidentGuide,investigationLinks,updaterFailureEvidence} from './lib/investigation.ts';
+import {selectRunbook} from './lib/runbooks.ts';
 
 const assets:Record<string,[string,string]> = {
   '/':['index.html','text/html; charset=utf-8'],
@@ -139,21 +141,27 @@ export function createApp(config:Config, store:Store, engine:Engine, health=new 
           providers:config.providers.map(p=>({kind:p.kind,model:p.model,budgetUsd:p.budgetUsd,reasoningEffort:p.reasoningEffort,configured:p.kind==='ollama'||Boolean(process.env[p.keyEnv || ''])})),
           services:config.services.map(s=>({name:s.name,host:s.host,owner:s.owner,autoActions:s.autoActions,
             paused:store.setting(`paused:${s.name}`,false)})),
-          serviceHealth:fleetHealth(config.services,[...health.reports,...peerResults.flatMap(p=>p.serviceHealth||[])]),
+          serviceHealth:fleetHealth(config.services,[...health.reports,...peerResults.flatMap(p=>p.serviceHealth||[])]).map(s=>({...s,
+            failures:explainChecks(s.checks),updaterFailures:explainChecks(s.ollamaUpdate?.checks),links:investigationLinks(config,s.host,s.name)})),
           incidents:store.list(),peers:peerResults,
           notifications:{pushover:Boolean(config.notification.pushoverToken),email:Boolean(config.notification.smtpHost),
             pending:store.db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE delivered=0').get()?.n},
           emailIntake:Boolean(config.queue)
         });
       }
-      const match=url.pathname.match(/^\/api\/incidents\/([a-f0-9-]+)(?:\/(approve|reject))?$/);
+      const match=url.pathname.match(/^\/api\/incidents\/([a-f0-9-]+)(?:\/(approve|reject|recheck))?$/);
       if(match) {
         const i=store.get(match[1]);
         if(!i) return send(res,404,{error:'Incident not found'});
-        if(req.method==='GET' && !match[2]) return send(res,200,{incident:i,events:store.events(i.id)});
+        if(req.method==='GET' && !match[2]) return send(res,200,{incident:i,events:store.events(i.id),
+          guide:incidentGuide(i),failureEvidence:updaterFailureEvidence(i,store.events(i.id)),runbook:selectRunbook(i),links:investigationLinks(config,i.host,i.service,i.alert.startsAt,i.resolvedAt || i.updated)});
         if(req.method==='POST' && match[2]==='approve') {
           const body=await readBody(req);
           await engine.approve(i.id,body.action);
+          return send(res,200,{ok:true});
+        }
+        if(req.method==='POST' && match[2]==='recheck') {
+          await engine.recheckHealth(i.id);
           return send(res,200,{ok:true});
         }
         if(req.method==='POST' && match[2]==='reject') {

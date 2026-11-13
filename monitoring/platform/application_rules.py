@@ -18,6 +18,18 @@ def application_rules(services, host, alert):
             rule['labels'].update(service=service, host=host)
             rules.append(rule)
 
+    worker = 'service="kidsplorers-events-worker"'
+    for name, expr, summary in [
+        ('OllamaUpdateOverdue', f'aiops_ollama_update_overdue{{{worker}}} == 1', 'Ollama updater: patch maintenance overdue; worker ingestion health is checked separately'),
+        ('OllamaUpdaterUnhealthy', f'aiops_ollama_updater_healthy{{{worker}}} == 0', 'Ollama updater requires review; this does not by itself indicate a Kidsplorers outage'),
+        ('OllamaUpdaterTelemetryMissing', f'(up{{kind="aiops",host="{host}"}} == 1 unless on(host) aiops_ollama_updater_healthy{{{worker}}}) or (up{{kind="aiops",host="{host}"}} == 1 unless on(host) aiops_ollama_update_overdue{{{worker}}})', 'Ollama updater monitoring evidence is unavailable; worker impact is unverified'),
+    ]:
+        if name == 'OllamaUpdaterTelemetryMissing': expr = f'max by(host) ({expr})'
+        add('kidsplorers-events-worker', name, expr, '3m', summary)
+        if 'kidsplorers-events-worker' in names:
+            rules[-1]['labels']['component'] = 'ollama-updater'
+            rules[-1]['annotations']['description'] = host + ' / kidsplorers-events-worker: {{ printf "%.3g" $value }}'
+
     planner = 'service="train-track-planner"'
     for name, expr, duration, summary in [
         ('PlannerTimetableUpdateFailed', f'timetable_ingestion_last_result{{{planner},result=~"error|gap"}} == 1', '1m', 'Planner timetable update failed'),

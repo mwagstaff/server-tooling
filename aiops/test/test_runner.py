@@ -321,5 +321,38 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(live.read_text(), 'old')
 
 
+    def test_updater_failure_does_not_make_successful_worker_unhealthy(self):
+        from io import BytesIO
+        stamp=runner.datetime.now(runner.timezone.utc).isoformat()
+        data={'running':False,'lastRun':{'startedAt':stamp,'finishedAt':stamp,'ok':28,'failed':0}}
+        item={**self.item,'name':'kidsplorers-events-worker'}
+        with patch.object(runner,'status',return_value={'active':True}), patch.object(runner,'probe',return_value={'ok':True}), patch.object(runner,'ollama_update_evidence',return_value={'checks':{'ollamaUpdateTimely':False}}), patch.object(runner.urllib.request,'build_opener') as opener:
+            opener.return_value.open.side_effect=lambda *a,**k: BytesIO(json.dumps(data).encode())
+            self.assertTrue(runner.inspect(item)['healthy'])
+            health=runner.service_health(item)
+            self.assertEqual(health['status'],'healthy')
+            self.assertNotIn('ollamaUpdateTimely',health['checks'])
+            self.assertFalse(health['ollamaUpdate']['checks']['ollamaUpdateTimely'])
+
+    def test_registered_update_request_is_bounded_idempotent_and_does_not_restart_worker(self):
+        root=Path(self.temp.name)/'.local/share/ollama-updater';root.mkdir(parents=True)
+        now=runner.time.time()
+        state={'installedVersion':'0.40.15','latestVersion':'0.40.16','phase':'idle','lastCheckAt':now,
+               'pendingSince':now-15*86400,'reviewRequired':False}
+        (root/'state.json').write_text(json.dumps(state))
+        item={**self.item,'name':'kidsplorers-events-worker','autoActions':['update_ollama']}
+        req={**self.request,'service':item['name'],'operation':'update_ollama'}
+        with patch.object(runner.Path,'home',return_value=Path(self.temp.name)),patch.object(runner.platform,'system',return_value='Darwin'),patch.object(runner,'restart') as restart:
+            for _ in range(2): self.assertTrue(runner.handle(req,{'services':[item]})['ok'])
+            restart.assert_not_called()
+            pending=json.loads((root/'state.json').read_text())['aiopsRequest']
+            self.assertEqual(pending['id'],req['actionId'])
+            self.assertEqual(pending['expiresAt']-pending['requestedAt'],600)
+            with self.assertRaisesRegex(ValueError,'not permitted'):
+                runner.handle(req,{'services':[{**item,'autoActions':[]}]})
+            for change in ({'reviewRequired':True},{'pendingSince':now},{'healthError':'failed'}):
+                (root/'state.json').write_text(json.dumps({**state,**change}))
+                self.assertNotEqual(runner.request_ollama_update(item,'other-request')['code'],0)
+
 if __name__ == '__main__':
     unittest.main()

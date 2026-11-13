@@ -606,4 +606,61 @@ runbook for upstream failure. See train-track-uk/api/train-loading-service/READM
 
 ### Managed Ollama upgrades
 
-Mini uses the [transactional Ollama updater](../ollama/README.md). The events-worker-job v4 runbook includes updater evidence. Worker service health includes missing/stale updater state, failed upgrades, stuck transactions and overdue versions, routed through the existing ServiceHealthFailing alert on Sky. Installed/latest version and last check/success timestamps are exported as `aiops_ollama_update_*` metrics. This does not grant AIOps permission to upgrade Ollama, restart a healthy worker or clear a maintenance gate.
+Mini uses the [transactional Ollama updater](../ollama/README.md). The events-worker-job v5 runbook includes updater evidence. Worker service health covers process and ingestion. Missing/stale updater state, failed upgrades, stuck transactions and overdue versions use separate Ollama maintenance warning alerts on Sky. Installed/latest version and last check/success timestamps are exported as `aiops_ollama_update_*` metrics. The registered update_ollama procedure permits bounded overdue patch requests through the transactional updater; it does not permit worker restarts or clearing maintenance gates.
+
+### Shared public outage recovery verification
+
+SharedPublicOutage uses the read-only shared-public-outage runbook. It retains
+incident-time HTTP status/duration and verifies current probe success against
+registered and observed targets, scrape availability and samples younger than
+65 seconds. Missing coverage remains unknown. Recent review incidents are
+rechecked at most once per minute while normal queued investigations take priority.
+After all checks pass and Alertmanager clears the source, the incident closes
+as healthy and emits one verified-health summary, even if a source-cleared
+summary was already sent. Pause, maintenance and the stale-alert horizon apply.
+No model calls or infrastructure restart permissions are added.
+
+### Notification status wording
+
+Email and Pushover titles lead with RESOLVED, ACTION REQUIRED or APPROVAL NEEDED.
+Resolved means the source condition ended (or recovery was verified); the body
+separately states whether service health was verified. Explicit failing health
+checks still require action even when the source resolves. The opening summary
+states whether immediate action is needed. Status is also included outside the
+bracketed prefix so changed-status emails have distinct subject text. No reply
+or reference headers link them to an older status. Previously delivered emails
+and email-client conversation headings cannot be renamed by the sender.
+
+### Investigating from an alert
+
+Incident links open and focus the selected investigation above the fleet list.
+Service rows link to their latest attention-needed incident (including the owning
+peer), logs and metrics. Incident details expose failed checks, observation time,
+next steps, collected evidence and the service investigation procedure. Grafana
+links retain the affected host/service and incident window; fleet links show the
+last hour. Updater journal paths are shown separately from worker logs.
+
+Structured failed checks take precedence over model prose in the console and
+email. Updater failures use a deterministic assessment and do not propose worker
+recovery. A successful nightly import is only one health requirement.
+
+`ServiceHealthFailing` incidents offer a read-only **Recheck health** action.
+After source resolution, review-needed health incidents are rechecked at most
+once per minute for the configured stale-alert period. Fresh service/public checks
+and confirmed source resolution are both required to close the incident. This
+uses no model or recovery action; verified recovery sends one final summary even
+if an earlier source-cleared notification still reported failing checks.
+
+For Ollama updater failures, **Updater failure evidence** opens the first retained
+failing health snapshot, including readable pending/check/upgrade timestamps.
+This survives healthy rechecks by reading the incident event journal. The
+separate **Worker request logs** link shows HTTP activity and is not presented
+as updater diagnostic evidence. New email summaries include the same evidence
+anchor and explain this distinction; already-delivered emails are unchanged.
+
+Dedicated `Ollama*` incidents use the `ollama-updater` runbook without model calls.
+Their title identifies the updater, their verification describes updater state,
+and their impact field describes worker process/ingestion health separately.
+`waiting_update` incidents are polled once per minute with no action-required
+summary while the updater is working or deferring busy work. Policy and retry
+limits are documented in [updater operations](../ollama/README.md#aiops-overdue-patch-recovery).
