@@ -23,6 +23,7 @@ typeset -A PROJECT_DEFAULT_HOSTS=(
   bha-website            mini
   bha-website-live       sky
   tab1.net               mini
+  otter-and-mosey         mini
 )
 
 get_project_default_host() {

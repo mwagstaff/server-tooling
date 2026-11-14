@@ -184,6 +184,17 @@
     "mini": {
       "services": [
         {
+          "name": "otter-and-mosey",
+          "directory": "~/dev/otter-and-mosey",
+          "entry": "server.mjs",
+          "unit": "com.otter-and-mosey.web",
+          "wrapper": ".start-with-bw-env-api.sh",
+          "metrics_path": null,
+          "port": 3070,
+          "runtime_port": 19202,
+          "public_url": "https://otterandmosey.com/healthcheck"
+        },
+        {
           "name": "train-track-planner",
           "directory": "~/dev/train-track-planner",
           "entry": "planner-server.js",

@@ -448,6 +448,29 @@
         }
     },
     {
+        "name": "otter-and-mosey",
+        "aliases": ["otter", "otterandmosey.com"],
+        "path": "/Users/mwagstaff/dev/otter-mosey-games/website",
+        "remote_dir": "~/dev/otter-and-mosey",
+        "node_binary": "/opt/homebrew/bin/node",
+        "sync_env_local": false,
+        "start_command": "npm start",
+        "entry_file": "server.mjs",
+        "startup_port": 3070,
+        "healthcheck_path": "/healthcheck",
+        "metrics_port": false,
+        "service_label": "com.otter-and-mosey.web",
+        "service_description": "Otter and Mosey website and browser games",
+        "public_url": "https://otterandmosey.com",
+        "rsync_excludes": ["/test/", "/verification/", "/.build/", "/.impeccable.md"],
+        "static_env": {
+            "PORT": "3070",
+            "HOST": "0.0.0.0",
+            "NODE_ENV": "production",
+            "TZ": "Europe/London"
+        }
+    },
+    {
         "name": "tab1.net",
         "aliases": ["start"],
         "path": "/Users/mwagstaff/dev/tab1.net",

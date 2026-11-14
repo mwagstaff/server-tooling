@@ -343,6 +343,26 @@
     "group": "bromley-bins"
   },
   {
+    "name": "otter-and-mosey",
+    "host": "mini",
+    "owner": "sky",
+    "unit": "com.otter-and-mosey.web",
+    "directory": "/Users/mwagstaff/dev/otter-and-mosey",
+    "logs": [
+      "/Users/mwagstaff/dev/otter-and-mosey/otter-and-mosey.log",
+      "/Users/mwagstaff/dev/otter-and-mosey/otter-and-mosey.error.log"
+    ],
+    "healthUrl": "http://127.0.0.1:3070/healthcheck",
+    "publicUrl": "https://otterandmosey.com/healthcheck",
+    "runtimePort": 19202,
+    "dependencies": [],
+    "autoActions": [],
+    "approvalActions": [
+      "restart"
+    ],
+    "group": "otter-and-mosey"
+  },
+  {
     "name": "train-track-planner",
     "host": "mini",
     "owner": "sky",

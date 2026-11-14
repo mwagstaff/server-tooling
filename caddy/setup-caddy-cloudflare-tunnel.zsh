@@ -42,6 +42,9 @@ BHA_WWW_HOSTNAME="www.beckenham-historical-association.org"
 BHA_LIVE_UPSTREAM="http://127.0.0.1:3050"
 # The personal start page runs on mini; Caddy reaches it over Tailscale.
 TAB1_HOSTNAME="tab1.net"
+OTTER_HOSTNAME="otterandmosey.com"
+OTTER_WWW_HOSTNAME="www.otterandmosey.com"
+OTTER_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3070"
 TAB1_WWW_HOSTNAME="www.tab1.net"
 TAB1_LEGACY_HOSTNAME="start.skynolimit.dev"
 TAB1_UPSTREAM="http://mikes-mac-mini.dog-rattlesnake.ts.net:3060"
@@ -101,11 +104,26 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   # Kidsplorers website on its dedicated hostname
   @kidsplorers_web host ${KIDSPLORERS_HOSTNAME}
   handle @kidsplorers_web {
-    reverse_proxy http://127.0.0.1:3200 {
-      header_up Host {host}
-      header_up X-Forwarded-Host {host}
-      header_up X-Forwarded-Proto https
-      header_up X-Forwarded-Port 443
+    # Shed work before Next.js saturates; all handlers share the upstream count.
+    # Keep headroom for other pages when map/search rendering is busy.
+    @kidsplorers_discovery path /places /places/ /places/map /places/map/
+    handle @kidsplorers_discovery {
+      reverse_proxy http://127.0.0.1:3200 {
+        unhealthy_request_count 12
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Port 443
+      }
+    }
+    handle {
+      reverse_proxy http://127.0.0.1:3200 {
+        unhealthy_request_count 32
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Port 443
+      }
     }
   }
 
@@ -161,6 +179,23 @@ sudo tee "${CADDYFILE}" >/dev/null <<CADDY
   @tab1 host ${TAB1_HOSTNAME}
   handle @tab1 {
     reverse_proxy ${TAB1_UPSTREAM} {
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Port 443
+    }
+  }
+
+  # Otter and Mosey website and games, hosted on mini.
+  @otter_www host ${OTTER_WWW_HOSTNAME}
+  handle @otter_www {
+    redir https://${OTTER_HOSTNAME}{uri} 308
+  }
+  @otter host ${OTTER_HOSTNAME}
+  handle @otter {
+    @otter_http header X-Forwarded-Proto http
+    redir @otter_http https://${OTTER_HOSTNAME}{uri} 308
+    reverse_proxy ${OTTER_UPSTREAM} {
       header_up Host {host}
       header_up X-Forwarded-Host {host}
       header_up X-Forwarded-Proto https
@@ -378,6 +413,16 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
+  - hostname: ${OTTER_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${OTTER_HOSTNAME}
+  - hostname: ${OTTER_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${OTTER_WWW_HOSTNAME}
   - hostname: ${TAB1_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
@@ -473,6 +518,16 @@ ingress:
     originRequest:
       http2Origin: false
       httpHostHeader: ${BHA_WWW_HOSTNAME}
+  - hostname: ${OTTER_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${OTTER_HOSTNAME}
+  - hostname: ${OTTER_WWW_HOSTNAME}
+    service: http://127.0.0.1:${CADDY_PORT}
+    originRequest:
+      http2Origin: false
+      httpHostHeader: ${OTTER_WWW_HOSTNAME}
   - hostname: ${TAB1_HOSTNAME}
     service: http://127.0.0.1:${CADDY_PORT}
     originRequest:
