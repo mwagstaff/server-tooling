@@ -43,11 +43,25 @@ Executable source: `../lib/runbooks.ts`. Increment the version when changing dia
 - Recovery evidence: Unexpected restart rate cleared, process stable and service/public checks pass.
 - Escalation: Escalate crash/OOM causes or missing accounting evidence.
 
-## Upgrade and maintenance review (upgrade-review, v2)
+## Upgrade and maintenance review (upgrade-review, v3)
+
+This is a deterministic automation runbook, not an AI investigation. AIOps supplies
+queue processing, remote read-only checks, evidence storage and notifications only.
+No model (local or cloud), API key, AI budget or reservation is required. The handler
+returns before model diagnosis; missing evidence and failed upgrades never trigger
+model fallback. Tests exercise the queue with a zero-dollar budget.
+
+The weekly systemd upgrade already runs the privileged report automatically via
+`ExecStartPre`/`ExecStopPost`; no person needs to log in as root each week. That
+report checks package changes, services, needrestart, dpkg and Pro/ESM. AIOps then
+uses unprivileged current-state checks to verify findings that may have cleared.
+`[OK]` reports are forwarded without incidents. `[REVIEW]`, `[FAIL]` and `[FAILED]`
+reports use this fixed runbook (and `[OK]` uses it if submitted directly).
+
 
 1. Read only the report's Needs attention list; table labels such as "Failed system services: None" are not warnings. Each warning describes the report time.
 2. Check the host now through the read-only runner: boot time, running and newest installed kernel, `/run/reboot-required`, failed system units and core unit activity.
-3. Mark a warning resolved only from current evidence. Package, needrestart and log warnings need root, so they stay unverified with the exact command to run.
+3. Mark a warning resolved only from current evidence. APT package candidates and security origins are read without root. Two read-only APT upgrade simulations identify updates deferred by phasing; held packages are read from package state. Deferred non-security updates need no action; security updates remain flagged even when held or phased. Missing checks stay unverified.
 4. Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions. Phased or held updates are pending rollout, not failed upgrades.
 
 - Permitted runbook actions: none (still subject to registry, ownership, source-state, budget and approval checks).

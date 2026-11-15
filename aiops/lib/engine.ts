@@ -204,7 +204,8 @@ export class Engine {
       this.store.put(i);
     }
     if(i.alert.name==='WeeklyUpgradeReview') {
-      // Read-only: the report describes the upgrade time; current host state decides each warning.
+      // Fixed, zero-model runbook: return before service diagnosis, model calls or budget reservations.
+      // Inspection failures and unknown findings require review, never AI escalation.
       i.action='none';i.status='investigating';this.store.put(i);
       let host:any;
       try {host=(await this.run(this.config,{host:i.host,name:'__host__'},'inspect')).maintenance;}

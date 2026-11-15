@@ -154,6 +154,39 @@ MAINTENANCE_UNITS = ('caddy', 'cloudflared', 'unattended-upgrades',
                      'server-tooling-full-upgrade.timer', 'server-tooling-weekly-reboot.timer')
 
 
+def package_evidence():
+    """Read cached APT metadata and simulate resolution; never refresh or install."""
+    try:
+        import apt
+        import apt_pkg
+        cache = apt.Cache()
+        remaining, security, held = [], [], []
+        for package in cache:
+            if not package.is_upgradable:
+                continue
+            remaining.append(package.name)
+            if package._pkg.selected_state == apt_pkg.SELSTATE_HOLD:
+                held.append(package.name)
+            if any(apt_pkg.version_compare(version.version, package.installed.version) > 0
+                   and any('security' in origin.archive.lower() for origin in version.origins)
+                   for version in package.versions):
+                security.append(package.name)
+        simulations = []
+        for options in ([], ['-o', 'APT::Get::Always-Include-Phased-Updates=true']):
+            result = command(['apt-get', '-s', *options, 'upgrade'], timeout=60)
+            if result['code'] or len(result['stdout']) >= 12000:
+                return {'error': 'APT simulation failed or exceeded evidence limit'}
+            simulations.append(set(re.findall(r'^Inst (\S+)', result['stdout'], re.MULTILINE)))
+        # Only a change in APT's own resolver decision proves phasing deferral.
+        phased = sorted(set(remaining) & (simulations[1] - simulations[0]))
+        return {'remaining': sorted(remaining), 'security': sorted(security),
+                'held': sorted(held), 'phased': phased,
+                'actionable': sorted(set(remaining) - set(held) - set(phased)),
+                'scope': 'Configured APT repositories using current local metadata; no refresh or installation'}
+    except (ImportError, OSError, ValueError, SystemError, subprocess.SubprocessError):
+        return {'error': 'APT package evidence unavailable'}
+
+
 def maintenance_evidence(root=Path('/')):
     """Current reboot, kernel and unit state for weekly upgrade reviews. Unprivileged reads only."""
     try:
@@ -165,6 +198,7 @@ def maintenance_evidence(root=Path('/')):
         units = command(['systemctl', 'is-active', *MAINTENANCE_UNITS])
         timer = command(['systemctl', 'show', 'server-tooling-update-reboot.timer', '-p', 'NextElapseUSecRealtime', '--value'])
         return {'observedAt': datetime.now(timezone.utc).isoformat(),
+                'packages': package_evidence(),
                 'bootedAt': datetime.fromtimestamp(boot, timezone.utc).isoformat(),
                 'runningKernel': platform.release(), 'newestKernel': kernels[-1] if kernels else None,
                 'rebootRequired': (root / 'run/reboot-required').exists(),

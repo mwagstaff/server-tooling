@@ -109,7 +109,7 @@ test('weekly report checks only reported warnings against the host and closes wh
  const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(a).incident;
  await new Engine(config,s,skyHost({}) as any,noModel as any).investigate(i);
  const saved=s.get(i.id)!;
- assert.deepEqual(saved.runbook,{id:'upgrade-review',version:2});assert.equal(selectRunbook(i).id,'upgrade-review');
+ assert.deepEqual(saved.runbook,{id:'upgrade-review',version:3});assert.equal(selectRunbook(i).id,'upgrade-review');
  assert.equal(saved.status,'healthy');assert.equal(saved.verification.healthy,true);assert.equal(saved.action,'none');assert.equal(saved.spent,0);
  assert.deepEqual(saved.evidence.reportedWarnings,['Host reboot required to finish applying updates','Running kernel status needs review']);
  // Table labels ("Failed system services / None", "Remaining upgrades", "cloudflared") are not warnings.
@@ -134,7 +134,7 @@ test('weekly report gives a specific next step for each pending or unverifiable 
  assert.match(actions,/^Reboot sky to load 6\.8\.0-149-generic: the automatic reboot check at Mon 2026-11-09 04:00:00 UTC does this/m);
  assert.match(actions,/^Run `systemctl status caddy\.service` on sky and `journalctl -u caddy\.service -b`\.$/m);
  assert.match(actions,/^Run `sudo needrestart -b -r l` on sky/m);
- assert.match(actions,/^Run `apt list --upgradable` on sky; phased or held packages need no action\.$/m);
+ assert.match(actions,/^Run `apt list --upgradable` on sky; check held packages and APT phasing before taking action\.$/m);
  assert.match(actions,/^Run `systemctl status com\.top-scores\.api` on sky\.$/m);
  assert.equal(saved.evidence.actionItems.length,5);
  const text=s.events(i.id).find(e=>e.kind==='summary')!.data.text;
@@ -300,4 +300,40 @@ for(const healthy of [true,false]) test(`cleared health alerts are rechecked wit
  if(healthy){await engine.recheckHealth(i.id);assert.equal(store.events(i.id).filter(e=>e.kind==='summary').length,1);}
  i.status='needs_approval';store.put(i);
  await assert.rejects(engine.recheckHealth(i.id),/not available/);
+});
+
+test('weekly package review automatically verifies deferred updates but flags security and missing evidence',async t=>{
+ const report='ATTENTION\n- 2 packages still have upgrades available (may include held packages)\n';
+ const base={remaining:['distro-info','held'],phased:['distro-info'],held:['held'],security:[],actionable:[]};
+ for(const [packages,expected] of [[base,'resolved'],[{...base,security:['held']},'pending'],
+   [{...base,actionable:['distro-info']},'pending'],[{...base,remaining:[],phased:[],held:[]},'resolved'],
+   [{error:'unavailable'},'unverified']] as const) {
+  const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(weeklyReport(report)).incident;
+  await new Engine(config,s,skyHost({packages}) as any,noModel as any).investigate(i);
+  const saved=s.get(i.id)!;
+  assert.equal(saved.evidence.checks[0].state,expected);
+  assert.equal(saved.verification.healthy,expected==='resolved'?true:expected==='pending'?false:null);
+ }
+});
+
+test('every weekly report status uses zero-budget automation, including failures and unavailable evidence',async t=>{
+ const zeroBudget={...config,budgetUsd:0};
+ for(const status of ['OK','REVIEW','FAIL','FAILED'])for(const scenario of ['healthy','failed','unavailable','unknown']) {
+  const text=scenario==='failed' ? 'ATTENTION\n- Upgrade service failed: exit-code\n' :
+   scenario==='unknown' ? 'ATTENTION\n- Unrecognised maintenance finding\n' : relayedReport;
+  const a=alertFromEmail({id:status+scenario,subject:`[${status}] sky weekly upgrade report`,text,receivedAt:new Date().toISOString()},zeroBudget);
+  assert.equal(a.name,'WeeklyUpgradeReview');assert.equal(a.service,'maintenance');
+  const s=new Store(':memory:');t.after(()=>s.db.close());const i=s.ingest(a).incident;
+  let modelCalls=0;
+  const model=async()=>{modelCalls++;throw new Error('weekly validation must not call any model');};
+  const run=scenario==='unavailable' ? async()=>{throw new Error('SSH unavailable');} : skyHost({});
+  await new Engine(zeroBudget,s,run as any,model as any).tick();
+  const saved=s.get(i.id)!;
+  assert.equal(saved.status,scenario==='healthy'?'healthy':'needs_review');
+  assert.equal(saved.spent,0);assert.equal(modelCalls,0);assert.equal(saved.action,'none');
+  assert.equal(s.events(i.id).filter(e=>e.kind==='model_request' || e.kind==='model_usage').length,0);
+  const summary=s.events(i.id).find(e=>e.kind==='summary')!.data.text;
+  assert.match(summary,/Validation: Automated checks only; no AI models or AI budget required \(\$0\.0000\)\./);
+  assert.doesNotMatch(summary,/incident allowance/);
+ }
 });

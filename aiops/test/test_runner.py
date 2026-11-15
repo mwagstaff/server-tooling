@@ -67,7 +67,8 @@ class RunnerTests(unittest.TestCase):
         def systemctl(args, timeout=15):
             code, stdout = next(value for key, value in outputs.items() if key in args)
             return {'code': code, 'stdout': stdout, 'stderr': ''}
-        with patch.object(runner, 'command', side_effect=systemctl), \
+        with patch.object(runner, 'package_evidence', return_value={'remaining': []}), \
+                patch.object(runner, 'command', side_effect=systemctl), \
                 patch.object(runner.platform, 'release', return_value='6.8.0-147-generic'):
             result = runner.maintenance_evidence(root)
         self.assertEqual(result['bootedAt'], '2026-11-08T04:18:46+00:00')
@@ -79,6 +80,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['units']['cloudflared'], 'failed')
         self.assertEqual(result['nextRebootCheck'], 'Mon 2026-11-09 04:00:00 UTC')
         self.assertEqual(runner.maintenance_evidence(root / 'missing'), {'error': 'Maintenance state unavailable'})
+
+    def test_package_evidence_distinguishes_phased_held_and_security(self):
+        from types import SimpleNamespace as NS
+        def package(name, held=False, security=False):
+            version = NS(version='2', origins=[NS(archive='noble-security' if security else 'noble-updates')])
+            return NS(name=name, is_upgradable=True, installed=NS(version='1'),
+                      versions=[version], _pkg=NS(selected_state=2 if held else 1))
+        cache = [package('phased'), package('held', held=True), package('urgent', security=True),
+                 package('phased-security', security=True)]
+        modules = {'apt': NS(Cache=lambda: cache), 'apt_pkg': NS(SELSTATE_HOLD=2, version_compare=lambda a,b: 1)}
+        outputs = [{'code': 0, 'stdout': 'Inst urgent [1] (2)\n'},
+                   {'code': 0, 'stdout': 'Inst urgent [1] (2)\nInst phased [1] (2)\nInst phased-security [1] (2)\n'}]
+        with patch.dict('sys.modules', modules), patch.object(runner, 'command', side_effect=outputs) as command:
+            result = runner.package_evidence()
+        self.assertEqual(result['phased'], ['phased', 'phased-security'])
+        self.assertEqual(result['held'], ['held'])
+        self.assertEqual(result['security'], ['phased-security', 'urgent'])
+        self.assertEqual(result['actionable'], ['urgent'])
+        for call in command.call_args_list:
+            self.assertEqual(call.args[0][:2], ['apt-get', '-s'])
+        for output in ({'code': 1, 'stdout': ''}, {'code': 0, 'stdout': 'x' * 12000}):
+            with patch.dict('sys.modules', modules), patch.object(runner, 'command', return_value=output):
+                self.assertIn('error', runner.package_evidence())
 
     def test_event_logs_require_valid_explicit_event_time(self):
         rows = runner.event_logs('old startup\n2026-10-26T21:14:34.123Z failed\n2026-99-26T21:14:34.123Z invalid\n', 'service.log')

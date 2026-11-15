@@ -48,7 +48,7 @@ export function alertFromEmail(body: any, config: Config, now = Date.now()): Ale
   const text = `${body.subject || ''}\n${body.text}`;
   const matches = config.services.filter(s => new RegExp(`(?:^|[^a-z0-9-])${s.name}(?:$|[^a-z0-9-])`, 'i').test(text));
   const service = matches.length === 1 ? matches[0] : undefined;
-  const weekly=/^\[(?:REVIEW|FAIL)\] (sky|mini) weekly upgrade report$/i.exec(String(body.subject||''));
+  const weekly=/^\[(?:OK|REVIEW|FAIL|FAILED)\] (sky|mini) weekly upgrade report$/i.exec(String(body.subject||''));
   const key=createHash('sha256').update('email:' + body.id).digest('hex'), startsAt=new Date(received).toISOString();
   return {source:'email', key, ref:incidentRef(key,startsAt),
     host:weekly?.[1].toLowerCase() || service?.host || (['mini','sky'].includes(body.host)?body.host:'unknown'), service:weekly?'maintenance':service?.name || 'unknown', name:weekly?'WeeklyUpgradeReview':'EmailAlert',

@@ -101,7 +101,8 @@ export function enqueueSummary(config: Config, store: Store, i: Incident) {
     ...(findings.length>1 ? ['- Assessment:',...nested(findings)] : [`- Assessment: ${compact(findings[0] || 'Evidence gathering incomplete.')}`]),
     `- Actions: ${actions.length ? actions.map(e=>compact(String(e.data.action),40)).join(', ') + '; see incident for outcomes.' : 'No recovery action taken.'}`,
     ...(guide.nextSteps.length ? ['- Next steps:',...nested(guide.nextSteps)] : [`- Next step: ${logging ? (healthy===true && source.startsWith('resolved') ? 'Infrastructure checks passed and the source resolved; retain the incident evidence for review.' : logging.nextStep) : current.status === 'needs_approval' && !current.resolvedAt ? 'Review the proposed action in the console.' : healthy === true && source.startsWith('resolved') ? 'No immediate recovery needed; review any remaining cause uncertainty.' : 'Review the evidence and unresolved cause in the console.'}`]),
-    `- AI cost/reservation: $${i.spent.toFixed(4)} of $${incidentBudget(config,store).toFixed(2)} incident allowance.`,
+    maintenance && i.spent===0 ? '- Validation: Automated checks only; no AI models or AI budget required ($0.0000).' :
+      `- AI cost/reservation: $${i.spent.toFixed(4)} of $${incidentBudget(config,store).toFixed(2)} incident allowance.`,
     `- Incident: ${config.publicUrl}/?incident=${i.id}`,
     ...(updaterFailure ? [`- Failure evidence: ${config.publicUrl}/?incident=${i.id}#failure-evidence`,
       '- Log scope: Worker request logs show HTTP requests, not the updater state that triggered this alert. The original failed check and updater timestamps are retained under Failure evidence.'] : []),

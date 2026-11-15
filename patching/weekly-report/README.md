@@ -15,8 +15,9 @@ Existing files are backed up under `/var/backups/server-tooling/`.
 
 ## Reports
 
-Reports go from `alerts@skynolimit.dev` to `mike.wagstaff@gmail.com` through the
-existing Plunk SMTP relay with certificate-verified STARTTLS. Override the
+Reports go from `alerts@skynolimit.dev` to the alert intake at
+`alerts@skynolimit.dev` through the existing Plunk SMTP relay with
+certificate-verified STARTTLS. The email Worker forwards the original to Gmail. Override the
 recipient with `--email`. No new Bitwarden entry is needed. The installer makes
 a root-only copy of the existing Plunk credential, or retrieves `PLUNK_SECRET_KEY`
 from Bitwarden for a new host. Supply `PLUNK_SECRET_KEY` in the controller
@@ -64,6 +65,27 @@ Check reporting failures with:
 ```bash
 ssh sky 'sudo journalctl -u server-tooling-full-upgrade -u server-tooling-upgrade-report-retry --since yesterday'
 ```
+
+## Weekly validation without AI spend
+
+The existing weekly systemd job runs the report automatically, including when
+an upgrade fails. Its privileged checks run under the installed service account;
+no interactive root login is required. Installing or changing those system hooks
+still requires administrative access once.
+
+Successful `[OK]` reports are forwarded to Gmail without an incident. Reports
+needing attention use the fixed [upgrade-review runbook](../../aiops/runbooks/README.md#upgrade-and-maintenance-review-upgrade-review-v3).
+AIOps is only the automation and notification transport here: no model calls,
+AI budget, API keys or paid investigation are needed. Failed upgrades and
+unavailable evidence do not escalate to a model.
+
+The runner checks current reboot/kernel and service state, then reads local APT
+metadata and simulates upgrade resolution without root or package installation.
+Only held/phased non-security upgrades can be treated as expected deferrals;
+outstanding security updates remain flagged. Unknown findings stay visible for
+operator review rather than being guessed away. Existing automatic reboot and
+upgrade schedules are unchanged. Validation does not imply automatic repair of
+every possible failure or a complete vulnerability scan.
 
 ## Cloudflare Tunnel
 

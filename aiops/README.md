@@ -539,10 +539,12 @@ selected ID/version and a runbook event. Model prompts receive the trusted
 catalogue entry separately from untrusted incident evidence. The available action
 set is intersected with the runbook; registry and approval checks remain in force.
 Upstream import and weekly upgrade reviews follow deterministic read-only paths.
-Weekly reports identify `maintenance / WeeklyUpgradeReview`. The review reads
+Weekly reports identify `maintenance / WeeklyUpgradeReview`. This fixed runbook
+uses no AI models, API keys or AI budget, including failed upgrades and inspection
+failures; there is no model fallback. AIOps only coordinates checks and delivery. The review reads
 the report's Needs attention list, then asks the host's runner (`__host__`
 inspect, Linux only) for current boot time, kernels, `/run/reboot-required`,
-failed units and core unit states. A review closes as `healthy` only when every
+failed units, core unit states and APT package evidence. Package checks use local repository metadata without refreshing it or installing anything; they are not a vulnerability scan. A review closes as `healthy` only when every
 reported warning is verified resolved now. Otherwise the summary lists each
 pending or unverified warning with a specific next step. Email text alone never
 establishes recovery. Deploy the runner before the application: an older runner

@@ -62,11 +62,12 @@ export const runbooks = {
     'Historical startup log lines alone do not prove a loop; a further restart is not a remedy.'
   ],'Unexpected restart rate cleared, process stable and service/public checks pass.','Escalate crash/OOM causes or missing accounting evidence.'),
   maintenance:book('upgrade-review','Upgrade and maintenance review',[
+    'Use fixed automated checks only: no AI model calls, budget reservations or model fallback, including failed upgrades and unavailable evidence.',
     'Read only the report\'s Needs attention list; table labels such as "Failed system services: None" are not warnings. Each warning describes the report time.',
     'Check the host now through the read-only runner: boot time, running and newest installed kernel, /run/reboot-required, failed system units and core unit activity.',
-    'Mark a warning resolved only from current evidence. Package, needrestart and log warnings need root, so they stay unverified with the exact command to run.',
+    'Mark a warning resolved only from current evidence. Check package candidates and security origins without root; use read-only APT simulations to identify phased updates. Unavailable checks stay unverified.',
     'Classify active-session/inhibitor blocks as deferred; never force reboot or terminate user sessions. Phased or held updates are pending rollout, not failed upgrades.'
-  ],'Every reported warning verified resolved on the host now.','List each pending or unverified warning with its specific next step; the daily 04:00 UK reboot check handles pending reboots.',['none'],2),
+  ],'Every reported warning verified resolved on the host now.','List each pending or unverified warning with its specific next step; the daily 04:00 UK reboot check handles pending reboots.',['none'],3),
   logging:book('logging-pipeline','Logging pipeline failure',[
     'Check collector health, drop reason, canary freshness, backpressure and storage space.',
     'Compare current and incident-time evidence; preserve buffered logs and do not clear state to hide failures.'
@@ -114,7 +115,7 @@ export function assessMaintenance(text:string,hostName:string,reportedAt:string,
   const run=(command:string)=>`Run \`${command}\` on ${hostName}`;
   const rebooted=ok && Date.parse(host.bootedAt)>Date.parse(reportedAt);
   const rebootCheck=ok && host.nextRebootCheck ? `the automatic reboot check at ${host.nextRebootCheck}` : 'the daily 04:00 UK automatic reboot check';
-  const unknown=(label:string,command:string):MaintenanceCheck=>({label,state:'unverified',detail:ok?'needs root; not checked by AIOps':'host state unavailable',action:run(command)});
+  const unknown=(label:string,command:string):MaintenanceCheck=>({label,state:'unverified',detail:ok?'check unavailable; not verified by AIOps':'host state unavailable',action:run(command)});
   const unit=(label:string,name:string):MaintenanceCheck=>!ok || !host.units?.[name] ? unknown(label,`systemctl status ${name}`) :
     host.units[name]==='active' ? {label,state:'resolved',detail:`${name} is active now`} :
     {label,state:'pending',detail:`${name} is ${host.units[name]} now`,action:run(`journalctl -u ${name} -b`)};
@@ -139,8 +140,17 @@ export function assessMaintenance(text:string,hostName:string,reportedAt:string,
     const inactive=/^(\S+) is not active$/.exec(warning);
     if(inactive)return unit(inactive[1],inactive[1]);
     if(/Ubuntu security update|Pro\/ESM/i.test(warning))return unknown('Ubuntu Pro/ESM','pro security-status');
-    if(/upgrades available|security updates available|Security update assessment/i.test(warning))
-      return {...unknown('Package updates','apt list --upgradable'),action:run('apt list --upgradable')+'; phased or held packages need no action'};
+    if(/upgrades available|security updates available|Security update assessment/i.test(warning)) {
+      const packages=ok && host.packages;
+      if(!packages || packages.error || !['remaining','security','held','phased','actionable'].every(k=>Array.isArray(packages[k])))
+        return {...unknown('Package updates','apt list --upgradable'),action:run('apt list --upgradable')+'; check held packages and APT phasing before taking action'};
+      const pending=[...new Set<string>([...packages.actionable,...packages.security])];
+      if(pending.length)return {label:'Package updates',state:'pending',detail:`updates still need review: ${pending.join(', ')} (configured APT repositories, local metadata)`,
+        action:run('apt-get -s upgrade')+' to inspect the upgrade plan; security updates remain flagged even when held or phased'};
+      return {label:'Package updates',state:'resolved',detail:packages.remaining.length ?
+        `only deferred updates remain: held [${packages.held.join(', ')}], phased [${packages.phased.join(', ')}]; no outstanding security updates in local APT metadata` :
+        'no upgrades available in configured repositories according to local APT metadata'};
+    }
     if(/Held packages/i.test(warning))return unknown('Held packages','apt-mark showhold');
     if(/Package database/i.test(warning))return unknown('Package database','sudo dpkg --audit');
     return {label:warning.replace(/:.*/,'').slice(0,60),state:'unverified',detail:'historical report finding; not checked by AIOps',
