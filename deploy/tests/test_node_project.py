@@ -61,7 +61,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    extra_bw_folder_ids=None, bw_items_by_folder=None,
                    launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
                    share_remote_dir=False, pin_by_host=None, platform=False, audio_failure=False,
-                   systemd_directives=None):
+                   systemd_directives=None, local_build=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -112,6 +112,8 @@ class NodeProjectDeploymentTests(unittest.TestCase):
             config["rsync_excludes"] = excludes
         if build:
             config["build_command"] = "npm run build"
+        if local_build is not None:
+            config["local_build_command"] = local_build
         if service_scope is not None:
             config["service_scope"] = service_scope
         if launchd_admin_helper is not None:
@@ -242,6 +244,27 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                 rsync = next(call for call in calls if call["name"] == "rsync")
                 self.assertNotIn("/var/planner/", rsync["args"])
                 self.assertIn(".static-config*.env.sh", rsync["args"])
+
+    def test_local_build_runs_in_project_before_any_sync(self):
+        record = ("python3 -c 'import json, os; open(os.environ[\"DEPLOY_TEST_LOG\"], \"a\").write("
+                  "json.dumps({\"name\": \"local-build\", \"args\": [os.getcwd()], \"stdin\": \"\"}) + \"\\n\")'")
+        for quick in [True, False]:
+            with self.subTest(quick=quick):
+                result, calls = self.run_deploy(quick=quick, local_build=record)
+                self.assert_success(result)
+                names = [call["name"] for call in calls]
+                self.assertIn("local-build", names)
+                self.assertLess(names.index("local-build"), names.index("rsync"))
+                build = next(call for call in calls if call["name"] == "local-build")
+                self.assertEqual(Path(build["args"][0]).name, "app")
+
+    def test_failed_local_build_stops_before_remote_changes(self):
+        result, calls = self.run_deploy(quick=True, local_build="exit 3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("local build failed", result.stderr)
+        self.assertFalse(any(call["name"] == "rsync" for call in calls))
+        ssh = [" ".join(call["args"]) for call in calls if call["name"] == "ssh"]
+        self.assertFalse(any("launchctl" in command or "systemctl" in command for command in ssh))
 
     def test_omitted_host_defaults_to_quick_deploy_with_error_tail(self):
         result, calls = self.run_deploy(host=None, switches=[])

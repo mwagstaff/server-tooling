@@ -97,6 +97,10 @@ get_project_build_command() {
   jq -r --arg name "$project_name" '.[] | select(.name == $name) | .build_command // empty' "$CONFIG_FILE"
 }
 
+get_project_local_build_command() {
+  jq -r --arg name "$1" '.[] | select(.name == $name) | .local_build_command // empty' "$CONFIG_FILE"
+}
+
 get_project_node_binary() {
   jq -r --arg name "$1" --arg host "$2" '.[] | select(.name == $name) |
     .node_binary_by_host[$host] // .node_binary // empty' "$CONFIG_FILE"
@@ -1696,6 +1700,7 @@ METRICS_PORT=$(get_project_metrics_port "$PROJECT_NAME")
 STARTUP_PORT=$(get_project_startup_port "$PROJECT_NAME")
 HEALTHCHECK_PATH=$(get_project_healthcheck_path "$PROJECT_NAME")
 BUILD_COMMAND=$(get_project_build_command "$PROJECT_NAME")
+LOCAL_BUILD_COMMAND=$(get_project_local_build_command "$PROJECT_NAME")
 NODE_BINARY=$(get_project_node_binary "$PROJECT_NAME" "$HOST")
 SERVICE_SCOPE=$(get_project_service_scope "$PROJECT_NAME")
 if [[ "$SERVICE_SCOPE" != "user" && "$SERVICE_SCOPE" != "system" ]]; then
@@ -1833,6 +1838,7 @@ if [[ -z "$LOCAL_DIR" || "$LOCAL_DIR" == "null" ]]; then
   echo "  - path: absolute local path to the project directory" >&2
   echo "  - start_command: startup command (for documentation; script auto-detects server.js/server.mjs/index.js/index.mjs)" >&2
   echo "  - build_command: optional build command to run on the remote host before restart" >&2
+  echo "  - local_build_command: optional command run in the local project directory before files are synced" >&2
   echo "  - node_binary: optional absolute remote executable path ending in /node" >&2
   echo "  - rsync_excludes: optional array of additional application-sync exclude patterns" >&2
   echo "  - service_label: optional service identifier for launchd/systemd" >&2
@@ -1897,6 +1903,9 @@ echo "    Service label: $SERVICE_LABEL"
 echo "    Service description: $SERVICE_DESCRIPTION"
 echo "    Healthcheck path: $HEALTHCHECK_PATH"
 echo "    Sync .env.local: $SYNC_ENV_LOCAL"
+if [[ -n "$LOCAL_BUILD_COMMAND" && "$ASSETS_ONLY_MODE" == "0" ]]; then
+  echo "    Local build: $LOCAL_BUILD_COMMAND"
+fi
 if [[ -n "$ASSET_BUNDLE_JSON" ]]; then
   echo "    Asset bundle: $ASSET_BUNDLE_LOCAL_DIR -> $ASSET_BUNDLE_REMOTE_DIR"
 fi
@@ -1971,6 +1980,20 @@ fi
 
 if project_build_runs_prepare_assets "$LOCAL_DIR"; then
   PROJECT_BUILD_RUNS_PREPARE_ASSETS=1
+fi
+
+# Projects that ship generated files (e.g. a static site's public/ folder) rebuild them
+# here, so a deploy never syncs output left over from an older build. A failed build
+# stops the deploy before anything on the remote host changes.
+if [[ -n "$LOCAL_BUILD_COMMAND" && "$ASSETS_ONLY_MODE" == "0" ]]; then
+  echo "==> Building locally: $LOCAL_BUILD_COMMAND"
+  if ! (
+    cd "$LOCAL_DIR"
+    zsh -lc "$LOCAL_BUILD_COMMAND"
+  ); then
+    echo "❌ Error: local build failed for $PROJECT_NAME; nothing was deployed." >&2
+    exit 1
+  fi
 fi
 
 if [[ -n "$ASSET_BUNDLE_PREPARE_COMMAND" ]]; then

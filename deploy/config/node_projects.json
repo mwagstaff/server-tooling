@@ -451,6 +451,7 @@
         "name": "otter-and-mosey",
         "aliases": ["otter", "otterandmosey.com"],
         "path": "/Users/mwagstaff/dev/otter-mosey-games/website",
+        "local_build_command": "npm run build",
         "remote_dir": "~/dev/otter-and-mosey",
         "node_binary": "/opt/homebrew/bin/node",
         "sync_env_local": false,
