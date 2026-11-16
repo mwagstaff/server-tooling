@@ -24,6 +24,7 @@ MONITORING_HOST="${MONITORING_HOST:-sky}"
 # ---- Config ----
 SCRIPT_DIR="${0:a:h}"
 SCRIPT_PATH="${0:a}"
+typeset -a ORIGINAL_DEPLOY_ARGS=("$@")
 CONFIG_FILE="$SCRIPT_DIR/config/node_projects.json"
 PROJECT_MATCHER_LIB="$SCRIPT_DIR/lib/project_name_matcher.zsh"
 source "$SCRIPT_DIR/lib/project_default_hosts.zsh"
@@ -1283,6 +1284,94 @@ tail_parallel_deploy_logs() {
   fi
 }
 
+# When activation is needed, this process owns the connection and runs the
+# original invocation as a child. Its cleanup cannot be replaced by the deploy's
+# Bitwarden/tail traps or bypassed by an interactive redeploy's exec.
+ensure_deploy_tailscale() {
+  [[ "$1" == "mini" ]] || return 0
+  if ! command -v tailscale >/dev/null 2>&1; then
+    printf '\e[1;31m❌ Cannot deploy to mini: tailscale is not installed or not in PATH.\e[0m\n' >&2
+    exit 1
+  fi
+
+  local ts_output ts_state
+  if ! ts_output="$(tailscale status --json 2>&1)"; then
+    printf '\e[1;31m❌ Cannot inspect Tailscale: %s\e[0m\n' "$ts_output" >&2
+    exit 1
+  fi
+  if ! ts_state="$(printf '%s' "$ts_output" | jq -er '.BackendState | strings | select(length > 0)' 2>/dev/null)"; then
+    printf '\e[1;31m❌ Cannot inspect Tailscale: invalid status response: %s\e[0m\n' "$ts_output" >&2
+    exit 1
+  fi
+  [[ "$ts_state" == "Running" ]] && return 0
+
+  # EXIT may run after this function scope has unwound; retain the exit code.
+  typeset -g TAILSCALE_DEPLOY_EXIT=1 TAILSCALE_SIGNAL_EXIT=0
+  typeset -g TAILSCALE_UP_PID="" TAILSCALE_UP_LOG=""
+  # Register cleanup before up: even a failed activation can enable the VPN.
+  restore_deploy_tailscale() {
+    local down_output
+    trap - EXIT
+    if [[ -n "$TAILSCALE_UP_PID" ]]; then
+      kill -KILL "$TAILSCALE_UP_PID" 2>/dev/null || true
+      wait "$TAILSCALE_UP_PID" 2>/dev/null || true
+    fi
+    [[ -z "$TAILSCALE_UP_LOG" ]] || rm -f "$TAILSCALE_UP_LOG"
+    echo "==> Restoring Tailscale to disabled..."
+    if ! down_output="$(tailscale down 2>&1)"; then
+      printf '\e[1;31m❌ Could not disable Tailscale: %s\e[0m\n' "$down_output" >&2
+      (( TAILSCALE_DEPLOY_EXIT != 0 )) || TAILSCALE_DEPLOY_EXIT=1
+    fi
+    (( TAILSCALE_SIGNAL_EXIT == 0 )) || TAILSCALE_DEPLOY_EXIT=$TAILSCALE_SIGNAL_EXIT
+    exit "$TAILSCALE_DEPLOY_EXIT"
+  }
+  trap restore_deploy_tailscale EXIT
+  trap 'TAILSCALE_SIGNAL_EXIT=130; exit 130' INT
+  trap 'TAILSCALE_SIGNAL_EXIT=143; exit 143' TERM
+
+  echo "==> Enabling Tailscale for mini (current state: $ts_state; timeout: 30s)..."
+  # Any flag on `up` (even --timeout) requires repeating non-default settings.
+  # Plain `up` preserves preferences; enforce the deadline outside the CLI.
+  TAILSCALE_UP_LOG="$(mktemp)"
+  tailscale up >"$TAILSCALE_UP_LOG" 2>&1 &
+  TAILSCALE_UP_PID=$!
+  local activation_deadline=$((SECONDS + 30)) activation_exit=0
+  while kill -0 "$TAILSCALE_UP_PID" 2>/dev/null; do
+    if (( SECONDS >= activation_deadline )); then
+      ts_output="$(cat "$TAILSCALE_UP_LOG")"
+      printf '\e[1;31m❌ Could not activate Tailscale: timed out after 30s. %s\e[0m\n' "$ts_output" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  wait "$TAILSCALE_UP_PID" || activation_exit=$?
+  TAILSCALE_UP_PID=""
+  ts_output="$(cat "$TAILSCALE_UP_LOG")"
+  if (( activation_exit != 0 )); then
+    printf '\e[1;31m❌ Could not activate Tailscale: %s\e[0m\n' "$ts_output" >&2
+    exit 1
+  fi
+  if ! ts_output="$(tailscale status --json 2>&1)"; then
+    printf '\e[1;31m❌ Could not verify Tailscale activation: %s\e[0m\n' "$ts_output" >&2
+    exit 1
+  fi
+  ts_state="$(printf '%s' "$ts_output" | jq -r '.BackendState // "unknown"' 2>/dev/null)" || ts_state="invalid status response"
+  if [[ "$ts_state" != "Running" ]]; then
+    printf '\e[1;31m❌ Tailscale did not become active (state: %s): %s\e[0m\n' "$ts_state" "$ts_output" >&2
+    exit 1
+  fi
+  echo "✅ Tailscale is active."
+
+  local deploy_child_pid
+  TAILSCALE_DEPLOY_EXIT=0
+  zsh "$SCRIPT_PATH" "${ORIGINAL_DEPLOY_ARGS[@]}" <&0 &
+  deploy_child_pid=$!
+  trap 'TAILSCALE_SIGNAL_EXIT=130; kill -TERM "$deploy_child_pid" 2>/dev/null || true; wait "$deploy_child_pid" 2>/dev/null || true; exit 130' INT
+  trap 'TAILSCALE_SIGNAL_EXIT=143; kill -TERM "$deploy_child_pid" 2>/dev/null || true; wait "$deploy_child_pid" 2>/dev/null || true; exit 143' TERM
+  wait "$deploy_child_pid" || TAILSCALE_DEPLOY_EXIT=$?
+  exit "$TAILSCALE_DEPLOY_EXIT"
+}
+
 run_parallel_deployments() {
   local host="$1"
   shift
@@ -1315,6 +1404,11 @@ run_parallel_deployments() {
   elif [[ "$BW_ENV_SYNC" == "1" ]]; then
     child_switch_args+=("--bw")
   fi
+
+  # Acquire once in the parent so one completed child cannot disconnect others.
+  for project_name in "${project_names[@]}"; do
+    ensure_deploy_tailscale "${host:-$(get_project_default_host "$project_name")}"
+  done
 
   # An empty host deploys each project to its own default host.
   if [[ -n "$host" ]]; then
@@ -1689,10 +1783,7 @@ if [[ -z "$HOST" ]]; then
   HOST="$(get_project_default_host "$PROJECT_NAME")"
 fi
 
-# Warn early if Tailscale is down; mini is only reachable through it
-if [[ "$HOST" == "mini" && "$(tailscale status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null)" != "Running" ]]; then
-  printf '\n\e[1;33m⚠️  WARNING: Tailscale is not running — hosts reached via Tailscale (e.g. mini) will be unreachable\e[0m\n\n' >&2
-fi
+ensure_deploy_tailscale "$HOST"
 
 # Get project configuration from config file
 LOCAL_DIR=$(get_project_path "$PROJECT_NAME")

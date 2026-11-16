@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import time
 import subprocess
 import tempfile
 import unittest
@@ -24,6 +26,35 @@ body = sys.stdin.read() if name in ("ssh", "osascript") else ""
 with open(os.environ["DEPLOY_TEST_LOG"], "a") as log:
     log.write(json.dumps({"name": name, "args": sys.argv[1:], "stdin": body}) + "\n")
 command = " ".join(sys.argv[1:])
+if name == "tailscale":
+    state_file = Path(os.environ["DEPLOY_TEST_LOG"] + ".tailscale")
+    mode = os.environ.get("DEPLOY_TEST_TAILSCALE", "running")
+    if sys.argv[1] == "status":
+        if mode == "status-error":
+            print("cannot connect to tailscaled", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({"BackendState": "Running" if mode == "running" or state_file.exists() else "Stopped"}))
+    elif sys.argv[1] == "up":
+        if len(sys.argv) != 2:
+            print("changing settings requires mentioning all non-default flags: --accept-routes", file=sys.stderr)
+            sys.exit(1)
+        if mode == "hang":
+            import time
+            print("waiting for authentication", flush=True)
+            time.sleep(60)
+        if mode == "up-error":
+            print("permission denied", file=sys.stderr)
+            sys.exit(1)
+        if mode == "timeout":
+            print("timeout waiting for Tailscale to enter Running state", file=sys.stderr)
+            sys.exit(1)
+        if mode != "not-ready": state_file.touch()
+    elif sys.argv[1] == "down":
+        if mode == "down-error":
+            print("disconnect denied", file=sys.stderr)
+            sys.exit(1)
+        state_file.unlink(missing_ok=True)
+    sys.exit(0)
 if name == "afplay" and os.environ.get("DEPLOY_TEST_AFPLAY_FAIL") == "1":
     sys.exit(1)
 if name == "ssh":
@@ -40,6 +71,10 @@ if name == "ssh":
 
 TAIL_STUB = r"""#!/usr/bin/env zsh
 python3 -c 'import json, os, sys; open(os.environ["DEPLOY_TEST_LOG"], "a").write(json.dumps({"name": "tail", "args": sys.argv[1:], "stdin": ""}) + "\n")' "$@"
+if [[ "${DEPLOY_TEST_WAIT_IN_TAIL:-0}" == "1" ]]; then
+  trap 'exit 0' TERM INT
+  while true; do sleep 0.1; done
+fi
 """
 
 BW_STUB = r'''#!/usr/bin/env python3
@@ -61,7 +96,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
                    extra_bw_folder_ids=None, bw_items_by_folder=None,
                    launchd_admin_helper=None, remote_dir="/srv/test-project", extra_project_names=None,
                    share_remote_dir=False, pin_by_host=None, platform=False, audio_failure=False,
-                   systemd_directives=None, local_build=None):
+                   systemd_directives=None, local_build=None, tailscale="running", interrupt_signal=None):
         temporary = tempfile.TemporaryDirectory(prefix="node-deploy-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -129,7 +164,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         (deploy / "config/node_projects.json").write_text(json.dumps(configs))
         binaries = root / "bin"
         binaries.mkdir()
-        for name in ["ssh", "rsync", "say", "afplay", "osascript"]:
+        for name in ["ssh", "rsync", "say", "afplay", "osascript", "tailscale"]:
             executable = binaries / name
             executable.write_text(MOCK)
             executable.chmod(0o755)
@@ -142,6 +177,7 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         ssh_config.write_text("Host test-host\n  HostName example.invalid\n")
         env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}",
                    DEPLOY_TEST_LOG=str(log), SSH_CONFIG_FILE=str(ssh_config), BW_ENV_SYNC="0")
+        env["DEPLOY_TEST_TAILSCALE"] = tailscale
         env["DEPLOY_TEST_PLATFORM"] = "1" if platform else "0"
         env["DEPLOY_TEST_AFPLAY_FAIL"] = "1" if audio_failure else "0"
         if bw_items is not None:
@@ -158,12 +194,96 @@ class NodeProjectDeploymentTests(unittest.TestCase):
         if switches is None:
             switches = ["--quick" if quick else "--full", "--no-tail"]
         command.extend(switches)
-        result = subprocess.run(command, input="", text=True, capture_output=True, env=env, timeout=20)
+        if interrupt_signal is None:
+            result = subprocess.run(command, input="", text=True, capture_output=True, env=env, timeout=40 if tailscale == "hang" else 20)
+        else:
+            env["DEPLOY_TEST_WAIT_IN_TAIL"] = "1"
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, env=env)
+            try:
+                deadline = time.monotonic() + 15
+                while not log.exists() or '"name": "tail"' not in log.read_text():
+                    if process.poll() is not None or time.monotonic() > deadline:
+                        self.fail("Deployment did not reach log tail")
+                    time.sleep(0.05)
+                process.send_signal(interrupt_signal)
+                stdout, stderr = process.communicate(timeout=5)
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return result, calls
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+
+    def test_tailscale_preserves_running_connection_and_ignores_other_hosts(self):
+        for host in ("mini", "sky"):
+            result, calls = self.run_deploy(host=host, quick=True)
+            self.assert_success(result)
+            commands = [c["args"][0] for c in calls if c["name"] == "tailscale"]
+            self.assertEqual(commands, ["status"] if host == "mini" else [])
+
+    def test_tailscale_restores_after_deploy_tail_and_bitwarden(self):
+        for switches, items in ((["--quick", "--no-tail"], None),
+                                (["--quick", "--tail"], None),
+                                (["--bw", "--no-tail"], [{"name": "ONE", "fields": [{"name": "Apps", "value": "test-project"}], "login": {"password": "test-value"}}])):
+            result, calls = self.run_deploy(host="mini", tailscale="stopped",
+                                            switches=switches, bw_items=items)
+            self.assert_success(result)
+            self.assertEqual(calls[-1]["name"], "tailscale")
+            self.assertEqual(calls[-1]["args"], ["down"])
+            up = next(i for i, c in enumerate(calls) if c["name"] == "tailscale" and c["args"][0] == "up")
+            self.assertEqual(calls[up]["args"], ["up"])
+            self.assertLess(up, next(i for i, c in enumerate(calls) if c["name"] == "ssh"))
+
+    def test_tailscale_restores_after_deployment_failure(self):
+        result, calls = self.run_deploy(host="mini", tailscale="stopped", missing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1]["args"], ["down"])
+        self.assertFalse(any(c["name"] == "rsync" for c in calls))
+
+    def test_tailscale_activation_errors_prevent_deployment(self):
+        for mode, reason in (("up-error", "permission denied"), ("timeout", "timeout"),
+                             ("not-ready", "Stopped"), ("status-error", "cannot connect to tailscaled")):
+            result, calls = self.run_deploy(host="mini", tailscale=mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("❌", result.stderr)
+            self.assertIn(reason, result.stderr)
+            self.assertFalse(any(c["name"] in ("ssh", "rsync") for c in calls))
+            if mode != "status-error": self.assertEqual(calls[-1]["args"], ["down"])
+
+    def test_tailscale_activation_deadline_stops_a_hung_cli(self):
+        result, calls = self.run_deploy(host="mini", tailscale="hang")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("❌ Could not activate Tailscale: timed out after 30s", result.stderr)
+        self.assertIn("waiting for authentication", result.stderr)
+        self.assertFalse(any(c["name"] in ("ssh", "rsync") for c in calls))
+        self.assertEqual(calls[-1]["args"], ["down"])
+
+    def test_tailscale_restores_when_log_tailing_is_interrupted(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            result, calls = self.run_deploy(host="mini", tailscale="stopped",
+                                            switches=["--quick", "--tail"], interrupt_signal=sig)
+            self.assertEqual(result.returncode, 128 + sig, result.stderr)
+            self.assertEqual(calls[-1]["args"], ["down"])
+
+    def test_tailscale_cleanup_failure_is_reported(self):
+        result, _ = self.run_deploy(host="mini", tailscale="down-error", quick=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("❌ Could not disable Tailscale: disconnect denied", result.stderr)
+
+    def test_parallel_mini_deploys_share_tailscale_owner(self):
+        result, calls = self.run_deploy(host="mini", tailscale="stopped", quick=True,
+                                        project_arg="test-*", extra_project_names=["test-second"])
+        self.assert_success(result)
+        commands = [c["args"][0] for c in calls if c["name"] == "tailscale"]
+        self.assertEqual(commands.count("up"), 1)
+        self.assertEqual(commands.count("down"), 1)
+        self.assertEqual(calls[-1]["args"], ["down"])
 
     def test_maintenance_covers_quick_and_full_restarts_after_build(self):
         for quick in [True, False]:
