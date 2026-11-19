@@ -474,7 +474,7 @@
     {
         "name": "tab1.net",
         "aliases": ["start"],
-        "path": "/Users/mwagstaff/dev/tab1.net",
+        "path": "/Users/mwagstaff/dev/tab1.net/website",
         "remote_dir": "~/dev/tab1.net",
         "node_binary": "/opt/homebrew/bin/node",
         "sync_env_local": false,
@@ -486,7 +486,7 @@
         "legacy_service_labels": ["com.start-page.web"],
         "service_description": "Personal start page (news, weather, daily photo)",
         "public_url": "https://tab1.net",
-        "rsync_excludes": ["/test/", "/.claude/"],
+        "rsync_excludes": ["/test/", "/.claude/", "/data/", "/performance/", "/mockups/"],
         "static_env": {
             "PORT": "3060",
             "NODE_ENV": "production",
